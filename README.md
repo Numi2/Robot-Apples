@@ -1,259 +1,172 @@
 # Robot Scene Studio
 
-Robot Scene Studio is an Apple-native, three-device robotics scene system.
+Robot Scene Studio is an Apple-native robotics scene system with three device
+roles and one shared project format.
 
-- iPhone records real-world capture packages.
-- Mac trains, aligns, renders, evaluates, and exports robotics scene assets.
-- Vision Pro opens the resulting scene for spatial inspection.
+- iPhone captures real robot-environment sessions.
+- Mac imports captures, aligns routes, renders datasets, trains/evaluates
+  models, and exports review packages.
+- Vision Pro opens exported scenes for spatial inspection of splats, routes,
+  navigation assets, and failure maps.
 
-This is not one app stretched across devices. It is one shared project format
-with three Apple-native clients.
+The product center is the native Apple app stack. The command-line tool is only
+developer tooling for exercising package contracts and pipeline components.
 
-## Product Target
+## Shared Formats
 
-Shared package formats:
+- `.robotcapture`: iPhone-to-Mac capture package containing `video.mov`,
+  ARKit pose/intrinsics/tracking records, Core Motion records, optional LiDAR
+  and RoomPlan artifacts, session metadata, checksums, and a project report.
+- `.robotscene`: Mac-to-Vision-Pro package containing the splat scene, robot
+  routes, dataset manifest, navigation graph, failure map, evaluation reports,
+  package validation data, checksums, and a project report.
 
-- `.robotcapture`: iPhone-to-Mac capture package.
-- `.robotscene`: Mac-to-Vision-Pro review and robotics asset package.
+Both formats are versioned, migratable, validated, and governed by artifact
+size policies.
 
-Both package formats carry schema versions, artifact size policies, SHA-256
-checksums where available, validation reports, and human-readable
-`PROJECT_REPORT.md` summaries. Older unversioned manifests decode into v1
-defaults and can be re-written through the validation/migration command.
+## Native Apps
 
-Device roles:
+### iPhone Capture
 
-- iPhone: SwiftUI capture client using AVFoundation, ARKit, Core Motion, LiDAR,
-  and RoomPlan.
-- Mac: SwiftUI/AppKit workstation using Metal, MLX, Core ML, and Apple Silicon
-  for native splat rendering, training, route generation, model evaluation, and
-  export.
-- Vision Pro: SwiftUI/RealityKit spatial viewer for Gaussian splats, robot
-  routes, camera frustums, navigation graphs, and failure overlays.
+- SwiftUI capture client.
+- AVFoundation `AVCaptureMovieFileOutput` recording to `video.mov`.
+- ARKit camera/world tracking written to `frames.jsonl` with timestamp, camera
+  transform, intrinsics, and tracking quality.
+- Core Motion accelerometer, gyroscope, and device-motion records written to
+  `motion.jsonl`.
+- `session.json` with device, lens, resolution, fps, user notes, and capture
+  package metadata.
+- LiDAR depth snapshots and RoomPlan export where available.
+- Capture quality indicators.
+- `.robotcapture` package browser.
+- Multipeer sender to Mac.
+- Finder file sharing support for wired local transfer.
 
-The product does not depend on generic renderer or trainer process bridges.
-Developer CLI commands are support tools only; the product center is the native
-Apple app stack.
+The required iPhone capture output is a `.robotcapture` package containing:
 
-## Apple Documentation Anchors
+- `video.mov`
+- `frames.jsonl`
+- `motion.jsonl`
+- `session.json`
+- Optional LiDAR, RoomPlan, and object-capture artifacts
+- Manifest, checksums, and package report
 
-- AVFoundation `AVCaptureMovieFileOutput` records QuickTime movie files:
-  https://developer.apple.com/documentation/avfoundation/avcapturemoviefileoutput
-- ARKit `ARCamera.transform` and `ARCamera.intrinsics` provide camera pose and
-  calibration data:
-  https://developer.apple.com/documentation/arkit/arcamera/transform
-  https://developer.apple.com/documentation/arkit/arcamera/intrinsics
-- Core Motion provides accelerometer, gyroscope, and device-motion data:
-  https://developer.apple.com/documentation/coremotion
-- RoomPlan `CapturedRoom` can export room results to USDZ:
-  https://developer.apple.com/documentation/roomplan/capturedroom
-- Multipeer Connectivity `MCSession` manages nearby peer communication and
-  resource transfer:
-  https://developer.apple.com/documentation/multipeerconnectivity/mcsession
-  https://developer.apple.com/documentation/multipeerconnectivity/mcsession/sendresource(at:withname:topeer:withcompletionhandler:)
-- Metal is Apple silicon's native graphics and compute API:
-  https://developer.apple.com/metal/
-- Core ML loads and runs models on Apple platforms:
-  https://developer.apple.com/documentation/coreml
-- visionOS documents new RealityKit Gaussian splat APIs in visionOS 27:
-  https://developer.apple.com/documentation/visionos
-- Finder file sharing is the wired fallback path for local package transfer:
-  https://support.apple.com/en-us/119585
+### Mac Workstation
+
+- SwiftUI/AppKit workstation shell.
+- Project browser and `.robotscene` document flow.
+- Multipeer receiver with pairing, progress, cancel/retry, receipts, and inbox
+  ingest.
+- Finder-copied `.robotcapture` import.
+- Capture health inspection and route preparation.
+- Splat import/linking plus route-derived splat seed generation when no trained
+  or imported splat is linked.
+- Manual ARKit-to-splat anchor alignment, coordinate transform editing, and
+  floor/height constraints.
+- Robot-valid route generation, route variants, navigation graph editing, and
+  coverage analysis.
+- Native Metal Gaussian splat renderer with GPU projection, covariance
+  projection, tile counting, prefix offsets, compaction, per-tile sort,
+  compositing, dense depth/visibility products, LOD decimation, streaming
+  chunks, and render timing reports.
+- Apple Silicon ML package generation for MLX training and Core ML export.
+- Core ML evaluation, failure-map calibration, and model comparison reports.
+- `.robotscene` export for Vision Pro review.
+
+### Vision Pro Review
+
+- SwiftUI/RealityKit spatial review app shell.
+- `.robotscene` package loading.
+- Gaussian splat scene reference, route overlays, camera frustums, navigation
+  graph, and failure-map markers.
+
+## Core Modules
+
+- `AppleDeviceCaptureSession`: iOS capture coordinator for AVFoundation,
+  ARKit, Core Motion, LiDAR, RoomPlan, and `.robotcapture` packaging.
+- `RobotCaptureMultipeerTransfer`: Multipeer Connectivity sender/receiver,
+  pairing, progress, retry/cancel, and receipts.
+- `RobotCaptureImporter` and `RobotCapturePreparer`: Mac ingest, validation,
+  route creation, train/eval split, and `prepared_splat_training_manifest.json`.
+- `GaussianSplatImporter`: `.ply` and binary `.splat` inspection.
+- `RouteDerivedSplatSeedWriter`: valid route-derived Gaussian splat seed PLY
+  generation from captured camera poses.
+- `RobotRouteAligner`, `RobotRouteExpander`, and `RouteIntelligenceAnalyzer`:
+  coordinate alignment, route variants, robot-valid paths, graph edits,
+  confidence metrics, and coverage analysis.
+- `MetalGaussianSplatRenderer`: native Apple Metal Gaussian splat renderer and
+  dataset render backend.
+- `RenderedDatasetLoader`, `NativeModelAdapterSchema`, `CoreMLDatasetEvaluator`,
+  `MLXTrainingPackageBuilder`, `FailureMapCalibrationReporter`, and
+  `ModelComparisonReporter`: Apple Silicon ML dataset loading, adapter schemas,
+  Core ML evaluation, MLX training package generation, failure-map calibration,
+  and model comparison.
+- `RobotScenePackageExporter` and `SharedProjectFormatTools`: `.robotscene`
+  export, validation, migration, checksum, compaction, and reporting.
 
 ## Build
 
 ```bash
 swift build
-swift run robot-scene-studio-mac
-swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --path-mode lawnmower --path-rows 20 --path-columns 50 --render-preview
-swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --capture-route ./PreparedCapture/capture_route.json --align-capture-route
-swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-aligned-route --expand-capture-route --route-lateral-offsets=-0.2,0,0.2 --route-height-offsets=0 --route-yaw-offsets=-5,0,5
-swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --render-metal-splats --metal-tile-size 16 --metal-max-splats 1000000 --metal-streaming-chunk-splats 250000
-swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --evaluate-coreml --evaluate-model ./Model.mlpackage --export-robotscene
-swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --write-mlx-training-package
-swift run robot-vision-lab --output ./RobotSceneWork --splat-training-manifest ./PreparedCapture/prepared_splat_training_manifest.json --plan-splat-training
-swift run robot-vision-lab --output ./RobotSceneWork --write-model-adapter-schemas
-swift run robot-vision-lab --validate-package ./RobotSceneWork/Project.robotscene
-```
-
-The CLI requires explicit production inputs: `--output`, a real `--splat` for
-dataset/render/evaluation work, and either a captured/aligned route or a
-requested generated path. Demo capture and synthetic room generation are
-available only through explicit `--demo` commands:
-
-```bash
-swift run robot-vision-lab --output ./DemoRobotScene --demo --render-preview
-swift run robot-vision-lab --output ./DemoRobotScene --export-demo-capture
-```
-
-The CLI writes `dataset.json`, route files, import reports, training plans,
-evaluation reports, and `.robotscene` packages. It remains a developer tool for
-exercising the native contracts.
-
-## Xcode Apps
-
-```bash
 xcodegen generate
 xcodebuild -project RobotSceneStudio.xcodeproj -scheme RobotSceneStudioMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
 xcodebuild -project RobotSceneStudio.xcodeproj -scheme RobotSceneStudioCapture -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
 xcodebuild -project RobotSceneStudio.xcodeproj -scheme RobotSceneStudioVision -destination 'generic/platform=visionOS Simulator' CODE_SIGNING_ALLOWED=NO build
 ```
 
-`project.yml` is the source of truth for the generated Xcode project. It defines
-the Mac workstation, iPhone capture client, and Vision Pro review app targets
-against the local Swift package products. The app configuration lives under
-`AppConfig/`, including entitlements, privacy usage strings, local-network
-descriptions, Bonjour service declarations, document types, and exported package
-UTTypes for `.robotcapture` and `.robotscene`. App icon asset catalogs live
-under `AppAssets/`.
+`project.yml` is the source of truth for the generated Xcode project. App
+configuration lives under `AppConfig/`; icon asset catalogs live under
+`AppAssets/`. Set `DEVELOPMENT_TEAM` in `project.yml` before physical-device
+deployment.
 
-Set `DEVELOPMENT_TEAM` in `project.yml`, regenerate the project, and let Xcode
-manage signing for physical iPhone, Mac, and Vision Pro deployment.
+## Developer CLI
 
-## Current Implementation
+Production CLI commands require explicit inputs.
 
-- `RobotSceneStudio.xcodeproj`: generated Xcode project with app targets for
-  macOS, iOS, and visionOS.
-- `AppConfig`: platform Info.plist and entitlement files for sandboxed macOS
-  document access, iPhone camera/motion/AR/local-network permissions, Vision Pro
-  document opening, package UTTypes, and Bonjour discovery.
-- `AppAssets`: native app icon catalogs for all three app targets.
-- `AppleDeviceCaptureSession`: iOS-gated capture coordinator that records
-  `video.mov`, writes ARKit camera pose/intrinsics/tracking records to
-  `frames.jsonl`, writes Core Motion records to `motion.jsonl`, captures LiDAR
-  depth snapshots where available, exports RoomPlan geometry, and writes
-  `.robotcapture` metadata.
-- `RobotSceneStudioiPhoneApp`: native SwiftUI iPhone capture client with capture
-  controls around `AppleDeviceCaptureSession`, camera/motion/ARKit readiness
-  flows, live tracking/lighting/motion quality indicators, Finder-visible
-  `.robotcapture` package browsing, Multipeer sender controls, and wired Finder
-  fallback guidance.
-- `RobotCaptureMultipeerTransfer`: app-controlled nearby iPhone-to-Mac transfer
-  using Multipeer Connectivity resource transfer, explicit receiver-side
-  pairing approval, send/receive progress, cancel/retry recovery hooks,
-  completion events, and receipt reporting.
-- `RobotSceneStudioMacApp`: native SwiftUI Mac workstation shell with
-  `NavigationSplitView`, project browser, `.robotscene` document opening,
-  Multipeer receiver controls, pairing accept/reject UI, receive progress,
-  transfer receipts, Finder-copied `.robotcapture` import, `.robotcapture`
-  health inspection, splat linking/inspection, route alignment anchors, route
-  variant controls, failure-map viewing, Metal renderer budget controls,
-  diagnostics, artifact browsing, and `.robotscene` export.
-- `WorkstationModel`: Observation-backed Mac workstation controller that imports
-  captures, prepares routes, links splats, builds dataset manifests, plans Metal
-  rendering, runs the native Metal splat renderer, records RGB/depth/visibility
-  render artifacts, receives iPhone packages through Multipeer Connectivity,
-  loads `.robotscene` manifests and failure maps, aligns captured ARKit routes
-  with manual anchors, generates robot-camera route variants, plans
-  Apple-native MLX training, evaluates baseline model outputs, and exports
-  Vision Pro scene packages.
-- `FinderFileSharingFallbackGuide`: wired local transfer fallback for large
-  capture packages.
-- `RobotCaptureImporter`: Mac-side `.robotcapture` validation and ingest.
-- `RobotCapturePreparer`: converts capture packages into routes, train/eval
-  splits, and `prepared_splat_training_manifest.json`.
-- `RobotRouteAligner`: estimates ARKit-to-splat transforms.
-- `RobotRouteExpander`: generates robot-camera route variants from captured
-  routes.
-- `RouteIntelligenceAnalyzer`: applies manual coordinate transforms and
-  floor/height constraints, computes route confidence metrics, generates
-  floor-constrained robot-valid paths, edits navigation graphs, and reports
-  missing-view, repeated-view, and low-parallax coverage issues.
-- `GaussianSplatImporter`: inspects `.ply` and `.splat` assets.
-- `RouteDerivedSplatSeedWriter`: creates a valid route-derived Gaussian splat
-  seed PLY from captured camera poses when a trained/imported splat has not
-  been linked yet.
-- `SplatPointProjectionRenderer`: CPU reference renderer for camera geometry
-  validation only.
-- `MetalRenderPlanner`: validates native Metal render readiness and device
-  capability before the real Gaussian splat renderer.
-- `MetalGaussianSplatRenderer`: native Metal renderer that loads Gaussian PLY
-  and binary `.splat` properties, uploads splats into Metal buffers, projects
-  splats in the vertex shader, projects anisotropic covariance into screen
-  space, runs Metal compute passes for tile counts, prefix offsets, compaction,
-  per-tile depth sorting, and vertex-buffer construction, composites Gaussian
-  point discs on the GPU, and writes RGB plus dense Gaussian-footprint
-  depth/visibility images, diagnostic depth/visibility summaries, and tile-bin
-  products. Render-budget LOD uses deterministic uniform splat decimation across
-  the full cloud instead of file-prefix truncation, and GPU streaming chunks keep
-  per-frame Metal working sets bounded for larger scenes.
-- `MetalGaussianSplatRenderConfiguration`: controls tile size and per-frame
-  splat budget for larger Apple Silicon render jobs.
-- `SplatTrainingJob`: Apple-native training plan for MLX/Create ML/Metal
-  Performance Shaders workflows.
-- `CoreMLDatasetEvaluator`: Core ML evaluation path for deployed on-device
-  models using rendered RGB/depth/pose/intrinsics sample adapters.
-- `MLXEvaluationPlan`: Apple Silicon MLX research/evaluation plan metadata.
-- `RenderedDatasetLoader` and `NativeModelAdapterSchema`: Core ML and MLX
-  input/output adapters for rendered RGB/depth, pose, intrinsics, confidence,
-  obstacle/free-space probability, localization uncertainty, and failure-kind
-  outputs.
-- `MLXTrainingPackageBuilder`: writes a local Apple Silicon MLX training package
-  with a reusable rendered-dataset Python loader, an MLX training entrypoint,
-  and a Core ML Tools ML Program export path.
-- `RobotScenePackageExporter`: writes `.robotscene` packages for Vision Pro
-  spatial review.
-- `SharedProjectFormatTools`: versioned `.robotcapture`/`.robotscene` helpers
-  for validation, migration, artifact size policy checks, SHA-256 checksums,
-  compaction cleanup, and human-readable project reports.
-- `FailureMapMarker`: spatial markers for confident, blocked, uncertain,
-  missing-view, ambiguous-view, bad-lighting, and low-texture regions, including
-  calibrated markers from Core ML/MLX obstacle, free-space, uncertainty, and
-  failure-kind outputs.
-- `FailureMapCalibrationReporter` and `ModelComparisonReporter`: produce
-  calibrated failure-map metrics and baseline-vs-candidate model comparison
-  reports for Core ML evaluation runs.
+```bash
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --path-mode lawnmower --path-rows 20 --path-columns 50 --render-preview
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --capture-route ./PreparedCapture/capture_route.json --align-capture-route
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-aligned-route --expand-capture-route
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --render-metal-splats
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --evaluate-coreml --evaluate-model ./Model.mlpackage --export-robotscene
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --write-mlx-training-package
+swift run robot-vision-lab --output ./RobotSceneWork --splat-training-manifest ./PreparedCapture/prepared_splat_training_manifest.json --plan-splat-training
+swift run robot-vision-lab --validate-package ./RobotSceneWork/Project.robotscene
+```
 
-## Roadmap
+Synthetic developer data is isolated behind explicit demo flags:
 
-1. Add real native app targets.
-   - iPhone capture app.
-   - Mac workstation app.
-   - visionOS spatial viewer.
+```bash
+swift run robot-vision-lab --output ./DemoRobotScene --demo --render-preview
+swift run robot-vision-lab --output ./DemoRobotScene --export-demo-capture
+```
 
-2. Finish the iPhone capture client.
-   - SwiftUI capture workflow.
-   - Live capture quality indicators.
-   - AVFoundation video recording.
-   - ARKit pose/intrinsics/tracking stream.
-   - Core Motion stream.
-   - LiDAR and RoomPlan capture where available.
+## Apple Documentation Anchors
 
-3. Finish native Multipeer transfer UX.
-   - Nearby Mac discovery.
-   - Transfer progress.
-   - Retry/cancel.
-   - Transfer receipt.
-   - Finder wired fallback import.
+- AVFoundation movie recording: https://developer.apple.com/documentation/avfoundation/avcapturemoviefileoutput
+- ARKit camera pose/intrinsics: https://developer.apple.com/documentation/arkit/arcamera/transform
+- Core Motion: https://developer.apple.com/documentation/coremotion
+- RoomPlan captured room export: https://developer.apple.com/documentation/roomplan/capturedroom
+- Multipeer Connectivity `MCSession`: https://developer.apple.com/documentation/multipeerconnectivity/mcsession
+- Metal: https://developer.apple.com/metal/
+- Core ML: https://developer.apple.com/documentation/coreml
+- visionOS / RealityKit: https://developer.apple.com/documentation/visionos
+- Finder wired transfer: https://support.apple.com/en-us/119585
 
-4. Build the Mac workstation.
-   - Import `.robotcapture`.
-   - Import or create Gaussian splats.
-   - Align ARKit route coordinates to splat coordinates.
-   - Generate robot-valid route variants.
-   - Render robot-camera views with Metal.
-   - Train/evaluate using Apple Silicon MLX and Core ML.
-   - Export `.robotscene`.
+## Next Work
 
-5. Deepen the native Metal Gaussian splat renderer.
-   - GPU projection, tile-reference counting, prefix offsets, compaction,
-     per-tile sort, and vertex-buffer construction are in place.
-   - Compute covariance projection now follows the same scale/rotation plus
-     camera-Jacobian path as the CPU diagnostic projection.
-   - GPU-derived dense depth and visibility images are in place.
-   - Tile size and per-frame splat budgets are configurable.
-   - Per-frame splat budgets now use deterministic LOD decimation.
-   - GPU streaming chunks are in place for bounded per-frame Metal working sets.
+- Deepen the Mac workstation UI around native MLX training runs and Core ML
+  model promotion.
+- Expand Vision Pro rendering from package inspection toward full RealityKit
+  Gaussian splat display where supported.
+- Add richer manual alignment tools: visual anchor picking, floor-plane editing,
+  route confidence drill-down, and navigation graph editing.
+- Add renderer profiling views for tile pressure, memory budget, LOD choice,
+  frame timing, and dense visibility coverage.
+- Harden signed app deployment on physical iPhone, Mac, and Vision Pro devices.
 
-6. Build the Vision Pro reviewer.
-   - Open `.robotscene`.
-   - Render Gaussian splats with RealityKit where supported.
-   - Show robot routes, frustums, failure maps, and prediction overlays.
-   - Replay robot-camera views spatially.
+## Repository Policy
 
-## Bloat Policy
-
-Generated datasets, capture packages, scene packages, and Swift build products
-are ignored by git. The repository stores source, package definitions, and
-documentation. Large recordings and generated assets belong in `.robotcapture`
-or `.robotscene` packages outside source control.
+Generated datasets, capture packages, scene packages, recordings, and Swift
+build products stay out of source control. The repository stores source code,
+app configuration, package definitions, fixtures, and documentation.
