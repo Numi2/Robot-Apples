@@ -246,20 +246,60 @@ public struct VisionProReviewAsset: Codable, Equatable, Sendable {
     public var failureMapURL: URL
     public var datasetManifestURL: URL
     public var evaluationReportURL: URL?
+    public var reviewSummaryURL: URL?
 
     public init(
         splatSceneURL: URL? = nil,
         robotRouteURL: URL,
         failureMapURL: URL,
         datasetManifestURL: URL,
-        evaluationReportURL: URL? = nil
+        evaluationReportURL: URL? = nil,
+        reviewSummaryURL: URL? = nil
     ) {
         self.splatSceneURL = splatSceneURL
         self.robotRouteURL = robotRouteURL
         self.failureMapURL = failureMapURL
         self.datasetManifestURL = datasetManifestURL
         self.evaluationReportURL = evaluationReportURL
+        self.reviewSummaryURL = reviewSummaryURL
     }
+}
+
+public struct RobotSceneSpatialReviewSummary: Codable, Equatable, Sendable {
+    public var sceneID: String
+    public var frameCount: Int
+    public var markerCount: Int
+    public var modelEvidenceMarkerCount: Int
+    public var lidarEvidenceMarkerCount: Int
+    public var frameRisks: [RobotSceneSpatialReviewFrameRisk]
+
+    public init(
+        sceneID: String,
+        frameCount: Int,
+        markerCount: Int,
+        modelEvidenceMarkerCount: Int,
+        lidarEvidenceMarkerCount: Int,
+        frameRisks: [RobotSceneSpatialReviewFrameRisk]
+    ) {
+        self.sceneID = sceneID
+        self.frameCount = frameCount
+        self.markerCount = markerCount
+        self.modelEvidenceMarkerCount = modelEvidenceMarkerCount
+        self.lidarEvidenceMarkerCount = lidarEvidenceMarkerCount
+        self.frameRisks = frameRisks
+    }
+}
+
+public struct RobotSceneSpatialReviewFrameRisk: Codable, Equatable, Sendable {
+    public var frameIndex: Int
+    public var position: SIMD3<Double>
+    public var riskScore: Double
+    public var dominantKind: FailureMarkerKind?
+    public var markerCount: Int
+    public var modelEvidenceCount: Int
+    public var lidarEvidenceCount: Int
+    public var evidenceSources: Set<FailureEvidenceSource>
+    public var summary: String
 }
 
 public struct RobotScenePackageManifest: Codable, Equatable, Sendable {
@@ -396,19 +436,26 @@ public struct RobotScenePackageExporter: Sendable {
             PoseLabel(frameIndex: $0.index, timestamp: $0.timestamp, cameraPose: $0.cameraPose)
         }).write(to: routeURL)
 
+        let reviewSummary = makeSpatialReviewSummary(sceneID: "\(manifest.recipeID)-robot-scene", manifest: packagedDatasetManifest, failureMap: failureMap)
+        let reviewSummaryReferenceURL = URL(string: "review/spatial_review_summary.json") ?? URL(fileURLWithPath: "review/spatial_review_summary.json")
+        let reviewSummaryURL = packageDirectory.appendingPathComponent(reviewSummaryReferenceURL.relativePath)
+        try JSONEncoder.robotVisionLabEncoder.encode(reviewSummary).write(to: reviewSummaryURL)
+
         let reviewAsset = VisionProReviewAsset(
             splatSceneURL: packagedScene.sourceURL,
             robotRouteURL: routeURL,
             failureMapURL: failureMapURL,
             datasetManifestURL: datasetManifestURL,
-            evaluationReportURL: evaluationReportURL
+            evaluationReportURL: evaluationReportURL,
+            reviewSummaryURL: reviewSummaryReferenceURL
         )
         let artifactURLs: [(String, URL)] = [
             ("dataset-manifest", datasetManifestURL),
             ("splat-scene", packagedScene.sourceURL),
             ("navigation-graph", navigationGraphURL),
             ("failure-map", failureMapURL),
-            ("review-route", routeURL)
+            ("review-route", routeURL),
+            ("spatial-review-summary", reviewSummaryURL)
         ].compactMap { role, url in url.map { (role, $0) } }
             + [evaluationReportURL.map { ("evaluation-report", $0) }].compactMap { $0 }
         let artifacts = artifactURLs.map { tools.artifactRecord(role: $0.0, url: $0.1, packageRoot: packageDirectory) }
@@ -469,6 +516,72 @@ public struct RobotScenePackageExporter: Sendable {
         case .trainingOutput:
             return .trainingOutput(packagedURL)
         }
+    }
+
+    private func makeSpatialReviewSummary(
+        sceneID: String,
+        manifest: DatasetManifest,
+        failureMap: [FailureMapMarker]
+    ) -> RobotSceneSpatialReviewSummary {
+        let markersByFrame = Dictionary(grouping: failureMap.compactMap { marker -> (Int, FailureMapMarker)? in
+            guard let frameIndex = marker.frameIndex else { return nil }
+            return (frameIndex, marker)
+        }, by: \.0).mapValues { $0.map(\.1) }
+        let frameRisks = manifest.frames.map { frame -> RobotSceneSpatialReviewFrameRisk in
+            let markers = markersByFrame[frame.index] ?? []
+            return reviewFrameRisk(frame: frame, markers: markers)
+        }
+        return RobotSceneSpatialReviewSummary(
+            sceneID: sceneID,
+            frameCount: manifest.frames.count,
+            markerCount: failureMap.count,
+            modelEvidenceMarkerCount: failureMap.filter { $0.modelLabel != nil || $0.modelSource != nil }.count,
+            lidarEvidenceMarkerCount: failureMap.filter { $0.lidarEvidence != nil }.count,
+            frameRisks: frameRisks
+        )
+    }
+
+    private func reviewFrameRisk(frame: DatasetFrame, markers: [FailureMapMarker]) -> RobotSceneSpatialReviewFrameRisk {
+        let dominant = markers.max { lhs, rhs in markerRisk(lhs) < markerRisk(rhs) }
+        let risk = min(markers.reduce(0) { $0 + markerRisk($1) }, 1)
+        let evidenceSources = markers.reduce(into: Set<FailureEvidenceSource>()) { partial, marker in
+            partial.formUnion(marker.evidenceSources)
+        }
+        return RobotSceneSpatialReviewFrameRisk(
+            frameIndex: frame.index,
+            position: frame.cameraPose.position,
+            riskScore: risk,
+            dominantKind: dominant?.kind,
+            markerCount: markers.count,
+            modelEvidenceCount: markers.filter { $0.modelLabel != nil || $0.modelSource != nil }.count,
+            lidarEvidenceCount: markers.filter { $0.lidarEvidence != nil }.count,
+            evidenceSources: evidenceSources,
+            summary: reviewFrameRiskSummary(frameIndex: frame.index, risk: risk, dominant: dominant, markers: markers)
+        )
+    }
+
+    private func markerRisk(_ marker: FailureMapMarker) -> Double {
+        var score = marker.confidence * marker.kind.reviewRiskWeight
+        if marker.modelLabel != nil || marker.modelSource != nil {
+            score += 0.08
+        }
+        if let lidar = marker.lidarEvidence {
+            score += min(max(lidar.dropoutRate, lidar.lowSupportRate) * 0.12, 0.12)
+            score += min(lidar.nearFieldOccupancyRate * 0.08, 0.08)
+        }
+        return min(score, 1)
+    }
+
+    private func reviewFrameRiskSummary(
+        frameIndex: Int,
+        risk: Double,
+        dominant: FailureMapMarker?,
+        markers: [FailureMapMarker]
+    ) -> String {
+        guard let dominant else {
+            return "Frame \(frameIndex): no review failures."
+        }
+        return "Frame \(frameIndex): \(dominant.kind.reviewLabel) risk \(Int((risk * 100).rounded()))%, \(markers.count) markers."
     }
 
     private func makeNavigationGraph(from manifest: DatasetManifest) -> NavigationGraph {
@@ -855,6 +968,32 @@ public extension GaussianSplatScene {
         switch source {
         case .importedPLY(let url), .importedSplat(let url), .trainingOutput(let url):
             return url
+        }
+    }
+}
+
+public extension FailureMarkerKind {
+    var reviewLabel: String {
+        switch self {
+        case .confident: "Confident"
+        case .uncertainLocalization: "Uncertain localization"
+        case .blockedPrediction: "Blocked"
+        case .missingTrainingViews: "Missing views"
+        case .visualAmbiguity: "Visual ambiguity"
+        case .badLighting: "Lighting"
+        case .lowTexture: "Low texture"
+        }
+    }
+
+    var reviewRiskWeight: Double {
+        switch self {
+        case .confident: 0.05
+        case .blockedPrediction: 1.0
+        case .uncertainLocalization: 0.86
+        case .missingTrainingViews: 0.78
+        case .visualAmbiguity: 0.72
+        case .badLighting: 0.58
+        case .lowTexture: 0.52
         }
     }
 }

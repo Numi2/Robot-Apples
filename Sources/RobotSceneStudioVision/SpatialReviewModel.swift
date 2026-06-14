@@ -160,6 +160,40 @@ public struct SpatialReviewFrameRisk: Codable, Equatable, Sendable {
     public var lidarEvidenceCount: Int
     public var evidenceSources: Set<FailureEvidenceSource>
     public var summary: String
+
+    public init(
+        frameIndex: Int,
+        position: SIMD3<Double>,
+        riskScore: Double,
+        dominantKind: FailureMarkerKind?,
+        markerCount: Int,
+        modelEvidenceCount: Int,
+        lidarEvidenceCount: Int,
+        evidenceSources: Set<FailureEvidenceSource>,
+        summary: String
+    ) {
+        self.frameIndex = frameIndex
+        self.position = position
+        self.riskScore = riskScore
+        self.dominantKind = dominantKind
+        self.markerCount = markerCount
+        self.modelEvidenceCount = modelEvidenceCount
+        self.lidarEvidenceCount = lidarEvidenceCount
+        self.evidenceSources = evidenceSources
+        self.summary = summary
+    }
+
+    public init(_ risk: RobotSceneSpatialReviewFrameRisk) {
+        self.frameIndex = risk.frameIndex
+        self.position = risk.position
+        self.riskScore = risk.riskScore
+        self.dominantKind = risk.dominantKind
+        self.markerCount = risk.markerCount
+        self.modelEvidenceCount = risk.modelEvidenceCount
+        self.lidarEvidenceCount = risk.lidarEvidenceCount
+        self.evidenceSources = risk.evidenceSources
+        self.summary = risk.summary
+    }
 }
 
 @Observable
@@ -188,6 +222,9 @@ public final class SpatialReviewModel {
         let evaluation = try manifest.visionProReviewAsset.evaluationReportURL.flatMap {
             try decodeIfPresent(ModelEvaluationReport.self, $0, relativeTo: packageRoot)
         }
+        let packagedReviewSummary = try manifest.visionProReviewAsset.reviewSummaryURL.flatMap {
+            try decodeIfPresent(RobotSceneSpatialReviewSummary.self, $0, relativeTo: packageRoot)
+        }
         let splatURL = resolvedSplatURL(from: manifest, relativeTo: packageRoot)
         var layers: Set<SpatialReviewLayer> = [.robotRoutes, .cameraFrustums, .navigationGraph, .failureMap]
         var diagnostics: [String] = []
@@ -213,7 +250,8 @@ public final class SpatialReviewModel {
                 SpatialReviewNavigationEdge(from: $0.from, to: $0.to, traversalCost: $0.traversalCost)
             } ?? [],
             failureMarkers: failureMarkers,
-            frameRisks: frameRisks(route: route, markers: failureMarkers)
+            frameRisks: packagedReviewSummary?.frameRisks.map { SpatialReviewFrameRisk($0) }
+                ?? frameRisks(route: route, markers: failureMarkers)
         )
         state.summary = SpatialReviewSceneSummary(
             sceneID: manifest.id,
@@ -338,7 +376,7 @@ public final class SpatialReviewModel {
             kind: marker.kind,
             confidence: marker.confidence,
             displayColor: marker.kind.spatialReviewColor,
-            label: marker.kind.spatialReviewLabel,
+            label: marker.kind.reviewLabel,
             note: marker.note,
             evidenceSources: marker.evidenceSources,
             modelLabel: marker.modelLabel,
@@ -390,7 +428,7 @@ public final class SpatialReviewModel {
     }
 
     private func markerRisk(_ marker: SpatialReviewFailureMarker) -> Double {
-        var score = marker.confidence * marker.kind.riskWeight
+        var score = marker.confidence * marker.kind.reviewRiskWeight
         if marker.modelLabel != nil || marker.modelSource != nil {
             score += 0.08
         }
@@ -421,18 +459,6 @@ public final class SpatialReviewModel {
 }
 
 private extension FailureMarkerKind {
-    var spatialReviewLabel: String {
-        switch self {
-        case .confident: "Confident"
-        case .uncertainLocalization: "Uncertain localization"
-        case .blockedPrediction: "Blocked"
-        case .missingTrainingViews: "Missing views"
-        case .visualAmbiguity: "Visual ambiguity"
-        case .badLighting: "Lighting"
-        case .lowTexture: "Low texture"
-        }
-    }
-
     var spatialReviewColor: SIMD3<Double> {
         switch self {
         case .confident: SIMD3<Double>(0.0, 0.82, 0.35)
@@ -445,15 +471,4 @@ private extension FailureMarkerKind {
         }
     }
 
-    var riskWeight: Double {
-        switch self {
-        case .confident: 0.05
-        case .blockedPrediction: 1.0
-        case .uncertainLocalization: 0.86
-        case .missingTrainingViews: 0.78
-        case .visualAmbiguity: 0.72
-        case .badLighting: 0.58
-        case .lowTexture: 0.52
-        }
-    }
 }
