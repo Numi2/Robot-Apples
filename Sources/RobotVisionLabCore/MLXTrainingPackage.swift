@@ -159,6 +159,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
                 return None
             report = json.loads(Path(path).read_text())
             metrics = report.get("metrics", {})
+            specification = report.get("specification", {})
             return {
                 "ray_count": int(metrics.get("rayCount", 0)),
                 "valid_ray_count": int(metrics.get("validRayCount", 0)),
@@ -166,25 +167,63 @@ public struct MLXTrainingPackageBuilder: Sendable {
                 "mean_range_meters": metrics.get("meanRangeMeters"),
                 "mean_intensity": metrics.get("meanIntensity"),
                 "low_support_rate": float(metrics.get("lowSupportRate", 0.0)),
+                "far_range_meters": float(specification.get("farRangeMeters", 20.0)),
+                "rays": report.get("rays", []),
             }
 
         def lidar_features(summary):
             if not summary:
-                return np.zeros((6,), dtype=np.float32)
+                return np.zeros((30,), dtype=np.float32)
             ray_count = max(float(summary.get("ray_count", 0)), 1.0)
             valid_fraction = float(summary.get("valid_ray_count", 0)) / ray_count
             ray_count_scale = min(ray_count / 1024.0, 4.0)
             mean_range = summary.get("mean_range_meters")
-            mean_range_norm = 0.0 if mean_range is None else min(max(float(mean_range) / 20.0, 0.0), 1.0)
+            far_range = max(float(summary.get("far_range_meters", 20.0)), 0.01)
+            mean_range_norm = 0.0 if mean_range is None else min(max(float(mean_range) / far_range, 0.0), 1.0)
             mean_intensity = summary.get("mean_intensity")
-            return np.array([
-                valid_fraction,
-                float(summary.get("dropout_rate", 0.0)),
-                mean_range_norm,
-                0.0 if mean_intensity is None else float(mean_intensity),
-                float(summary.get("low_support_rate", 0.0)),
-                ray_count_scale,
-            ], dtype=np.float32)
+            valid_rays = [ray for ray in summary.get("rays", []) if not ray.get("droppedOut", False) and ray.get("rangeMeters") is not None]
+            world_points = np.asarray([ray["worldPointMeters"] for ray in valid_rays if ray.get("worldPointMeters") is not None], dtype=np.float32)
+            camera_points = np.asarray([ray["cameraPointMeters"] for ray in valid_rays if ray.get("cameraPointMeters") is not None], dtype=np.float32)
+            ranges = np.asarray([ray["rangeMeters"] for ray in valid_rays], dtype=np.float32)
+
+            def point_stats(points):
+                if points.size == 0:
+                    return np.zeros((6,), dtype=np.float32)
+                return np.concatenate([points.mean(axis=0), points.std(axis=0)]).astype(np.float32)
+
+            def camera_bands(points):
+                if points.size == 0:
+                    return np.zeros((6,), dtype=np.float32)
+                left = np.mean(points[:, 0] < -0.35)
+                center = np.mean(np.abs(points[:, 0]) <= 0.35)
+                right = np.mean(points[:, 0] > 0.35)
+                forward = -points[:, 2]
+                near = np.mean(forward < 1.0)
+                mid = np.mean((forward >= 1.0) & (forward < 3.0))
+                far = np.mean(forward >= 3.0)
+                return np.array([left, center, right, near, mid, far], dtype=np.float32)
+
+            def range_stats(values):
+                if values.size == 0:
+                    return np.zeros((6,), dtype=np.float32)
+                percentiles = np.percentile(values, [10, 90]).astype(np.float32)
+                stats = np.array([values.min(), values.max(), values.mean(), values.std(), percentiles[0], percentiles[1]], dtype=np.float32)
+                return np.clip(stats / far_range, 0.0, 1.0)
+
+            return np.concatenate([
+                np.array([
+                    valid_fraction,
+                    float(summary.get("dropout_rate", 0.0)),
+                    mean_range_norm,
+                    0.0 if mean_intensity is None else float(mean_intensity),
+                    float(summary.get("low_support_rate", 0.0)),
+                    ray_count_scale,
+                ], dtype=np.float32),
+                point_stats(world_points),
+                point_stats(camera_points),
+                camera_bands(camera_points),
+                range_stats(ranges),
+            ]).astype(np.float32)
 
         def safe_stats(values, count):
             if values is None:
@@ -276,7 +315,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
             def __init__(self):
                 super().__init__()
                 self.scene = nn.Sequential(
-                    nn.Linear(30, 128),
+                    nn.Linear(54, 128),
                     nn.relu,
                     nn.Linear(128, 64),
                     nn.relu,
@@ -321,7 +360,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
                 "model": "RobotSceneNet",
                 "inputs": ["scene_features"],
                 "outputs": ["free_space_probability", "obstacle_probability", "localization_uncertainty", "failure_kind_score"],
-                "input_size": 30,
+                "input_size": 54,
                 "output_size": 4,
             }, indent=2))
             (output / "training_summary.json").write_text(json.dumps({"samples": len(samples), "epochs": args.epochs}, indent=2))
@@ -348,7 +387,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
             def __init__(self):
                 super().__init__()
                 self.scene = nn.Sequential(
-                    nn.Linear(30, 128),
+                    nn.Linear(54, 128),
                     nn.relu,
                     nn.Linear(128, 64),
                     nn.relu,
@@ -369,7 +408,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
 
             model = RobotSceneNet()
             model.load_weights(str(mlx_output / "robot_scene_net.safetensors"))
-            example = mx.zeros((1, 30), dtype=mx.float32)
+            example = mx.zeros((1, 54), dtype=mx.float32)
             mx.eval(model(example))
 
             params = dict(model.parameters())
@@ -380,7 +419,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
             dense2_w = np.array(params["scene.layers.4.weight"])
             dense2_b = np.array(params["scene.layers.4.bias"])
 
-            @mb.program(input_specs=[mb.TensorSpec(shape=(1, 30), dtype=mb.fp32)])
+            @mb.program(input_specs=[mb.TensorSpec(shape=(1, 54), dtype=mb.fp32)])
             def robot_scene_program(scene_features):
                 x = mb.linear(x=scene_features, weight=dense0_w, bias=dense0_b)
                 x = mb.relu(x=x)
@@ -394,13 +433,13 @@ public struct MLXTrainingPackageBuilder: Sendable {
                     robot_scene_program,
                     source="milinternal",
                     convert_to="mlprogram",
-                    inputs=[ct.TensorType(name="scene_features", shape=(1, 30), dtype=np.float32)],
+                    inputs=[ct.TensorType(name="scene_features", shape=(1, 54), dtype=np.float32)],
                     outputs=[ct.TensorType(name="robot_scene_outputs", dtype=np.float32)],
                     minimum_deployment_target=ct.target.macOS13,
                     compute_units=ct.ComputeUnit.ALL,
                 )
                 mlmodel.short_description = "Robot Scene Studio route evaluation model exported from Apple MLX training."
-                mlmodel.input_description["scene_features"] = "Camera pose, intrinsics, compact rendered RGB/depth/visibility statistics, and synthetic LiDAR scan metrics."
+                mlmodel.input_description["scene_features"] = "Camera pose, intrinsics, rendered RGB/depth/visibility statistics, and synthetic LiDAR geometry/occupancy features."
                 mlmodel.output_description["robot_scene_outputs"] = "free_space, obstacle, localization_uncertainty, failure_kind_score."
                 mlmodel.save(str(coreml_output))
                 print(f"Wrote Core ML model package to {coreml_output}")
@@ -409,7 +448,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
                     "source_weights": str((mlx_output / "robot_scene_net.safetensors").resolve()),
                     "target": str(coreml_output.resolve()),
                     "runtime": "Core ML",
-                    "input": {"name": "scene_features", "shape": [1, 30], "dtype": "float32"},
+                    "input": {"name": "scene_features", "shape": [1, 54], "dtype": "float32"},
                     "outputs": ["robot_scene_outputs"],
                     "coremltools_version": getattr(ct, "__version__", "unknown"),
                     "error": str(error),

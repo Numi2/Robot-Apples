@@ -138,7 +138,7 @@ public final class CoreMLRenderedSampleFeatureProvider: MLFeatureProvider {
         case .visibility:
             return multiArrayValue(sample.visibilityCHW, shape: feature.shape)
         case .renderedFeatures:
-            return multiArrayValue(renderedFeatureVector(sample), shape: feature.shape.isEmpty ? [1, 30] : feature.shape)
+            return multiArrayValue(renderedFeatureVector(sample), shape: feature.shape.isEmpty ? [1, 54] : feature.shape)
         case .cameraPose:
             return multiArrayValue(sample.poseVector, shape: feature.shape.isEmpty ? [1, 7] : feature.shape)
         case .intrinsics:
@@ -209,10 +209,10 @@ public final class CoreMLRenderedSampleFeatureProvider: MLFeatureProvider {
     }
 
     private func lidarFeatures(_ sample: RenderedModelSample) -> [Float] {
-        if sample.lidarFeatureVector.count == 6 {
+        if sample.lidarFeatureVector.count == 30 {
             return sample.lidarFeatureVector
         }
-        return Array(sample.lidarFeatureVector.prefix(6)) + Array(repeating: 0, count: max(0, 6 - sample.lidarFeatureVector.count))
+        return Array(sample.lidarFeatureVector.prefix(30)) + Array(repeating: 0, count: max(0, 30 - sample.lidarFeatureVector.count))
     }
 
     private func multiArrayValue(_ values: [Float], shape: [Int]) -> MLFeatureValue? {

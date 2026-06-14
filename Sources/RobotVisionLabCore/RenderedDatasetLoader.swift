@@ -70,7 +70,7 @@ public struct RenderedDatasetLoader: Sendable {
         let depth = depthURL.flatMap { try? readPGMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
         let visibility = visibilityURL.flatMap { try? readPGMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
         let loadedLiDARFeatures = lidarScanURL.flatMap { try? readLiDARFeatureVector(url: $0) }
-        let lidarFeatures = loadedLiDARFeatures ?? Array(repeating: Float(0), count: 6)
+        let lidarFeatures = loadedLiDARFeatures ?? Array(repeating: Float(0), count: 30)
 
         if rgbURL == nil {
             warnings.append("Frame has no RGB product URL.")
@@ -167,6 +167,14 @@ public struct RenderedDatasetLoader: Sendable {
         let rayCountScale = min(Float(report.metrics.rayCount) / 1024, 4)
         let meanRangeScale = Float(max(report.specification.farRangeMeters, 0.01))
         let meanRange = Float(report.metrics.meanRangeMeters ?? 0) / meanRangeScale
+        let validRays = report.rays.filter { !$0.droppedOut && $0.rangeMeters != nil }
+        let worldPoints = validRays.compactMap(\.worldPointMeters)
+        let cameraPoints = validRays.compactMap(\.cameraPointMeters)
+        let ranges = validRays.compactMap(\.rangeMeters)
+        let worldStats = pointCloudStats(worldPoints)
+        let cameraStats = pointCloudStats(cameraPoints)
+        let bandOccupancy = cameraOccupancyBands(cameraPoints)
+        let rangeStats = scalarStats(ranges, scale: Double(max(report.specification.farRangeMeters, 0.01)))
         return [
             validFraction,
             Float(report.metrics.dropoutRate),
@@ -174,7 +182,58 @@ public struct RenderedDatasetLoader: Sendable {
             Float(report.metrics.meanIntensity ?? 0),
             Float(report.metrics.lowSupportRate),
             rayCountScale
+        ] + worldStats + cameraStats + bandOccupancy + rangeStats
+    }
+
+    private func pointCloudStats(_ points: [SIMD3<Double>]) -> [Float] {
+        guard !points.isEmpty else {
+            return Array(repeating: 0, count: 6)
+        }
+        let count = Double(points.count)
+        let centroid = points.reduce(SIMD3<Double>(repeating: 0), +) / count
+        let variance = points.reduce(SIMD3<Double>(repeating: 0)) { partial, point in
+            let delta = point - centroid
+            return partial + delta * delta
+        } / count
+        return [
+            Float(centroid.x),
+            Float(centroid.y),
+            Float(centroid.z),
+            Float(sqrt(max(variance.x, 0))),
+            Float(sqrt(max(variance.y, 0))),
+            Float(sqrt(max(variance.z, 0)))
         ]
+    }
+
+    private func cameraOccupancyBands(_ points: [SIMD3<Double>]) -> [Float] {
+        guard !points.isEmpty else {
+            return Array(repeating: 0, count: 6)
+        }
+        let count = Float(points.count)
+        let left = Float(points.filter { $0.x < -0.35 }.count) / count
+        let center = Float(points.filter { abs($0.x) <= 0.35 }.count) / count
+        let right = Float(points.filter { $0.x > 0.35 }.count) / count
+        let near = Float(points.filter { -$0.z < 1.0 }.count) / count
+        let mid = Float(points.filter { -$0.z >= 1.0 && -$0.z < 3.0 }.count) / count
+        let far = Float(points.filter { -$0.z >= 3.0 }.count) / count
+        return [left, center, right, near, mid, far]
+    }
+
+    private func scalarStats(_ values: [Double], scale: Double) -> [Float] {
+        guard !values.isEmpty else {
+            return Array(repeating: 0, count: 6)
+        }
+        let sorted = values.sorted()
+        let mean = values.reduce(0, +) / Double(values.count)
+        let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count)
+        let minValue = sorted.first ?? 0
+        let maxValue = sorted.last ?? 0
+        let p10 = sorted[Int((Double(sorted.count - 1) * 0.10).rounded())]
+        let p90 = sorted[Int((Double(sorted.count - 1) * 0.90).rounded())]
+        let denominator = max(scale, 0.01)
+        return [minValue, maxValue, mean, sqrt(max(variance, 0)), p10, p90].map {
+            Float(min(max($0 / denominator, 0), 1))
+        }
     }
 
     private func parsePNM(
