@@ -63,7 +63,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
             sampleCount: manifest.frames.count,
             notes: [
                 "Runs locally on Apple Silicon with MLX unified memory and automatic differentiation.",
-                "Loads rendered RGB/depth/visibility plus pose/intrinsics and fused scene features from dataset.json through robot_scene_dataset.py.",
+                "Loads rendered RGB/metric-depth/visibility plus pose/intrinsics and fused scene features from \(datasetManifestURL.lastPathComponent) through robot_scene_dataset.py.",
                 "Exports deployment artifacts through Apple's Core ML Tools conversion path for Core ML app integration."
             ]
         )

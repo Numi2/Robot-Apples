@@ -417,6 +417,13 @@ private struct AppleSiliconControlPanel: View {
                 .disabled(model.state.frameCount == 0 || model.state.activeSplatURL == nil)
 
                 Button {
+                    model.augmentRenderedDataset()
+                } label: {
+                    Label("Augment Robot Dataset", systemImage: "camera.filters")
+                }
+                .disabled(model.state.frameCount == 0)
+
+                Button {
                     model.planTraining()
                 } label: {
                     Label("Plan MLX Training", systemImage: "brain")

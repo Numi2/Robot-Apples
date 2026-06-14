@@ -75,6 +75,9 @@ The required iPhone capture output is a `.robotcapture` package containing:
   LOD decimation, streaming chunks, and render timing reports.
 - Training-ready dataset augmentation that writes `dataset_augmented.json` with
   augmented RGB products and pose labels plus a native product readiness report.
+- Mac and CLI MLX package generation prefer `dataset_augmented.json` when it is
+  present and ready, so Apple Silicon training consumes the robot-camera
+  degradation set rather than only the clean render path.
 - Apple Silicon ML package generation for MLX training and Core ML export.
 - Core ML evaluation, failure-map calibration, and model comparison reports.
 - `.robotscene` export for Vision Pro review.

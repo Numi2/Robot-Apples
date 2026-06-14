@@ -736,8 +736,8 @@ public final class WorkstationModel {
 
     public func writeMLXTrainingPackage() {
         perform(stage: .planningTraining) {
-            let manifest = try ensureDatasetManifest()
-            let manifestURL = state.workspaceURL.appendingPathComponent("dataset.json")
+            let manifest = try trainingDatasetManifest()
+            let manifestURL = datasetManifestURL(for: manifest)
             if !FileManager.default.fileExists(atPath: manifestURL.path) {
                 try JSONEncoder.robotVisionLabEncoder.encode(manifest).write(to: manifestURL)
             }
@@ -757,6 +757,35 @@ public final class WorkstationModel {
             appendArtifact(title: "MLX Training Package", url: package.trainScriptURL.deletingLastPathComponent(), kind: "mlx-training")
             appendArtifact(title: "MLX Dataset Loader", url: package.datasetLoaderURL, kind: "mlx-loader")
             appendArtifact(title: "Core ML Export Script", url: package.exportScriptURL, kind: "coreml-export")
+        }
+    }
+
+    public func augmentRenderedDataset(seed: UInt64 = 0) {
+        perform(stage: .buildingDataset) {
+            let manifest = try ensureDatasetManifest()
+            let report = try DatasetAugmentor().augmentPPMImagesAndPoseLabels(
+                manifest: manifest,
+                datasetDirectory: state.workspaceURL,
+                seed: seed
+            )
+            let reportURL = state.workspaceURL.appendingPathComponent("augmentation_report.json")
+            try DatasetAugmentor().writeReport(report, to: reportURL)
+            let augmentedManifest = try JSONDecoder.robotVisionLabDecoder.decode(
+                DatasetManifest.self,
+                from: Data(contentsOf: report.augmentedManifestURL)
+            )
+            let readiness = NativeRenderProductValidator().validate(augmentedManifest)
+            let readinessURL = state.workspaceURL.appendingPathComponent("native_render_product_readiness_augmented.json")
+            try JSONEncoder.robotVisionLabEncoder.encode(readiness).write(to: readinessURL)
+            appendArtifact(title: "Augmented Dataset Manifest", url: report.augmentedManifestURL, kind: "dataset-augmented")
+            appendArtifact(title: "Augmentation Report", url: reportURL, kind: "dataset-augmentation")
+            appendArtifact(title: "Augmented Product Readiness", url: readinessURL, kind: "render-readiness")
+            appendArtifact(title: "Augmented RGB Frames", url: state.workspaceURL.appendingPathComponent("rgb_augmented", isDirectory: true), kind: "rgb-augmented")
+            appendArtifact(title: "Augmented Pose Labels", url: state.workspaceURL.appendingPathComponent("pose_augmented", isDirectory: true), kind: "pose-augmented")
+            appendDiagnostic("Augmented dataset ready: \(report.augmentedFrameCount) frames, \(report.imageOutputs.count) RGB images, \(report.poseOutputs.count) pose labels.")
+            if !readiness.isReady {
+                throw WorkstationError.nativeRenderProductsNotReady(readinessURL)
+            }
         }
     }
 
@@ -893,6 +922,14 @@ public final class WorkstationModel {
             cameraRig: cameraRig,
             path: route,
             requestedProducts: [.rgb, .depth, .visibility, .pose, .segmentation, .obstacleMask, .lidarScan, .failureLabels, .navigationTarget],
+            augmentations: [
+                .exposureEV(-0.5),
+                .gaussianNoise(sigma: 0.015),
+                .motionBlur(samples: 5, shutterSeconds: 1.0 / 60.0),
+                .compressionJPEG(quality: 0.82),
+                .cameraHeightJitterMeters(0.03),
+                .yawJitterDegrees(2.0)
+            ],
             labelSources: labelSourcesForDataset(scene: scene)
         )
         return DatasetGenerator().makeManifest(recipe: recipe, outputDirectory: state.workspaceURL)
@@ -943,6 +980,22 @@ public final class WorkstationModel {
         let manifest = try makeDatasetManifest()
         datasetManifest = manifest
         return manifest
+    }
+
+    private func trainingDatasetManifest() throws -> DatasetManifest {
+        let augmentedURL = state.workspaceURL.appendingPathComponent("dataset_augmented.json")
+        guard FileManager.default.fileExists(atPath: augmentedURL.path) else {
+            return try ensureDatasetManifest()
+        }
+        return try JSONDecoder.robotVisionLabDecoder.decode(DatasetManifest.self, from: Data(contentsOf: augmentedURL))
+    }
+
+    private func datasetManifestURL(for manifest: DatasetManifest) -> URL {
+        let augmentedURL = state.workspaceURL.appendingPathComponent("dataset_augmented.json")
+        if manifest.recipeID.hasSuffix("-augmented"), FileManager.default.fileExists(atPath: augmentedURL.path) {
+            return augmentedURL
+        }
+        return state.workspaceURL.appendingPathComponent("dataset.json")
     }
 
     private func makeScene(route: RobotPath) throws -> GaussianSplatScene {

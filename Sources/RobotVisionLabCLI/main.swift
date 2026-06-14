@@ -174,7 +174,7 @@ struct RobotVisionLabCLI {
             print("Aligned capture route to scene coordinates with \(aligned.report.alignedKeyframeCount) keyframes")
         }
         if CommandLine.arguments.contains("--write-mlx-training-package") {
-            try writeMLXTrainingPackage(manifest: manifest, outputDirectory: outputDirectory)
+            try writeMLXTrainingPackage(manifest: trainingManifest(outputDirectory: outputDirectory, fallback: manifest), outputDirectory: outputDirectory)
         }
         if CommandLine.arguments.contains("--evaluate-baseline") {
             throw SplatTrainingCLIError.missingRequiredInput("--evaluate-baseline was removed. Evaluate a real Apple-native model with --evaluate-coreml --evaluate-model <Model.mlpackage>, or write an MLX evaluation plan with --plan-mlx-evaluation.")
@@ -696,7 +696,7 @@ struct RobotVisionLabCLI {
     }
 
     private static func writeMLXTrainingPackage(manifest: DatasetManifest, outputDirectory: URL) throws {
-        let datasetManifestURL = outputDirectory.appendingPathComponent("dataset.json")
+        let datasetManifestURL = datasetManifestURL(for: manifest, outputDirectory: outputDirectory)
         let packageDirectory = outputDirectory.appendingPathComponent("MLXTrainingPackage", isDirectory: true)
         let readiness = NativeRenderProductValidator().validate(manifest)
         let readinessURL = outputDirectory.appendingPathComponent("native_render_product_readiness.json")
@@ -714,6 +714,23 @@ struct RobotVisionLabCLI {
         print("Dataset loader: \(package.datasetLoaderURL.path)")
         print("Training script: \(package.trainScriptURL.path)")
         print("Core ML export script: \(package.exportScriptURL.path)")
+    }
+
+    private static func trainingManifest(outputDirectory: URL, fallback manifest: DatasetManifest) throws -> DatasetManifest {
+        let augmentedURL = outputDirectory.appendingPathComponent("dataset_augmented.json")
+        guard CommandLine.arguments.contains("--augment-dataset"),
+              FileManager.default.fileExists(atPath: augmentedURL.path) else {
+            return manifest
+        }
+        return try JSONDecoder.robotVisionLabDecoder.decode(DatasetManifest.self, from: Data(contentsOf: augmentedURL))
+    }
+
+    private static func datasetManifestURL(for manifest: DatasetManifest, outputDirectory: URL) -> URL {
+        let augmentedURL = outputDirectory.appendingPathComponent("dataset_augmented.json")
+        if manifest.recipeID.hasSuffix("-augmented"), FileManager.default.fileExists(atPath: augmentedURL.path) {
+            return augmentedURL
+        }
+        return outputDirectory.appendingPathComponent("dataset.json")
     }
 
     private static func runSplatTraining(
