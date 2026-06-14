@@ -71,6 +71,9 @@ public struct WorkstationControlPanel: View {
     @Bindable var model: WorkstationModel
     @Binding var isImportingCapture: Bool
     @Binding var isImportingSplat: Bool
+    @State private var metalTileSize = 16
+    @State private var metalMaxSplats = ""
+    @State private var metalStreamingChunkSplats = ""
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -121,8 +124,22 @@ public struct WorkstationControlPanel: View {
                     }
                     .disabled(model.state.frameCount == 0)
 
+                    Stepper(value: $metalTileSize, in: 4...64, step: 4) {
+                        Label("Tile \(metalTileSize)", systemImage: "square.grid.3x3")
+                    }
+
+                    TextField("Max splats", text: $metalMaxSplats)
+                        .textFieldStyle(.roundedBorder)
+
+                    TextField("Streaming chunk", text: $metalStreamingChunkSplats)
+                        .textFieldStyle(.roundedBorder)
+
                     Button {
-                        model.renderMetalSplats()
+                        model.renderMetalSplats(
+                            tileSize: metalTileSize,
+                            maxSplatsPerFrame: optionalPositiveInt(metalMaxSplats),
+                            streamingChunkSplatCount: optionalPositiveInt(metalStreamingChunkSplats)
+                        )
                     } label: {
                         Label("Render Metal Splats", systemImage: "rectangle.stack.badge.play")
                     }
@@ -159,6 +176,14 @@ public struct WorkstationControlPanel: View {
         }
         .padding()
         .frame(minWidth: 300, idealWidth: 340, maxWidth: 420)
+    }
+
+    private func optionalPositiveInt(_ text: String) -> Int? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let value = Int(trimmed), value > 0 else {
+            return nil
+        }
+        return value
     }
 }
 

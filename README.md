@@ -97,7 +97,7 @@ developer tool for exercising the native contracts.
   receipt reporting.
 - `RobotSceneStudioMacApp`: native SwiftUI Mac workstation shell with
   `NavigationSplitView`, package import controls, pipeline actions, diagnostics,
-  artifact browsing, and `.robotscene` export.
+  artifact browsing, Metal renderer budget controls, and `.robotscene` export.
 - `WorkstationModel`: Observation-backed Mac workstation controller that imports
   captures, prepares routes, links splats, builds dataset manifests, plans Metal
   rendering, runs the native Metal splat renderer, records RGB/depth/visibility

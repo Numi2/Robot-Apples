@@ -176,7 +176,11 @@ public final class WorkstationModel {
         }
     }
 
-    public func renderMetalSplats(tileSize: Int = 16, maxSplatsPerFrame: Int? = nil) {
+    public func renderMetalSplats(
+        tileSize: Int = 16,
+        maxSplatsPerFrame: Int? = nil,
+        streamingChunkSplatCount: Int? = nil
+    ) {
         perform(stage: .renderingMetalSplats) {
             guard state.activeSplatURL != nil else {
                 throw WorkstationError.missingSplat
@@ -185,7 +189,8 @@ public final class WorkstationModel {
             let renderer = try MetalGaussianSplatRenderer(
                 configuration: MetalGaussianSplatRenderConfiguration(
                     tileSize: tileSize,
-                    maxSplatsPerFrame: maxSplatsPerFrame
+                    maxSplatsPerFrame: maxSplatsPerFrame,
+                    streamingChunkSplatCount: streamingChunkSplatCount
                 )
             )
             let report = try renderer.renderDataset(manifest, outputDirectory: state.workspaceURL)
