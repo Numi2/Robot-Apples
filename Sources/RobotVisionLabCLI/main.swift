@@ -2,6 +2,10 @@ import Foundation
 import RobotVisionLabCore
 import simd
 
+enum SplatTrainingCLIError: Error {
+    case missingPreparedManifest(URL)
+}
+
 struct RobotVisionLabCLI {
     static func main() throws {
         let outputDirectory = parseOutputDirectory()
@@ -22,37 +26,9 @@ struct RobotVisionLabCLI {
             try renderSplatPointFrames(manifest: manifest, outputDirectory: outputDirectory)
             print("Rendered splat point-projection RGB artifacts")
         }
-        if CommandLine.arguments.contains("--render-splat-external-dry-run") || parseSplatRendererCommand() != nil {
-            let manifestURL = outputDirectory.appendingPathComponent("dataset.json")
-            let renderJob = externalSplatRenderJob(outputDirectory: outputDirectory, manifestURL: manifestURL)
-            let report: ExternalSplatRenderReport
-            if let command = parseSplatRendererCommand() {
-                let externalJob = ExternalSplatRenderJob(
-                    id: renderJob.id,
-                    datasetManifestURL: renderJob.datasetManifestURL,
-                    outputDirectory: renderJob.outputDirectory,
-                    renderer: ExternalSplatRendererReference(
-                        name: command.lastPathComponent,
-                        executableURL: command,
-                        arguments: parseSplatRendererArguments(manifestURL: manifestURL, outputDirectory: outputDirectory)
-                    )
-                )
-                report = try ExternalSplatRenderRunner().run(
-                    job: externalJob,
-                    environment: [
-                        "ROBOT_DATASET_MANIFEST": manifestURL.path,
-                        "ROBOT_RENDER_OUTPUT": outputDirectory.path
-                    ]
-                )
-            } else {
-                report = ExternalSplatRenderReportBuilder().plannedReport(
-                    job: renderJob,
-                    generatedAt: Date(timeIntervalSince1970: 1_800_000_000)
-                )
-            }
-            let reportURL = outputDirectory.appendingPathComponent("external_splat_render_report.json")
-            try ExternalSplatRenderReportWriter().write(report, to: reportURL)
-            print("Wrote external splat render report to \(reportURL.path)")
+        if CommandLine.arguments.contains("--render-metal-splats") {
+            try renderMetalSplatFrames(manifest: manifest, outputDirectory: outputDirectory)
+            print("Rendered native Metal Gaussian splat artifacts")
         }
         if CommandLine.arguments.contains("--augment-dataset") {
             let report = try DatasetAugmentor().augmentPPMImagesAndPoseLabels(
@@ -111,40 +87,22 @@ struct RobotVisionLabCLI {
             let aligned = try alignCaptureRouteIfRequested(recipe: recipe, outputDirectory: outputDirectory)
             print("Aligned capture route to scene coordinates with \(aligned.report.alignedKeyframeCount) keyframes")
         }
-        if CommandLine.arguments.contains("--train-splat-dry-run") || parseTrainerCommand() != nil {
+        if CommandLine.arguments.contains("--plan-splat-training") {
             let reportURL = outputDirectory.appendingPathComponent("splat_training_report.json")
             let manifestURL = try parseSplatTrainingManifestURL(outputDirectory: outputDirectory)
             let job = try splatTrainingJob(outputDirectory: outputDirectory, manifestURL: manifestURL)
-            let report: SplatTrainingReport
-            if let command = parseTrainerCommand() {
-                let externalJob = SplatTrainingJob(
-                    id: job.id,
-                    manifest: job.manifest,
-                    trainer: SplatTrainerReference(
-                        name: command.lastPathComponent,
-                        executableURL: command,
-                        arguments: parseTrainerArguments(manifestURL: manifestURL, outputURL: job.manifest.expectedOutput.targetURL)
-                    ),
-                    mode: .externalProcess
-                )
-                report = try ExternalSplatTrainerRunner().run(
-                    job: externalJob,
-                    environment: [
-                        "ROBOT_SPLAT_MANIFEST": manifestURL.path,
-                        "ROBOT_SPLAT_OUTPUT": job.manifest.expectedOutput.targetURL.path
-                    ]
-                )
-            } else {
-                report = SplatTrainingReportBuilder().dryRunReport(
-                    job: job,
-                    generatedAt: Date(timeIntervalSince1970: 1_800_000_000)
-                )
-            }
+            let report = SplatTrainingReportBuilder().dryRunReport(
+                job: job,
+                generatedAt: Date(timeIntervalSince1970: 1_800_000_000)
+            )
             try SplatTrainingReportWriter().write(report, to: reportURL)
             print("Using splat training manifest \(manifestURL.path)")
-            print("Wrote splat training report to \(reportURL.path)")
+            print("Wrote Apple-native splat training plan to \(reportURL.path)")
         }
-        if CommandLine.arguments.contains("--evaluate-baseline") || CommandLine.arguments.contains("--evaluate-coreml") || parseMLXEvaluationCommand() != nil {
+        if CommandLine.arguments.contains("--write-model-adapter-schemas") {
+            try writeModelAdapterSchemas(outputDirectory: outputDirectory)
+        }
+        if CommandLine.arguments.contains("--evaluate-baseline") || CommandLine.arguments.contains("--evaluate-coreml") || CommandLine.arguments.contains("--plan-mlx-evaluation") {
             try runModelEvaluation(manifest: manifest, outputDirectory: outputDirectory)
         }
         if CommandLine.arguments.contains("--export-robotscene") {
@@ -392,60 +350,6 @@ struct RobotVisionLabCLI {
         )
     }
 
-    private static func parseTrainerCommand() -> URL? {
-        let args = CommandLine.arguments
-        guard let index = args.firstIndex(of: "--trainer-command"), args.indices.contains(index + 1) else {
-            return nil
-        }
-        return URL(fileURLWithPath: args[index + 1])
-    }
-
-    private static func parseSplatRendererCommand() -> URL? {
-        stringValue(for: "--splat-renderer-command").map { URL(fileURLWithPath: $0) }
-    }
-
-    private static func parseMLXEvaluationCommand() -> URL? {
-        stringValue(for: "--evaluate-mlx-command").map { URL(fileURLWithPath: $0) }
-    }
-
-    private static func parseSplatRendererArguments(manifestURL: URL, outputDirectory: URL) -> [String] {
-        guard let rawArguments = stringValue(for: "--splat-renderer-args") else {
-            return ["--manifest", manifestURL.path, "--output", outputDirectory.path]
-        }
-        return rawArguments.split(separator: " ").map {
-            String($0)
-                .replacingOccurrences(of: "{manifest}", with: manifestURL.path)
-                .replacingOccurrences(of: "{output}", with: outputDirectory.path)
-        }
-    }
-
-    private static func parseMLXEvaluationArguments(manifestURL: URL, outputReportURL: URL, modelURL: URL?) -> [String] {
-        guard let rawArguments = stringValue(for: "--evaluate-mlx-args") else {
-            var args = ["--manifest", manifestURL.path, "--output", outputReportURL.path]
-            if let modelURL {
-                args.append(contentsOf: ["--model", modelURL.path])
-            }
-            return args
-        }
-        return rawArguments.split(separator: " ").map {
-            String($0)
-                .replacingOccurrences(of: "{manifest}", with: manifestURL.path)
-                .replacingOccurrences(of: "{output}", with: outputReportURL.path)
-                .replacingOccurrences(of: "{model}", with: modelURL?.path ?? "")
-        }
-    }
-
-    private static func parseTrainerArguments(manifestURL: URL, outputURL: URL) -> [String] {
-        guard let rawArguments = stringValue(for: "--trainer-args") else {
-            return ["--manifest", manifestURL.path, "--output", outputURL.path]
-        }
-        return rawArguments.split(separator: " ").map {
-            String($0)
-                .replacingOccurrences(of: "{manifest}", with: manifestURL.path)
-                .replacingOccurrences(of: "{output}", with: outputURL.path)
-        }
-    }
-
     private static func parseAugmentationSeed() -> UInt64 {
         uint64Value(for: "--augmentation-seed", default: 0)
     }
@@ -483,11 +387,8 @@ struct RobotVisionLabCLI {
         let datasetManifestURL = outputDirectory.appendingPathComponent("dataset.json")
         let tasks: Set<VisionTask> = [.navigationTargetDetection, .obstacleDetection, .segmentation, .failureCaseDetection]
 
-        if let mlxCommand = parseMLXEvaluationCommand() {
-            let outputReportURL = outputDirectory.appendingPathComponent("evaluation_report.json")
-            if FileManager.default.fileExists(atPath: outputReportURL.path) {
-                try FileManager.default.removeItem(at: outputReportURL)
-            }
+        if CommandLine.arguments.contains("--plan-mlx-evaluation") {
+            let expectedReportURL = outputDirectory.appendingPathComponent("evaluation_report.json")
             let modelURL = stringValue(for: "--evaluate-model").map { URL(fileURLWithPath: $0) }
             let request = ModelEvaluationRequest(
                 id: "mlx-evaluation",
@@ -495,24 +396,19 @@ struct RobotVisionLabCLI {
                 datasetManifestURL: datasetManifestURL,
                 tasks: tasks
             )
-            let job = MLXEvaluationJob(
+            let plan = MLXEvaluationPlan(
                 request: request,
                 datasetManifestURL: datasetManifestURL,
-                outputReportURL: outputReportURL,
-                executableURL: mlxCommand,
-                arguments: parseMLXEvaluationArguments(manifestURL: datasetManifestURL, outputReportURL: outputReportURL, modelURL: modelURL)
-            )
-            let processReport = try MLXEvaluationRunner().run(
-                job: job,
-                environment: [
-                    "ROBOT_DATASET_MANIFEST": datasetManifestURL.path,
-                    "ROBOT_EVALUATION_REPORT": outputReportURL.path,
-                    "ROBOT_MODEL": modelURL?.path ?? ""
+                expectedReportURL: expectedReportURL,
+                notes: [
+                    "Use Apple MLX on Apple Silicon for research and fine-tuning.",
+                    "Promote deployment models through Core ML/Core AI app integration.",
+                    "The product evaluates through Apple-native app integrations."
                 ]
             )
-            let processReportURL = outputDirectory.appendingPathComponent("mlx_evaluation_process_report.json")
-            try MLXEvaluationProcessReportWriter().write(processReport, to: processReportURL)
-            print("Wrote MLX evaluation process report to \(processReportURL.path)")
+            let planURL = outputDirectory.appendingPathComponent("mlx_evaluation_plan.json")
+            try MLXEvaluationPlanWriter().write(plan, to: planURL)
+            print("Wrote Apple MLX evaluation plan to \(planURL.path)")
             return
         }
 
@@ -548,6 +444,24 @@ struct RobotVisionLabCLI {
         print("Wrote evaluation report to \(reportURL.path)")
     }
 
+    private static func writeModelAdapterSchemas(outputDirectory: URL) throws {
+        let schemaDirectory = outputDirectory.appendingPathComponent("ModelSchemas", isDirectory: true)
+        let writer = NativeModelAdapterSchemaWriter()
+        try writer.write(
+            .defaultCoreMLVisionSchema(),
+            to: schemaDirectory.appendingPathComponent("coreml_robot_vision_schema.json")
+        )
+        try writer.write(
+            .defaultMLXTrainingSchema(),
+            to: schemaDirectory.appendingPathComponent("mlx_robot_vision_training_schema.json")
+        )
+        if let modelURL = stringValue(for: "--evaluate-model").map({ URL(fileURLWithPath: $0) }) {
+            let inspected = try CoreMLModelSchemaInspector().inspect(modelURL: modelURL)
+            try writer.write(inspected, to: schemaDirectory.appendingPathComponent("inspected_coreml_schema.json"))
+        }
+        print("Wrote native model adapter schemas to \(schemaDirectory.path)")
+    }
+
     private static func renderSplatPointFrames(manifest: DatasetManifest, outputDirectory: URL) throws {
         let renderer = SplatPointProjectionRenderer()
         for frame in manifest.frames {
@@ -560,13 +474,12 @@ struct RobotVisionLabCLI {
         }
     }
 
-    private static func externalSplatRenderJob(outputDirectory: URL, manifestURL: URL) -> ExternalSplatRenderJob {
-        ExternalSplatRenderJob(
-            id: "external-splat-render-\(manifestURL.deletingPathExtension().lastPathComponent)",
-            datasetManifestURL: manifestURL,
-            outputDirectory: outputDirectory,
-            renderer: ExternalSplatRendererReference(name: "external-gaussian-splat-renderer")
-        )
+    private static func renderMetalSplatFrames(manifest: DatasetManifest, outputDirectory: URL) throws {
+        let renderer = try MetalGaussianSplatRenderer()
+        let report = try renderer.renderDataset(manifest, outputDirectory: outputDirectory)
+        let reportURL = outputDirectory.appendingPathComponent("metal_splat_render_report.json")
+        try MetalSplatRenderReportWriter().write(report, to: reportURL)
+        print("Wrote Metal splat render report to \(reportURL.path)")
     }
 
     private static func parseSplatTrainingManifestURL(outputDirectory: URL) throws -> URL {
@@ -592,8 +505,8 @@ struct RobotVisionLabCLI {
         return SplatTrainingJob(
             id: "\(manifest.id)-job",
             manifest: manifest,
-            trainer: SplatTrainerReference(name: "external-gaussian-splat-trainer"),
-            mode: .dryRun
+            backend: AppleNativeTrainingBackend(),
+            mode: .planning
         )
     }
 

@@ -3,37 +3,47 @@ import Foundation
 public struct SplatTrainingJob: Codable, Equatable, Sendable {
     public var id: String
     public var manifest: SplatTrainingManifest
-    public var trainer: SplatTrainerReference
+    public var backend: AppleNativeTrainingBackend
     public var mode: SplatTrainingMode
 
     public init(
         id: String,
         manifest: SplatTrainingManifest,
-        trainer: SplatTrainerReference,
+        backend: AppleNativeTrainingBackend,
         mode: SplatTrainingMode
     ) {
         self.id = id
         self.manifest = manifest
-        self.trainer = trainer
+        self.backend = backend
         self.mode = mode
     }
 }
 
-public struct SplatTrainerReference: Codable, Equatable, Sendable {
+public struct AppleNativeTrainingBackend: Codable, Equatable, Sendable {
     public var name: String
-    public var executableURL: URL?
-    public var arguments: [String]
+    public var framework: AppleTrainingFramework
+    public var deploymentTarget: LocalModelRuntime
 
-    public init(name: String, executableURL: URL? = nil, arguments: [String] = []) {
+    public init(
+        name: String = "Apple Silicon Gaussian Splat Trainer",
+        framework: AppleTrainingFramework = .mlx,
+        deploymentTarget: LocalModelRuntime = .coreML
+    ) {
         self.name = name
-        self.executableURL = executableURL
-        self.arguments = arguments
+        self.framework = framework
+        self.deploymentTarget = deploymentTarget
     }
 }
 
+public enum AppleTrainingFramework: String, Codable, Sendable {
+    case mlx
+    case createML
+    case metalPerformanceShaders
+}
+
 public enum SplatTrainingMode: String, Codable, Sendable {
-    case dryRun
-    case externalProcess
+    case planning
+    case nativeAppleSilicon
 }
 
 public enum SplatTrainingStatus: String, Codable, Sendable {
@@ -98,7 +108,7 @@ public struct SplatTrainingReportBuilder: Sendable {
             status: .planned,
             startedAt: generatedAt,
             finishedAt: generatedAt,
-            standardOutput: "Dry run: \(job.manifest.imageFrames.count) RGB frames prepared for Gaussian Splat training."
+            standardOutput: "Plan: \(job.manifest.imageFrames.count) RGB frames prepared for Apple-native Gaussian Splat training on \(job.backend.framework.rawValue)."
         )
     }
 

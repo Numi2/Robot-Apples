@@ -72,12 +72,20 @@ public struct VisionPrediction: Codable, Equatable, Sendable {
     public var label: String
     public var confidence: Double
     public var source: String
+    public var failureKind: FailureMarkerKind?
 
-    public init(task: VisionTask, label: String, confidence: Double, source: String) {
+    public init(
+        task: VisionTask,
+        label: String,
+        confidence: Double,
+        source: String,
+        failureKind: FailureMarkerKind? = nil
+    ) {
         self.task = task
         self.label = label
         self.confidence = confidence
         self.source = source
+        self.failureKind = failureKind
     }
 }
 
@@ -156,7 +164,8 @@ public struct BaselineDatasetEvaluator: Sendable {
                 task: .failureCaseDetection,
                 label: degraded ? "degraded_camera_frame" : "nominal",
                 confidence: degraded ? 0.8 : 0.4,
-                source: "augmentation_metadata"
+                source: "augmentation_metadata",
+                failureKind: degraded ? .badLighting : nil
             ))
         }
 
@@ -231,53 +240,34 @@ public struct CoreMLDatasetEvaluator: Sendable {
 }
 #endif
 
-public struct MLXEvaluationJob: Codable, Equatable, Sendable {
+public struct MLXEvaluationPlan: Codable, Equatable, Sendable {
     public var request: ModelEvaluationRequest
     public var datasetManifestURL: URL
-    public var outputReportURL: URL
-    public var executableURL: URL
-    public var arguments: [String]
+    public var expectedReportURL: URL
+    public var notes: [String]
 
     public init(
         request: ModelEvaluationRequest,
         datasetManifestURL: URL,
-        outputReportURL: URL,
-        executableURL: URL,
-        arguments: [String]
+        expectedReportURL: URL,
+        notes: [String] = []
     ) {
         self.request = request
         self.datasetManifestURL = datasetManifestURL
-        self.outputReportURL = outputReportURL
-        self.executableURL = executableURL
-        self.arguments = arguments
+        self.expectedReportURL = expectedReportURL
+        self.notes = notes
     }
 }
 
-public struct MLXEvaluationProcessReport: Codable, Equatable, Sendable {
-    public var job: MLXEvaluationJob
-    public var startedAt: Date
-    public var finishedAt: Date
-    public var exitCode: Int32
-    public var standardOutput: String
-    public var standardError: String
-    public var producedReportURL: URL?
+public struct MLXEvaluationPlanWriter: Sendable {
+    public init() {}
 
-    public init(
-        job: MLXEvaluationJob,
-        startedAt: Date,
-        finishedAt: Date,
-        exitCode: Int32,
-        standardOutput: String,
-        standardError: String,
-        producedReportURL: URL? = nil
-    ) {
-        self.job = job
-        self.startedAt = startedAt
-        self.finishedAt = finishedAt
-        self.exitCode = exitCode
-        self.standardOutput = standardOutput
-        self.standardError = standardError
-        self.producedReportURL = producedReportURL
+    public func write(_ plan: MLXEvaluationPlan, to outputURL: URL) throws {
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder.robotVisionLabEncoder.encode(plan).write(to: outputURL)
     }
 }
 

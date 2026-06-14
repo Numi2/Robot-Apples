@@ -291,6 +291,13 @@ public struct RobotScenePackageExporter: Sendable {
         if hasLightingOrImageDegradation(frame) {
             append(.badLighting, confidence: 0.72, note: "Camera augmentation includes exposure, blur, noise, or compression degradation.")
         }
+        for prediction in failurePredictions(evaluation) {
+            append(
+                prediction.kind,
+                confidence: prediction.confidence,
+                note: "Model prediction \(prediction.label) from \(prediction.source)."
+            )
+        }
         if isNearSceneBoundary(frame.cameraPose.position, bounds: manifest.scene.bounds) || predictsBlocked(evaluation) {
             append(.blockedPrediction, confidence: predictsBlocked(evaluation) ? 0.82 : 0.62, note: "Frame is near scene boundary or model/evaluator indicates blocked traversal.")
         }
@@ -344,6 +351,37 @@ public struct RobotScenePackageExporter: Sendable {
     private func hasLowConfidencePrediction(_ evaluation: FrameEvaluationResult?) -> Bool {
         guard let evaluation else { return false }
         return !evaluation.warnings.isEmpty || evaluation.predictions.contains { $0.confidence < 0.55 }
+    }
+
+    private func failurePredictions(_ evaluation: FrameEvaluationResult?) -> [(kind: FailureMarkerKind, confidence: Double, label: String, source: String)] {
+        evaluation?.predictions.compactMap { prediction in
+            let kind = prediction.failureKind ?? failureKind(from: prediction.label)
+            guard let kind, kind != .confident else { return nil }
+            return (kind, prediction.confidence, prediction.label, prediction.source)
+        } ?? []
+    }
+
+    private func failureKind(from label: String) -> FailureMarkerKind? {
+        let normalized = label.lowercased()
+        if normalized.contains("blocked") || normalized.contains("collision") || normalized.contains("obstacle") {
+            return .blockedPrediction
+        }
+        if normalized.contains("uncertain") || normalized.contains("localization") {
+            return .uncertainLocalization
+        }
+        if normalized.contains("missing") || normalized.contains("view") {
+            return .missingTrainingViews
+        }
+        if normalized.contains("ambiguous") || normalized.contains("repeat") {
+            return .visualAmbiguity
+        }
+        if normalized.contains("texture") {
+            return .lowTexture
+        }
+        if normalized.contains("lighting") || normalized.contains("blur") || normalized.contains("exposure") {
+            return .badLighting
+        }
+        return nil
     }
 
     private func hasMissingTrainingView(_ frame: DatasetFrame, allPositions: [SIMD3<Double>]) -> Bool {
