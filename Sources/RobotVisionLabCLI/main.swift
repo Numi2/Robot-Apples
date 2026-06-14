@@ -415,6 +415,9 @@ struct RobotVisionLabCLI {
         print("Resolved splat: \(splatURL.path)")
         print("Frames \(summary.frameCount), route poses \(summary.routePoseCount), failures \(summary.failureMarkerCount)")
         print("Layers: \(summary.availableLayers.map(\.rawValue).sorted().joined(separator: ", "))")
+        if let overlay = model.state.overlay {
+            print("Overlay route \(overlay.route.count), frustums \(overlay.cameraFrustums.count), graph nodes \(overlay.navigationNodes.count), graph edges \(overlay.navigationEdges.count), markers \(overlay.failureMarkers.count)")
+        }
     }
 
     private static func captureRouteIfRequested(target: NavigationTarget) throws -> RobotPath? {
