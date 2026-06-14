@@ -163,8 +163,9 @@ developer tool for exercising the native contracts.
    - Export `.robotscene`.
 
 5. Deepen the native Metal Gaussian splat renderer.
-   - Move tile binning/sorting from CPU preparation into Metal compute passes.
-   - Use covariance ellipse orientation in fragment weighting, not just radius.
+   - GPU projection and tile-reference counting are in place.
+   - Move prefix-sum, compaction, and per-tile sort into Metal compute passes.
+   - Match compute covariance projection exactly to the CPU camera-Jacobian path.
    - Add compute-pass depth and visibility textures instead of JSON summaries.
    - Add tile-based memory and large-scene streaming.
 

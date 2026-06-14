@@ -162,6 +162,8 @@ public struct MetalTileBinReport: Codable, Equatable, Sendable {
     public var tileRows: Int
     public var projectedSplatCount: Int
     public var drawCommandCount: Int
+    public var gpuProjectedSplatCount: Int?
+    public var gpuCoveredTileReferenceCount: Int?
     public var bins: [MetalTileBin]
 
     public init(
@@ -171,6 +173,8 @@ public struct MetalTileBinReport: Codable, Equatable, Sendable {
         tileRows: Int,
         projectedSplatCount: Int,
         drawCommandCount: Int,
+        gpuProjectedSplatCount: Int? = nil,
+        gpuCoveredTileReferenceCount: Int? = nil,
         bins: [MetalTileBin]
     ) {
         self.frameIndex = frameIndex
@@ -179,6 +183,8 @@ public struct MetalTileBinReport: Codable, Equatable, Sendable {
         self.tileRows = tileRows
         self.projectedSplatCount = projectedSplatCount
         self.drawCommandCount = drawCommandCount
+        self.gpuProjectedSplatCount = gpuProjectedSplatCount
+        self.gpuCoveredTileReferenceCount = gpuCoveredTileReferenceCount
         self.bins = bins
     }
 }
@@ -343,6 +349,22 @@ import Metal
 private struct MetalSplatVertex {
     var projectedCenterDepth: SIMD4<Float>
     var covarianceRadius: SIMD4<Float>
+    var inverseCovariance: SIMD4<Float>
+    var colorOpacity: SIMD4<Float>
+}
+
+private struct MetalRawSplat {
+    var position: SIMD4<Float>
+    var colorOpacity: SIMD4<Float>
+    var scaleRotation: SIMD4<Float>
+    var rotationW: SIMD4<Float>
+}
+
+private struct MetalProjectedSplat {
+    var centerDepth: SIMD4<Float>
+    var covarianceRadius: SIMD4<Float>
+    var inverseCovariance: SIMD4<Float>
+    var tileRange: SIMD4<UInt32>
     var colorOpacity: SIMD4<Float>
 }
 
@@ -352,10 +374,20 @@ private struct MetalCameraUniforms {
     var viewport: SIMD4<Float>
 }
 
+private struct MetalTileUniforms {
+    var tileLayout: SIMD4<UInt32>
+    var splatCount: UInt32
+    var reserved0: UInt32
+    var reserved1: UInt32
+    var reserved2: UInt32
+}
+
 public final class MetalGaussianSplatRenderer: SplatRenderer {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLRenderPipelineState
+    private let projectPipelineState: MTLComputePipelineState
+    private let tileCountPipelineState: MTLComputePipelineState
 
     public init(device: MTLDevice? = MTLCreateSystemDefaultDevice()) throws {
         guard let device else {
@@ -366,7 +398,10 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         }
         self.device = device
         self.commandQueue = commandQueue
-        self.pipelineState = try Self.makePipeline(device: device)
+        let library = try Self.makeLibrary(device: device)
+        self.pipelineState = try Self.makePipeline(device: device, library: library)
+        self.projectPipelineState = try Self.makeComputePipeline(device: device, library: library, functionName: "robot_project_splats")
+        self.tileCountPipelineState = try Self.makeComputePipeline(device: device, library: library, functionName: "robot_count_tile_references")
     }
 
     public func render(frame: DatasetFrame, scene: GaussianSplatScene, cameraRig: RobotCameraRig, outputDirectory: URL) async throws {
@@ -420,6 +455,19 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             height: height,
             tileSize: 16
         )
+        let gpuSummary = try prepareTileBinsOnGPU(
+            cloud.splats,
+            frame: frame,
+            cameraRig: cameraRig,
+            width: width,
+            height: height,
+            tileSize: 16,
+            tileColumns: prepared.tileReport.tileColumns,
+            tileRows: prepared.tileReport.tileRows
+        )
+        var tileReport = prepared.tileReport
+        tileReport.gpuProjectedSplatCount = gpuSummary.projectedSplatCount
+        tileReport.gpuCoveredTileReferenceCount = gpuSummary.coveredTileReferenceCount
         let vertices = prepared.drawSplats.map { splat in
             MetalSplatVertex(
                 projectedCenterDepth: SIMD4<Float>(
@@ -434,6 +482,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
                     splat.covariance2D.z,
                     splat.majorRadiusPixels
                 ),
+                inverseCovariance: inverseCovariancePayload(splat.covariance2D),
                 colorOpacity: splat.color
             )
         }
@@ -511,7 +560,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             depthURL: depthURL,
             visibilityURL: visibilityURL
         )
-        try JSONEncoder.robotVisionLabEncoder.encode(prepared.tileReport).write(to: tileBinURL)
+        try JSONEncoder.robotVisionLabEncoder.encode(tileReport).write(to: tileBinURL)
 
         _ = depthTexture
         _ = visibilityTexture
@@ -684,6 +733,120 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         return (sqrt(lambdaMax), sqrt(lambdaMin))
     }
 
+    private func inverseCovariancePayload(_ covariance: SIMD4<Float>) -> SIMD4<Float> {
+        let a = covariance.x
+        let b = covariance.y
+        let d = covariance.z
+        let determinant = max(a * d - b * b, 0.0001)
+        return SIMD4<Float>(d / determinant, -b / determinant, a / determinant, 0)
+    }
+
+    private func prepareTileBinsOnGPU(
+        _ splats: [RenderableGaussianSplat],
+        frame: DatasetFrame,
+        cameraRig: RobotCameraRig,
+        width: Int,
+        height: Int,
+        tileSize: Int,
+        tileColumns: Int,
+        tileRows: Int
+    ) throws -> (projectedSplatCount: Int, coveredTileReferenceCount: Int) {
+        guard !splats.isEmpty else {
+            return (0, 0)
+        }
+        let rawSplats = splats.map { splat in
+            MetalRawSplat(
+                position: SIMD4<Float>(splat.position.x, splat.position.y, splat.position.z, 1),
+                colorOpacity: splat.color,
+                scaleRotation: SIMD4<Float>(splat.scale.x, splat.scale.y, splat.scale.z, splat.rotation.x),
+                rotationW: SIMD4<Float>(splat.rotation.y, splat.rotation.z, splat.rotation.w, 0)
+            )
+        }
+        guard let rawBuffer = device.makeBuffer(
+            bytes: rawSplats,
+            length: MemoryLayout<MetalRawSplat>.stride * rawSplats.count,
+            options: [.storageModeShared]
+        ) else {
+            throw MetalGaussianSplatRenderError.bufferAllocationFailed
+        }
+        guard let projectedBuffer = device.makeBuffer(
+            length: MemoryLayout<MetalProjectedSplat>.stride * rawSplats.count,
+            options: [.storageModeShared]
+        ) else {
+            throw MetalGaussianSplatRenderError.bufferAllocationFailed
+        }
+        guard let countersBuffer = device.makeBuffer(
+            length: MemoryLayout<UInt32>.stride * 2,
+            options: [.storageModeShared]
+        ) else {
+            throw MetalGaussianSplatRenderError.bufferAllocationFailed
+        }
+        memset(countersBuffer.contents(), 0, MemoryLayout<UInt32>.stride * 2)
+
+        var cameraUniforms = MetalCameraUniforms(
+            cameraPosition: SIMD4<Float>(
+                Float(frame.cameraPose.position.x),
+                Float(frame.cameraPose.position.y),
+                Float(frame.cameraPose.position.z),
+                1
+            ),
+            focalPrincipal: SIMD4<Float>(
+                Float(cameraRig.intrinsics.focalLengthPixels.x),
+                Float(cameraRig.intrinsics.focalLengthPixels.y),
+                Float(cameraRig.intrinsics.principalPointPixels.x),
+                Float(cameraRig.intrinsics.principalPointPixels.y)
+            ),
+            viewport: SIMD4<Float>(Float(width), Float(height), 0, 0)
+        )
+        var tileUniforms = MetalTileUniforms(
+            tileLayout: SIMD4<UInt32>(UInt32(tileSize), UInt32(tileColumns), UInt32(tileRows), 0),
+            splatCount: UInt32(rawSplats.count),
+            reserved0: 0,
+            reserved1: 0,
+            reserved2: 0
+        )
+        guard let cameraBuffer = device.makeBuffer(bytes: &cameraUniforms, length: MemoryLayout<MetalCameraUniforms>.stride, options: [.storageModeShared]),
+              let tileUniformBuffer = device.makeBuffer(bytes: &tileUniforms, length: MemoryLayout<MetalTileUniforms>.stride, options: [.storageModeShared]),
+              let commandBuffer = commandQueue.makeCommandBuffer() else {
+            throw MetalGaussianSplatRenderError.bufferAllocationFailed
+        }
+
+        if let projectEncoder = commandBuffer.makeComputeCommandEncoder() {
+            projectEncoder.setComputePipelineState(projectPipelineState)
+            projectEncoder.setBuffer(rawBuffer, offset: 0, index: 0)
+            projectEncoder.setBuffer(projectedBuffer, offset: 0, index: 1)
+            projectEncoder.setBuffer(cameraBuffer, offset: 0, index: 2)
+            projectEncoder.setBuffer(tileUniformBuffer, offset: 0, index: 3)
+            projectEncoder.setBuffer(countersBuffer, offset: 0, index: 4)
+            dispatchThreads(rawSplats.count, encoder: projectEncoder, pipelineState: projectPipelineState)
+            projectEncoder.endEncoding()
+        }
+
+        if let countEncoder = commandBuffer.makeComputeCommandEncoder() {
+            countEncoder.setComputePipelineState(tileCountPipelineState)
+            countEncoder.setBuffer(projectedBuffer, offset: 0, index: 0)
+            countEncoder.setBuffer(tileUniformBuffer, offset: 0, index: 1)
+            countEncoder.setBuffer(countersBuffer, offset: 0, index: 2)
+            dispatchThreads(rawSplats.count, encoder: countEncoder, pipelineState: tileCountPipelineState)
+            countEncoder.endEncoding()
+        }
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        if let error = commandBuffer.error {
+            throw error
+        }
+        let counters = countersBuffer.contents().bindMemory(to: UInt32.self, capacity: 2)
+        return (Int(counters[0]), Int(counters[1]))
+    }
+
+    private func dispatchThreads(_ count: Int, encoder: MTLComputeCommandEncoder, pipelineState: MTLComputePipelineState) {
+        let width = max(1, pipelineState.threadExecutionWidth)
+        let threadsPerThreadgroup = MTLSize(width: width, height: 1, depth: 1)
+        let threads = MTLSize(width: count, height: 1, depth: 1)
+        encoder.dispatchThreads(threads, threadsPerThreadgroup: threadsPerThreadgroup)
+    }
+
     private func makeTexture(width: Int, height: Int, pixelFormat: MTLPixelFormat) throws -> MTLTexture {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: pixelFormat,
@@ -742,8 +905,11 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         try JSONEncoder.robotVisionLabEncoder.encode(visibility).write(to: visibilityURL)
     }
 
-    private static func makePipeline(device: MTLDevice) throws -> MTLRenderPipelineState {
-        let library = try device.makeLibrary(source: shaderSource, options: nil)
+    private static func makeLibrary(device: MTLDevice) throws -> MTLLibrary {
+        try device.makeLibrary(source: shaderSource, options: nil)
+    }
+
+    private static func makePipeline(device: MTLDevice, library: MTLLibrary) throws -> MTLRenderPipelineState {
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = library.makeFunction(name: "robot_splat_vertex")
         descriptor.fragmentFunction = library.makeFunction(name: "robot_splat_fragment")
@@ -754,6 +920,13 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         descriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
         descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         return try device.makeRenderPipelineState(descriptor: descriptor)
+    }
+
+    private static func makeComputePipeline(device: MTLDevice, library: MTLLibrary, functionName: String) throws -> MTLComputePipelineState {
+        guard let function = library.makeFunction(name: functionName) else {
+            throw MetalGaussianSplatRenderError.computeFunctionUnavailable(functionName)
+        }
+        return try device.makeComputePipelineState(function: function)
     }
 }
 
@@ -778,6 +951,7 @@ public enum MetalGaussianSplatRenderError: Error, LocalizedError {
     case bufferAllocationFailed
     case textureAllocationFailed
     case commandEncodingFailed
+    case computeFunctionUnavailable(String)
     case noVisibleSplats
 
     public var errorDescription: String? {
@@ -794,6 +968,8 @@ public enum MetalGaussianSplatRenderError: Error, LocalizedError {
             "Unable to allocate Metal render textures."
         case .commandEncodingFailed:
             "Unable to encode Metal render commands."
+        case .computeFunctionUnavailable(let name):
+            "Unable to create Metal compute function \(name)."
         case .noVisibleSplats:
             "No splats are visible from this robot camera pose."
         }
@@ -807,6 +983,22 @@ using namespace metal;
 struct SplatVertex {
     float4 projectedCenterDepth;
     float4 covarianceRadius;
+    float4 inverseCovariance;
+    float4 colorOpacity;
+};
+
+struct RawSplat {
+    float4 position;
+    float4 colorOpacity;
+    float4 scaleRotation;
+    float4 rotationW;
+};
+
+struct ProjectedSplat {
+    float4 centerDepth;
+    float4 covarianceRadius;
+    float4 inverseCovariance;
+    uint4 tileRange;
     float4 colorOpacity;
 };
 
@@ -816,11 +1008,94 @@ struct CameraUniforms {
     float4 viewport;
 };
 
+struct TileUniforms {
+    uint4 tileLayout;
+    uint splatCount;
+    uint reserved0;
+    uint reserved1;
+    uint reserved2;
+};
+
 struct VertexOut {
     float4 position [[position]];
     float pointSize [[point_size]];
+    float4 inverseCovariance;
+    float radiusPixels;
     float4 color;
 };
+
+float4 covariance_payload(float3 scale) {
+    float sx = max(scale.x, 0.001);
+    float sy = max(scale.y, 0.001);
+    return float4(sx * sx, 0.0, sy * sy, max(sx, sy) * 3.0);
+}
+
+float4 inverse_covariance(float4 covariance) {
+    float determinant = max(covariance.x * covariance.z - covariance.y * covariance.y, 0.0001);
+    return float4(covariance.z / determinant, -covariance.y / determinant, covariance.x / determinant, 0.0);
+}
+
+kernel void robot_project_splats(
+    const device RawSplat *rawSplats [[buffer(0)]],
+    device ProjectedSplat *projectedSplats [[buffer(1)]],
+    constant CameraUniforms &camera [[buffer(2)]],
+    constant TileUniforms &tiles [[buffer(3)]],
+    device atomic_uint *counters [[buffer(4)]],
+    uint id [[thread_position_in_grid]]
+) {
+    if (id >= tiles.splatCount) {
+        return;
+    }
+    RawSplat splat = rawSplats[id];
+    float3 cameraSpace = splat.position.xyz - camera.cameraPosition.xyz;
+    float depth = -cameraSpace.z;
+    if (depth <= 0.01) {
+        projectedSplats[id].centerDepth = float4(0, 0, -1, 0);
+        return;
+    }
+
+    float u = (cameraSpace.x * camera.focalPrincipal.x / depth) + camera.focalPrincipal.z;
+    float v = (-cameraSpace.y * camera.focalPrincipal.y / depth) + camera.focalPrincipal.w;
+    float3 scale = splat.scaleRotation.xyz;
+    float4 covariance = covariance_payload(scale);
+    float majorRadius = clamp(covariance.w * camera.focalPrincipal.x / depth, 1.0, 512.0);
+
+    uint tileSize = max(tiles.tileLayout.x, 1u);
+    uint columns = max(tiles.tileLayout.y, 1u);
+    uint rows = max(tiles.tileLayout.z, 1u);
+    int minX = max(0, int(floor((u - majorRadius) / float(tileSize))));
+    int minY = max(0, int(floor((v - majorRadius) / float(tileSize))));
+    int maxX = min(int(columns) - 1, int(floor((u + majorRadius) / float(tileSize))));
+    int maxY = min(int(rows) - 1, int(floor((v + majorRadius) / float(tileSize))));
+    if (maxX < 0 || maxY < 0 || minX >= int(columns) || minY >= int(rows)) {
+        projectedSplats[id].centerDepth = float4(0, 0, -1, 0);
+        return;
+    }
+
+    projectedSplats[id].centerDepth = float4(u, v, depth, 1.0);
+    projectedSplats[id].covarianceRadius = covariance;
+    projectedSplats[id].inverseCovariance = inverse_covariance(covariance);
+    projectedSplats[id].tileRange = uint4(uint(minX), uint(minY), uint(maxX), uint(maxY));
+    projectedSplats[id].colorOpacity = splat.colorOpacity;
+    atomic_fetch_add_explicit(&counters[0], 1u, memory_order_relaxed);
+}
+
+kernel void robot_count_tile_references(
+    const device ProjectedSplat *projectedSplats [[buffer(0)]],
+    constant TileUniforms &tiles [[buffer(1)]],
+    device atomic_uint *counters [[buffer(2)]],
+    uint id [[thread_position_in_grid]]
+) {
+    if (id >= tiles.splatCount) {
+        return;
+    }
+    ProjectedSplat splat = projectedSplats[id];
+    if (splat.centerDepth.z <= 0.0) {
+        return;
+    }
+    uint tileCount = (splat.tileRange.z - splat.tileRange.x + 1u) * (splat.tileRange.w - splat.tileRange.y + 1u);
+    atomic_fetch_add_explicit(&counters[1], tileCount, memory_order_relaxed);
+}
 
 vertex VertexOut robot_splat_vertex(
     uint vertexID [[vertex_id]],
@@ -836,17 +1111,22 @@ vertex VertexOut robot_splat_vertex(
     VertexOut out;
     out.position = float4(x, y, 0.5, 1.0);
     out.pointSize = clamp(splat.covarianceRadius.w * 2.0, 1.0, 128.0);
+    out.inverseCovariance = splat.inverseCovariance;
+    out.radiusPixels = splat.covarianceRadius.w;
     out.color = splat.colorOpacity;
     return out;
 }
 
 fragment float4 robot_splat_fragment(VertexOut in [[stage_in]], float2 pointCoord [[point_coord]]) {
     float2 centered = pointCoord * 2.0 - 1.0;
-    float radius2 = dot(centered, centered);
-    if (radius2 > 1.0) {
+    float2 pixelOffset = centered * max(in.radiusPixels, 0.001);
+    float mahalanobis = pixelOffset.x * pixelOffset.x * in.inverseCovariance.x
+        + 2.0 * pixelOffset.x * pixelOffset.y * in.inverseCovariance.y
+        + pixelOffset.y * pixelOffset.y * in.inverseCovariance.z;
+    if (mahalanobis > 9.0) {
         discard_fragment();
     }
-    float alpha = in.color.a * exp(-radius2 * 2.5);
+    float alpha = in.color.a * exp(-0.5 * mahalanobis);
     return float4(in.color.rgb, alpha);
 }
 """
