@@ -193,8 +193,17 @@ public struct CoreMLDatasetEvaluator: Sendable {
             throw ModelEvaluationError.missingModelURL(.coreML)
         }
         let model = try MLModel(contentsOf: modelURL)
+        let schema = try CoreMLModelSchemaInspector().inspect(modelURL: modelURL)
+        let loader = RenderedDatasetLoader()
+        let samplesByFrame = Dictionary(uniqueKeysWithValues: loader.loadSamples(from: manifest).map { ($0.frameIndex, $0) })
         let frameResults = manifest.frames.map { frame in
-            evaluate(frame: frame, requestedTasks: request.tasks, model: model)
+            evaluate(
+                frame: frame,
+                sample: samplesByFrame[frame.index],
+                requestedTasks: request.tasks,
+                model: model,
+                schema: schema
+            )
         }
         return ModelEvaluationReport(
             request: request,
@@ -204,30 +213,30 @@ public struct CoreMLDatasetEvaluator: Sendable {
         )
     }
 
-    private func evaluate(frame: DatasetFrame, requestedTasks: Set<VisionTask>, model: MLModel) -> FrameEvaluationResult {
-        var predictions: [VisionPrediction] = []
-        var warnings: [String] = []
+    private func evaluate(
+        frame: DatasetFrame,
+        sample: RenderedModelSample?,
+        requestedTasks: Set<VisionTask>,
+        model: MLModel,
+        schema: NativeModelAdapterSchema
+    ) -> FrameEvaluationResult {
+        var warnings = sample?.warnings ?? ["Unable to load rendered model sample for frame \(frame.index)."]
         let rgbURL = frame.productURL(for: .rgb)
-        guard let rgbURL else {
-            return FrameEvaluationResult(frameIndex: frame.index, rgbURL: nil, predictions: [], warnings: ["Frame has no RGB product URL."])
+        guard let sample else {
+            return FrameEvaluationResult(frameIndex: frame.index, rgbURL: rgbURL, predictions: [], warnings: warnings)
         }
 
         do {
-            let input = try MLDictionaryFeatureProvider(dictionary: [
-                "imagePath": MLFeatureValue(string: rgbURL.path),
-                "frameIndex": MLFeatureValue(int64: Int64(frame.index)),
-                "timestamp": MLFeatureValue(double: frame.timestamp)
-            ])
+            let input = CoreMLRenderedSampleFeatureProvider(sample: sample, schema: schema)
             let output = try model.prediction(from: input)
-            let label = output.featureNames.compactMap { output.featureValue(for: $0)?.stringValue }.first ?? "prediction"
-            for task in requestedTasks {
-                predictions.append(VisionPrediction(task: task, label: label, confidence: 1.0, source: "coreml:\(model.modelDescription.metadata[.creatorDefinedKey] ?? "model")"))
-            }
+            let values = CoreMLModelOutputAdapter(schema: schema).outputValues(from: output)
+            let predictions = NativeModelPredictionAdapter(schema: schema).predictions(from: values, tasks: requestedTasks)
+            return FrameEvaluationResult(frameIndex: frame.index, rgbURL: rgbURL, predictions: predictions, warnings: warnings)
         } catch {
             warnings.append("Core ML prediction failed for frame \(frame.index): \(error.localizedDescription)")
         }
 
-        return FrameEvaluationResult(frameIndex: frame.index, rgbURL: rgbURL, predictions: predictions, warnings: warnings)
+        return FrameEvaluationResult(frameIndex: frame.index, rgbURL: rgbURL, predictions: [], warnings: warnings)
     }
 }
 #else
