@@ -414,6 +414,13 @@ private struct AppleSiliconControlPanel: View {
                     Label("Plan MLX Training", systemImage: "brain")
                 }
                 .disabled(model.state.frameCount == 0)
+
+                Button {
+                    model.writeMLXTrainingPackage()
+                } label: {
+                    Label("Write MLX Package", systemImage: "shippingbox")
+                }
+                .disabled(model.state.frameCount == 0)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -476,6 +483,7 @@ public struct WorkstationDetailPanel: View {
             case .failureMap:
                 FailureMapViewer(model: model)
             case .appleSilicon, .export:
+                AppleSiliconDetailPanel(model: model)
                 ArtifactList(model: model, openURL: openURL)
                 DiagnosticsPanel(model: model)
             }
@@ -484,6 +492,57 @@ public struct WorkstationDetailPanel: View {
         }
         .padding()
         .frame(minWidth: 460, minHeight: 520)
+    }
+}
+
+private struct AppleSiliconDetailPanel: View {
+    @Bindable var model: WorkstationModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let profile = model.metalRenderProfile {
+                Text("Metal Render Profile")
+                    .font(.headline)
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                    GridRow {
+                        MetricCell(title: "Frames", value: "\(profile.frameCount)")
+                        MetricCell(title: "Avg Time", value: String(format: "%.3fs", profile.averageFrameSeconds))
+                        MetricCell(title: "Slowest", value: profile.slowestFrameIndex.map { "\($0)" } ?? "-")
+                    }
+                    GridRow {
+                        MetricCell(title: "Tile Pressure", value: String(format: "%.2f", profile.tilePressure))
+                        MetricCell(title: "Avg Visible", value: String(format: "%.0f", profile.averageVisibleSplats))
+                        MetricCell(title: "Peak Draw", value: "\(profile.peakDrawCommands)")
+                    }
+                }
+                DiagnosticsList(messages: profile.diagnostics)
+            }
+
+            if let package = model.mlxTrainingPackage {
+                Text("MLX Training Package")
+                    .font(.headline)
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                    GridRow {
+                        MetricCell(title: "Samples", value: "\(package.sampleCount)")
+                        MetricCell(title: "Loader", value: package.datasetLoaderURL.lastPathComponent)
+                        MetricCell(title: "Export", value: package.exportScriptURL.lastPathComponent)
+                    }
+                }
+                DiagnosticsList(messages: package.notes)
+            }
+
+            if let calibration = model.failureMapCalibrationReport {
+                Text("Failure Calibration")
+                    .font(.headline)
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                    GridRow {
+                        MetricCell(title: "Blocked", value: String(format: "%.0f%%", calibration.blockedFrameRate * 100))
+                        MetricCell(title: "Uncertain", value: String(format: "%.0f%%", calibration.uncertainFrameRate * 100))
+                        MetricCell(title: "Missing", value: String(format: "%.0f%%", calibration.missingViewFrameRate * 100))
+                    }
+                }
+            }
+        }
     }
 }
 

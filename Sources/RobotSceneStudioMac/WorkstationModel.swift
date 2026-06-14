@@ -173,6 +173,9 @@ public final class WorkstationModel {
     public private(set) var routeConfidenceMetrics: RouteConfidenceMetrics?
     public private(set) var coverageReport: RouteCoverageReport?
     public private(set) var navigationGraph: NavigationGraph?
+    public private(set) var metalRenderProfile: MetalSplatRenderProfile?
+    public private(set) var mlxTrainingPackage: MLXTrainingPackageManifest?
+    public private(set) var failureMapCalibrationReport: FailureMapCalibrationReport?
     public private(set) var isMultipeerReceiverRunning = false
     public private(set) var transferEvents: [WorkstationTransferEvent] = []
     public private(set) var pendingPairingInvitations: [String] = []
@@ -549,8 +552,14 @@ public final class WorkstationModel {
             )
             let report = try renderer.renderDataset(manifest, outputDirectory: state.workspaceURL)
             let reportURL = state.workspaceURL.appendingPathComponent("metal_splat_render_report.json")
+            try MetalSplatRenderReportWriter().write(report, to: reportURL)
+            let profile = MetalSplatRenderProfiler().profile(report)
+            let profileURL = state.workspaceURL.appendingPathComponent("metal_splat_render_profile.json")
+            try JSONEncoder.robotVisionLabEncoder.encode(profile).write(to: profileURL)
+            metalRenderProfile = profile
 
             appendArtifact(title: "Metal Splat Render Report", url: reportURL, kind: "metal-render")
+            appendArtifact(title: "Metal Render Profile", url: profileURL, kind: "metal-profile")
             appendArtifact(title: "Metal RGB Frames", url: state.workspaceURL.appendingPathComponent("rgb", isDirectory: true), kind: "rgb")
             appendArtifact(title: "Metal Depth Products", url: state.workspaceURL.appendingPathComponent("depth", isDirectory: true), kind: "depth")
             appendArtifact(title: "Metal Visibility Products", url: state.workspaceURL.appendingPathComponent("visibility", isDirectory: true), kind: "visibility")
@@ -586,6 +595,25 @@ public final class WorkstationModel {
         }
     }
 
+    public func writeMLXTrainingPackage() {
+        perform(stage: .planningTraining) {
+            let manifest = try ensureDatasetManifest()
+            let manifestURL = state.workspaceURL.appendingPathComponent("dataset.json")
+            if !FileManager.default.fileExists(atPath: manifestURL.path) {
+                try JSONEncoder.robotVisionLabEncoder.encode(manifest).write(to: manifestURL)
+            }
+            let package = try MLXTrainingPackageBuilder().writePackage(
+                manifest: manifest,
+                datasetManifestURL: manifestURL,
+                outputDirectory: state.workspaceURL.appendingPathComponent("MLXTrainingPackage", isDirectory: true)
+            )
+            mlxTrainingPackage = package
+            appendArtifact(title: "MLX Training Package", url: package.trainScriptURL.deletingLastPathComponent(), kind: "mlx-training")
+            appendArtifact(title: "MLX Dataset Loader", url: package.datasetLoaderURL, kind: "mlx-loader")
+            appendArtifact(title: "Core ML Export Script", url: package.exportScriptURL, kind: "coreml-export")
+        }
+    }
+
     public func evaluateBaselineModel() {
         perform(stage: .evaluatingModel) {
             let manifest = try ensureDatasetManifest()
@@ -602,6 +630,7 @@ public final class WorkstationModel {
             let calibrationURL = state.workspaceURL.appendingPathComponent("failure_map_calibration_report.json")
             let calibration = FailureMapCalibrationReporter().makeReport(from: report)
             try FailureMapCalibrationReporter().write(calibration, to: calibrationURL)
+            failureMapCalibrationReport = calibration
             evaluationReportURL = reportURL
             state.warningCount += report.summary.warningCount
             appendArtifact(title: "Evaluation Report", url: reportURL, kind: "evaluation")

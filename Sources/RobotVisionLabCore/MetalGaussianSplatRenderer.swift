@@ -123,6 +123,95 @@ public struct MetalSplatRenderReport: Codable, Equatable, Sendable {
     }
 }
 
+public struct MetalSplatRenderProfile: Codable, Equatable, Sendable {
+    public var frameCount: Int
+    public var averageVisibleSplats: Double
+    public var averageDrawCommands: Double
+    public var peakDrawCommands: Int
+    public var averageFrameSeconds: Double
+    public var slowestFrameIndex: Int?
+    public var slowestFrameSeconds: Double
+    public var averageVisibilityCoverage: Double
+    public var tilePressure: Double
+    public var diagnostics: [String]
+
+    public init(
+        frameCount: Int,
+        averageVisibleSplats: Double,
+        averageDrawCommands: Double,
+        peakDrawCommands: Int,
+        averageFrameSeconds: Double,
+        slowestFrameIndex: Int?,
+        slowestFrameSeconds: Double,
+        averageVisibilityCoverage: Double,
+        tilePressure: Double,
+        diagnostics: [String]
+    ) {
+        self.frameCount = frameCount
+        self.averageVisibleSplats = averageVisibleSplats
+        self.averageDrawCommands = averageDrawCommands
+        self.peakDrawCommands = peakDrawCommands
+        self.averageFrameSeconds = averageFrameSeconds
+        self.slowestFrameIndex = slowestFrameIndex
+        self.slowestFrameSeconds = slowestFrameSeconds
+        self.averageVisibilityCoverage = averageVisibilityCoverage
+        self.tilePressure = tilePressure
+        self.diagnostics = diagnostics
+    }
+}
+
+public struct MetalSplatRenderProfiler: Sendable {
+    public init() {}
+
+    public func profile(_ report: MetalSplatRenderReport) -> MetalSplatRenderProfile {
+        let frames = report.frameProducts
+        let frameCount = frames.count
+        let averageVisible = average(frames.map { Double($0.visibleSplatCount) })
+        let averageDraw = average(frames.map { Double($0.drawCommandCount) })
+        let peakDraw = frames.map(\.drawCommandCount).max() ?? 0
+        let averageFrameSeconds = average(frames.map { $0.timing.totalSeconds })
+        let slowest = frames.max { $0.timing.totalSeconds < $1.timing.totalSeconds }
+        let coverage = average(frames.map(visibilityCoverage))
+        let tilePressure = average(frames.map { frame in
+            guard frame.visibleSplatCount > 0 else { return 0 }
+            return Double(frame.drawCommandCount) / Double(frame.visibleSplatCount)
+        })
+        var diagnostics = report.diagnostics
+        if averageFrameSeconds > 1.0 / 30.0 {
+            diagnostics.append("Average render time exceeds 30 FPS frame budget.")
+        }
+        if tilePressure > 12 {
+            diagnostics.append("High tile pressure; reduce splat radius, increase LOD decimation, or tune tile size.")
+        }
+        if coverage < 0.25, frameCount > 0 {
+            diagnostics.append("Low dense visibility coverage; route viewpoints may miss the splat or need alignment review.")
+        }
+        return MetalSplatRenderProfile(
+            frameCount: frameCount,
+            averageVisibleSplats: averageVisible,
+            averageDrawCommands: averageDraw,
+            peakDrawCommands: peakDraw,
+            averageFrameSeconds: averageFrameSeconds,
+            slowestFrameIndex: slowest?.frameIndex,
+            slowestFrameSeconds: slowest?.timing.totalSeconds ?? 0,
+            averageVisibilityCoverage: coverage,
+            tilePressure: tilePressure,
+            diagnostics: diagnostics
+        )
+    }
+
+    private func average(_ values: [Double]) -> Double {
+        values.isEmpty ? 0 : values.reduce(0, +) / Double(values.count)
+    }
+
+    private func visibilityCoverage(_ frame: MetalSplatRenderProducts) -> Double {
+        guard frame.totalSplatCount > 0 else {
+            return 0
+        }
+        return min(max(Double(frame.visibleSplatCount) / Double(frame.totalSplatCount), 0), 1)
+    }
+}
+
 public struct MetalSplatRenderReportWriter: Sendable {
     public init() {}
 

@@ -683,7 +683,11 @@ struct RobotVisionLabCLI {
         let report = try renderer.renderDataset(manifest, outputDirectory: outputDirectory)
         let reportURL = outputDirectory.appendingPathComponent("metal_splat_render_report.json")
         try MetalSplatRenderReportWriter().write(report, to: reportURL)
+        let profile = MetalSplatRenderProfiler().profile(report)
+        let profileURL = outputDirectory.appendingPathComponent("metal_splat_render_profile.json")
+        try JSONEncoder.robotVisionLabEncoder.encode(profile).write(to: profileURL)
         print("Wrote Metal splat render report to \(reportURL.path)")
+        print("Wrote Metal splat render profile to \(profileURL.path)")
     }
 
     private static func parseSplatTrainingManifestURL(outputDirectory: URL) throws -> URL {

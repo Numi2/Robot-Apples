@@ -155,15 +155,12 @@ swift run robot-vision-lab --output ./DemoRobotScene --export-demo-capture
 
 ## Next Work
 
-- Deepen the Mac workstation UI around native MLX training runs and Core ML
-  model promotion.
-- Expand Vision Pro rendering from package inspection toward full RealityKit
-  Gaussian splat display where supported.
-- Add richer manual alignment tools: visual anchor picking, floor-plane editing,
-  route confidence drill-down, and navigation graph editing.
-- Add renderer profiling views for tile pressure, memory budget, LOD choice,
-  frame timing, and dense visibility coverage.
-- Harden signed app deployment on physical iPhone, Mac, and Vision Pro devices.
+- Add full RealityKit Gaussian splat rendering on visionOS SDKs that expose the
+  native splat APIs.
+- Add visual anchor picking in the Mac workstation renderer instead of numeric
+  anchor entry only.
+- Add signed physical-device deployment validation runs for iPhone, Mac, and
+  Vision Pro.
 
 ## Repository Policy
 
