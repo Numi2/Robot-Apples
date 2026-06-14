@@ -368,6 +368,13 @@ private struct MetalProjectedSplat {
     var colorOpacity: SIMD4<Float>
 }
 
+private struct MetalTileReference {
+    var tileIndex: UInt32
+    var splatIndex: UInt32
+    var depth: Float
+    var reserved: UInt32
+}
+
 private struct MetalCameraUniforms {
     var cameraPosition: SIMD4<Float>
     var focalPrincipal: SIMD4<Float>
@@ -388,6 +395,11 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
     private let pipelineState: MTLRenderPipelineState
     private let projectPipelineState: MTLComputePipelineState
     private let tileCountPipelineState: MTLComputePipelineState
+    private let resetTileCountsPipelineState: MTLComputePipelineState
+    private let prefixTileOffsetsPipelineState: MTLComputePipelineState
+    private let compactTileRefsPipelineState: MTLComputePipelineState
+    private let sortTileRefsPipelineState: MTLComputePipelineState
+    private let buildVertexBufferPipelineState: MTLComputePipelineState
 
     public init(device: MTLDevice? = MTLCreateSystemDefaultDevice()) throws {
         guard let device else {
@@ -402,6 +414,11 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         self.pipelineState = try Self.makePipeline(device: device, library: library)
         self.projectPipelineState = try Self.makeComputePipeline(device: device, library: library, functionName: "robot_project_splats")
         self.tileCountPipelineState = try Self.makeComputePipeline(device: device, library: library, functionName: "robot_count_tile_references")
+        self.resetTileCountsPipelineState = try Self.makeComputePipeline(device: device, library: library, functionName: "robot_reset_tile_counts")
+        self.prefixTileOffsetsPipelineState = try Self.makeComputePipeline(device: device, library: library, functionName: "robot_prefix_tile_offsets")
+        self.compactTileRefsPipelineState = try Self.makeComputePipeline(device: device, library: library, functionName: "robot_compact_tile_references")
+        self.sortTileRefsPipelineState = try Self.makeComputePipeline(device: device, library: library, functionName: "robot_sort_tile_references")
+        self.buildVertexBufferPipelineState = try Self.makeComputePipeline(device: device, library: library, functionName: "robot_build_vertex_buffer")
     }
 
     public func render(frame: DatasetFrame, scene: GaussianSplatScene, cameraRig: RobotCameraRig, outputDirectory: URL) async throws {
@@ -455,7 +472,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             height: height,
             tileSize: 16
         )
-        let gpuSummary = try prepareTileBinsOnGPU(
+        let gpuPreparation = try prepareTileBinsOnGPU(
             cloud.splats,
             frame: frame,
             cameraRig: cameraRig,
@@ -465,37 +482,10 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             tileColumns: prepared.tileReport.tileColumns,
             tileRows: prepared.tileReport.tileRows
         )
-        var tileReport = prepared.tileReport
-        tileReport.gpuProjectedSplatCount = gpuSummary.projectedSplatCount
-        tileReport.gpuCoveredTileReferenceCount = gpuSummary.coveredTileReferenceCount
-        let vertices = prepared.drawSplats.map { splat in
-            MetalSplatVertex(
-                projectedCenterDepth: SIMD4<Float>(
-                    splat.centerPixels.x,
-                    splat.centerPixels.y,
-                    splat.depthMeters,
-                    1
-                ),
-                covarianceRadius: SIMD4<Float>(
-                    splat.covariance2D.x,
-                    splat.covariance2D.y,
-                    splat.covariance2D.z,
-                    splat.majorRadiusPixels
-                ),
-                inverseCovariance: inverseCovariancePayload(splat.covariance2D),
-                colorOpacity: splat.color
-            )
-        }
+        let tileReport = gpuPreparation.tileReport
 
-        guard !vertices.isEmpty else {
+        guard gpuPreparation.drawCommandCount > 0 else {
             throw MetalGaussianSplatRenderError.noVisibleSplats
-        }
-        guard let splatBuffer = device.makeBuffer(
-            bytes: vertices,
-            length: MemoryLayout<MetalSplatVertex>.stride * vertices.count,
-            options: [.storageModeShared]
-        ) else {
-            throw MetalGaussianSplatRenderError.bufferAllocationFailed
         }
 
         var uniforms = MetalCameraUniforms(
@@ -535,9 +525,9 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             throw MetalGaussianSplatRenderError.commandEncodingFailed
         }
         encoder.setRenderPipelineState(pipelineState)
-        encoder.setVertexBuffer(splatBuffer, offset: 0, index: 0)
+        encoder.setVertexBuffer(gpuPreparation.vertexBuffer, offset: 0, index: 0)
         encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
-        encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: vertices.count)
+        encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: gpuPreparation.drawCommandCount)
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
@@ -572,7 +562,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             visibilityURL: visibilityURL,
             tileBinURL: tileBinURL,
             visibleSplatCount: prepared.projectedSplats.count,
-            drawCommandCount: vertices.count,
+            drawCommandCount: gpuPreparation.drawCommandCount,
             totalSplatCount: cloud.splats.count
         )
     }
@@ -750,9 +740,9 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         tileSize: Int,
         tileColumns: Int,
         tileRows: Int
-    ) throws -> (projectedSplatCount: Int, coveredTileReferenceCount: Int) {
+    ) throws -> (projectedSplatCount: Int, coveredTileReferenceCount: Int, drawCommandCount: Int, vertexBuffer: MTLBuffer, tileReport: MetalTileBinReport) {
         guard !splats.isEmpty else {
-            return (0, 0)
+            throw MetalGaussianSplatRenderError.noVisibleSplats
         }
         let rawSplats = splats.map { splat in
             MetalRawSplat(
@@ -775,6 +765,15 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         ) else {
             throw MetalGaussianSplatRenderError.bufferAllocationFailed
         }
+        let tileCount = max(1, tileColumns * tileRows)
+        guard let tileCountsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * tileCount, options: [.storageModeShared]),
+              let tileOffsetsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * (tileCount + 1), options: [.storageModeShared]),
+              let tileCursorBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * tileCount, options: [.storageModeShared]) else {
+            throw MetalGaussianSplatRenderError.bufferAllocationFailed
+        }
+        memset(tileCountsBuffer.contents(), 0, MemoryLayout<UInt32>.stride * tileCount)
+        memset(tileOffsetsBuffer.contents(), 0, MemoryLayout<UInt32>.stride * (tileCount + 1))
+        memset(tileCursorBuffer.contents(), 0, MemoryLayout<UInt32>.stride * tileCount)
         guard let countersBuffer = device.makeBuffer(
             length: MemoryLayout<UInt32>.stride * 2,
             options: [.storageModeShared]
@@ -827,6 +826,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             countEncoder.setBuffer(projectedBuffer, offset: 0, index: 0)
             countEncoder.setBuffer(tileUniformBuffer, offset: 0, index: 1)
             countEncoder.setBuffer(countersBuffer, offset: 0, index: 2)
+            countEncoder.setBuffer(tileCountsBuffer, offset: 0, index: 3)
             dispatchThreads(rawSplats.count, encoder: countEncoder, pipelineState: tileCountPipelineState)
             countEncoder.endEncoding()
         }
@@ -837,7 +837,104 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             throw error
         }
         let counters = countersBuffer.contents().bindMemory(to: UInt32.self, capacity: 2)
-        return (Int(counters[0]), Int(counters[1]))
+        let projectedCount = Int(counters[0])
+        let coveredReferenceCount = Int(counters[1])
+        guard coveredReferenceCount > 0 else {
+            throw MetalGaussianSplatRenderError.noVisibleSplats
+        }
+
+        guard let tileRefsBuffer = device.makeBuffer(
+            length: MemoryLayout<MetalTileReference>.stride * coveredReferenceCount,
+            options: [.storageModeShared]
+        ),
+        let vertexBuffer = device.makeBuffer(
+            length: MemoryLayout<MetalSplatVertex>.stride * coveredReferenceCount,
+            options: [.storageModeShared]
+        ),
+        let secondCommandBuffer = commandQueue.makeCommandBuffer() else {
+            throw MetalGaussianSplatRenderError.bufferAllocationFailed
+        }
+
+        if let resetEncoder = secondCommandBuffer.makeComputeCommandEncoder() {
+            resetEncoder.setComputePipelineState(resetTileCountsPipelineState)
+            resetEncoder.setBuffer(tileCountsBuffer, offset: 0, index: 0)
+            resetEncoder.setBuffer(tileOffsetsBuffer, offset: 0, index: 1)
+            resetEncoder.setBuffer(tileCursorBuffer, offset: 0, index: 2)
+            resetEncoder.setBuffer(tileUniformBuffer, offset: 0, index: 3)
+            dispatchThreads(tileCount, encoder: resetEncoder, pipelineState: resetTileCountsPipelineState)
+            resetEncoder.endEncoding()
+        }
+
+        if let countTilesEncoder = secondCommandBuffer.makeComputeCommandEncoder() {
+            countTilesEncoder.setComputePipelineState(tileCountPipelineState)
+            countTilesEncoder.setBuffer(projectedBuffer, offset: 0, index: 0)
+            countTilesEncoder.setBuffer(tileUniformBuffer, offset: 0, index: 1)
+            countTilesEncoder.setBuffer(countersBuffer, offset: 0, index: 2)
+            countTilesEncoder.setBuffer(tileCountsBuffer, offset: 0, index: 3)
+            dispatchThreads(rawSplats.count, encoder: countTilesEncoder, pipelineState: tileCountPipelineState)
+            countTilesEncoder.endEncoding()
+        }
+
+        if let prefixEncoder = secondCommandBuffer.makeComputeCommandEncoder() {
+            prefixEncoder.setComputePipelineState(prefixTileOffsetsPipelineState)
+            prefixEncoder.setBuffer(tileCountsBuffer, offset: 0, index: 0)
+            prefixEncoder.setBuffer(tileOffsetsBuffer, offset: 0, index: 1)
+            prefixEncoder.setBuffer(tileUniformBuffer, offset: 0, index: 2)
+            prefixEncoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+            prefixEncoder.endEncoding()
+        }
+
+        if let compactEncoder = secondCommandBuffer.makeComputeCommandEncoder() {
+            compactEncoder.setComputePipelineState(compactTileRefsPipelineState)
+            compactEncoder.setBuffer(projectedBuffer, offset: 0, index: 0)
+            compactEncoder.setBuffer(tileUniformBuffer, offset: 0, index: 1)
+            compactEncoder.setBuffer(tileOffsetsBuffer, offset: 0, index: 2)
+            compactEncoder.setBuffer(tileCursorBuffer, offset: 0, index: 3)
+            compactEncoder.setBuffer(tileRefsBuffer, offset: 0, index: 4)
+            dispatchThreads(rawSplats.count, encoder: compactEncoder, pipelineState: compactTileRefsPipelineState)
+            compactEncoder.endEncoding()
+        }
+
+        if let sortEncoder = secondCommandBuffer.makeComputeCommandEncoder() {
+            sortEncoder.setComputePipelineState(sortTileRefsPipelineState)
+            sortEncoder.setBuffer(tileCountsBuffer, offset: 0, index: 0)
+            sortEncoder.setBuffer(tileOffsetsBuffer, offset: 0, index: 1)
+            sortEncoder.setBuffer(tileUniformBuffer, offset: 0, index: 2)
+            sortEncoder.setBuffer(tileRefsBuffer, offset: 0, index: 3)
+            dispatchThreads(tileCount, encoder: sortEncoder, pipelineState: sortTileRefsPipelineState)
+            sortEncoder.endEncoding()
+        }
+
+        if let vertexEncoder = secondCommandBuffer.makeComputeCommandEncoder() {
+            vertexEncoder.setComputePipelineState(buildVertexBufferPipelineState)
+            vertexEncoder.setBuffer(projectedBuffer, offset: 0, index: 0)
+            vertexEncoder.setBuffer(tileRefsBuffer, offset: 0, index: 1)
+            vertexEncoder.setBuffer(vertexBuffer, offset: 0, index: 2)
+            var drawCount = UInt32(coveredReferenceCount)
+            let drawCountBuffer = device.makeBuffer(bytes: &drawCount, length: MemoryLayout<UInt32>.stride, options: [.storageModeShared])
+            vertexEncoder.setBuffer(drawCountBuffer, offset: 0, index: 3)
+            dispatchThreads(coveredReferenceCount, encoder: vertexEncoder, pipelineState: buildVertexBufferPipelineState)
+            vertexEncoder.endEncoding()
+        }
+
+        secondCommandBuffer.commit()
+        secondCommandBuffer.waitUntilCompleted()
+        if let error = secondCommandBuffer.error {
+            throw error
+        }
+
+        let tileReport = makeGPUTileReport(
+            frameIndex: frame.index,
+            tileSize: tileSize,
+            tileColumns: tileColumns,
+            tileRows: tileRows,
+            projectedSplatCount: projectedCount,
+            drawCommandCount: coveredReferenceCount,
+            tileCountsBuffer: tileCountsBuffer,
+            tileOffsetsBuffer: tileOffsetsBuffer,
+            tileRefsBuffer: tileRefsBuffer
+        )
+        return (projectedCount, coveredReferenceCount, coveredReferenceCount, vertexBuffer, tileReport)
     }
 
     private func dispatchThreads(_ count: Int, encoder: MTLComputeCommandEncoder, pipelineState: MTLComputePipelineState) {
@@ -845,6 +942,47 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         let threadsPerThreadgroup = MTLSize(width: width, height: 1, depth: 1)
         let threads = MTLSize(width: count, height: 1, depth: 1)
         encoder.dispatchThreads(threads, threadsPerThreadgroup: threadsPerThreadgroup)
+    }
+
+    private func makeGPUTileReport(
+        frameIndex: Int,
+        tileSize: Int,
+        tileColumns: Int,
+        tileRows: Int,
+        projectedSplatCount: Int,
+        drawCommandCount: Int,
+        tileCountsBuffer: MTLBuffer,
+        tileOffsetsBuffer: MTLBuffer,
+        tileRefsBuffer: MTLBuffer
+    ) -> MetalTileBinReport {
+        let tileCount = tileColumns * tileRows
+        let counts = tileCountsBuffer.contents().bindMemory(to: UInt32.self, capacity: tileCount)
+        let offsets = tileOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: tileCount + 1)
+        let refs = tileRefsBuffer.contents().bindMemory(to: MetalTileReference.self, capacity: max(drawCommandCount, 1))
+        var bins: [MetalTileBin] = []
+        bins.reserveCapacity(tileCount)
+        for tileIndex in 0..<tileCount {
+            let count = Int(counts[tileIndex])
+            guard count > 0 else { continue }
+            let start = Int(offsets[tileIndex])
+            let indexes = (0..<count).map { Int(refs[start + $0].splatIndex) }
+            bins.append(MetalTileBin(
+                tileX: tileIndex % tileColumns,
+                tileY: tileIndex / tileColumns,
+                splatIndexesBackToFront: indexes
+            ))
+        }
+        return MetalTileBinReport(
+            frameIndex: frameIndex,
+            tileSize: tileSize,
+            tileColumns: tileColumns,
+            tileRows: tileRows,
+            projectedSplatCount: projectedSplatCount,
+            drawCommandCount: drawCommandCount,
+            gpuProjectedSplatCount: projectedSplatCount,
+            gpuCoveredTileReferenceCount: drawCommandCount,
+            bins: bins
+        )
     }
 
     private func makeTexture(width: Int, height: Int, pixelFormat: MTLPixelFormat) throws -> MTLTexture {
@@ -1084,6 +1222,7 @@ kernel void robot_count_tile_references(
     const device ProjectedSplat *projectedSplats [[buffer(0)]],
     constant TileUniforms &tiles [[buffer(1)]],
     device atomic_uint *counters [[buffer(2)]],
+    device atomic_uint *tileCounts [[buffer(3)]],
     uint id [[thread_position_in_grid]]
 ) {
     if (id >= tiles.splatCount) {
@@ -1095,6 +1234,128 @@ kernel void robot_count_tile_references(
     }
     uint tileCount = (splat.tileRange.z - splat.tileRange.x + 1u) * (splat.tileRange.w - splat.tileRange.y + 1u);
     atomic_fetch_add_explicit(&counters[1], tileCount, memory_order_relaxed);
+    uint columns = max(tiles.tileLayout.y, 1u);
+    for (uint tileY = splat.tileRange.y; tileY <= splat.tileRange.w; tileY++) {
+        for (uint tileX = splat.tileRange.x; tileX <= splat.tileRange.z; tileX++) {
+            uint tileIndex = tileY * columns + tileX;
+            atomic_fetch_add_explicit(&tileCounts[tileIndex], 1u, memory_order_relaxed);
+        }
+    }
+}
+
+kernel void robot_reset_tile_counts(
+    device uint *tileCounts [[buffer(0)]],
+    device uint *tileOffsets [[buffer(1)]],
+    device uint *tileCursor [[buffer(2)]],
+    constant TileUniforms &tiles [[buffer(3)]],
+    uint id [[thread_position_in_grid]]
+) {
+    uint tileCount = max(tiles.tileLayout.y, 1u) * max(tiles.tileLayout.z, 1u);
+    if (id >= tileCount) {
+        return;
+    }
+    tileCounts[id] = 0;
+    tileOffsets[id] = 0;
+    tileCursor[id] = 0;
+    if (id == tileCount - 1) {
+        tileOffsets[tileCount] = 0;
+    }
+}
+
+kernel void robot_prefix_tile_offsets(
+    const device uint *tileCounts [[buffer(0)]],
+    device uint *tileOffsets [[buffer(1)]],
+    constant TileUniforms &tiles [[buffer(2)]],
+    uint id [[thread_position_in_grid]]
+) {
+    if (id != 0) {
+        return;
+    }
+    uint tileCount = max(tiles.tileLayout.y, 1u) * max(tiles.tileLayout.z, 1u);
+    uint running = 0;
+    for (uint tileIndex = 0; tileIndex < tileCount; tileIndex++) {
+        tileOffsets[tileIndex] = running;
+        running += tileCounts[tileIndex];
+    }
+    tileOffsets[tileCount] = running;
+}
+
+struct TileReference {
+    uint tileIndex;
+    uint splatIndex;
+    float depth;
+    uint reserved;
+};
+
+kernel void robot_compact_tile_references(
+    const device ProjectedSplat *projectedSplats [[buffer(0)]],
+    constant TileUniforms &tiles [[buffer(1)]],
+    const device uint *tileOffsets [[buffer(2)]],
+    device atomic_uint *tileCursor [[buffer(3)]],
+    device TileReference *tileRefs [[buffer(4)]],
+    uint id [[thread_position_in_grid]]
+) {
+    if (id >= tiles.splatCount) {
+        return;
+    }
+    ProjectedSplat splat = projectedSplats[id];
+    if (splat.centerDepth.z <= 0.0) {
+        return;
+    }
+    uint columns = max(tiles.tileLayout.y, 1u);
+    for (uint tileY = splat.tileRange.y; tileY <= splat.tileRange.w; tileY++) {
+        for (uint tileX = splat.tileRange.x; tileX <= splat.tileRange.z; tileX++) {
+            uint tileIndex = tileY * columns + tileX;
+            uint localIndex = atomic_fetch_add_explicit(&tileCursor[tileIndex], 1u, memory_order_relaxed);
+            uint outputIndex = tileOffsets[tileIndex] + localIndex;
+            tileRefs[outputIndex].tileIndex = tileIndex;
+            tileRefs[outputIndex].splatIndex = id;
+            tileRefs[outputIndex].depth = splat.centerDepth.z;
+            tileRefs[outputIndex].reserved = 0;
+        }
+    }
+}
+
+kernel void robot_sort_tile_references(
+    const device uint *tileCounts [[buffer(0)]],
+    const device uint *tileOffsets [[buffer(1)]],
+    constant TileUniforms &tiles [[buffer(2)]],
+    device TileReference *tileRefs [[buffer(3)]],
+    uint tileIndex [[thread_position_in_grid]]
+) {
+    uint tileCount = max(tiles.tileLayout.y, 1u) * max(tiles.tileLayout.z, 1u);
+    if (tileIndex >= tileCount) {
+        return;
+    }
+    uint count = tileCounts[tileIndex];
+    uint start = tileOffsets[tileIndex];
+    for (uint i = 1; i < count; i++) {
+        TileReference key = tileRefs[start + i];
+        int j = int(i) - 1;
+        while (j >= 0 && tileRefs[start + uint(j)].depth < key.depth) {
+            tileRefs[start + uint(j + 1)] = tileRefs[start + uint(j)];
+            j -= 1;
+        }
+        tileRefs[start + uint(j + 1)] = key;
+    }
+}
+
+kernel void robot_build_vertex_buffer(
+    const device ProjectedSplat *projectedSplats [[buffer(0)]],
+    const device TileReference *tileRefs [[buffer(1)]],
+    device SplatVertex *vertices [[buffer(2)]],
+    constant uint &drawCount [[buffer(3)]],
+    uint id [[thread_position_in_grid]]
+) {
+    if (id >= drawCount) {
+        return;
+    }
+    TileReference ref = tileRefs[id];
+    ProjectedSplat splat = projectedSplats[ref.splatIndex];
+    vertices[id].projectedCenterDepth = splat.centerDepth;
+    vertices[id].covarianceRadius = splat.covarianceRadius;
+    vertices[id].inverseCovariance = splat.inverseCovariance;
+    vertices[id].colorOpacity = splat.colorOpacity;
 }
 
 vertex VertexOut robot_splat_vertex(
