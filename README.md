@@ -66,7 +66,7 @@ swift run robot-vision-lab --output ./GeneratedDataset --path-mode lawnmower --p
 swift run robot-vision-lab --output ./GeneratedDataset --path-mode random --frame-count 1000 --path-seed 7 --render-preview
 swift run robot-vision-lab --output ./GeneratedDataset --render-preview --augment-dataset --augmentation-seed 42
 swift run robot-vision-lab --output ./GeneratedDataset --splat ./room.ply --render-splat-points
-swift run robot-vision-lab --output ./GeneratedDataset --splat ./Fixtures/sample_gaussian_splats.ply --render-metal-splats
+swift run robot-vision-lab --output ./GeneratedDataset --splat ./Fixtures/sample_gaussian_splats.ply --render-metal-splats --metal-tile-size 16 --metal-max-splats 1000000
 swift run robot-vision-lab --output ./GeneratedDataset --export-sample-capture
 swift run robot-vision-lab --output ./GeneratedDataset --import-robotcapture ./GeneratedDataset/CaptureBundle --capture-holdout-every 5
 swift run robot-vision-lab --output ./GeneratedDataset --capture-route ./GeneratedDataset/PreparedCapture/capture_route.json --align-capture-route
@@ -120,6 +120,8 @@ developer tool for exercising the native contracts.
   and vertex-buffer construction, composites Gaussian point discs on the GPU,
   and writes RGB, GPU-derived depth images, GPU-derived visibility images,
   diagnostic depth/visibility summaries, and tile-bin products.
+- `MetalGaussianSplatRenderConfiguration`: controls tile size and per-frame
+  splat budget for larger Apple Silicon render jobs.
 - `SplatTrainingJob`: Apple-native training plan for MLX/Create ML/Metal
   Performance Shaders workflows.
 - `CoreMLDatasetEvaluator`: Core ML evaluation path for deployed on-device
@@ -170,7 +172,8 @@ developer tool for exercising the native contracts.
    - Compute covariance projection now follows the same scale/rotation plus
      camera-Jacobian path as the CPU diagnostic projection.
    - GPU-derived depth and visibility images are in place.
-   - Add tile-based memory and large-scene streaming.
+   - Tile size and per-frame splat budgets are configurable.
+   - Add tiled streaming for scenes larger than local Metal working-set budgets.
 
 6. Build the Vision Pro reviewer.
    - Open `.robotscene`.

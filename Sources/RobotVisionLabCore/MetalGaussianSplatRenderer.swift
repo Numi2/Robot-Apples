@@ -104,6 +104,16 @@ public struct MetalSplatRenderReportWriter: Sendable {
     }
 }
 
+public struct MetalGaussianSplatRenderConfiguration: Codable, Equatable, Sendable {
+    public var tileSize: Int
+    public var maxSplatsPerFrame: Int?
+
+    public init(tileSize: Int = 16, maxSplatsPerFrame: Int? = nil) {
+        self.tileSize = max(4, tileSize)
+        self.maxSplatsPerFrame = maxSplatsPerFrame
+    }
+}
+
 public struct ProjectedGaussianSplat: Codable, Equatable, Sendable {
     public var splatIndex: Int
     public var centerPixels: SIMD2<Float>
@@ -396,6 +406,7 @@ private struct MetalTileUniforms {
 }
 
 public final class MetalGaussianSplatRenderer: SplatRenderer {
+    private let configuration: MetalGaussianSplatRenderConfiguration
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLRenderPipelineState
@@ -408,13 +419,17 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
     private let buildVertexBufferPipelineState: MTLComputePipelineState
     private let depthVisibilityPipelineState: MTLComputePipelineState
 
-    public init(device: MTLDevice? = MTLCreateSystemDefaultDevice()) throws {
+    public init(
+        configuration: MetalGaussianSplatRenderConfiguration = MetalGaussianSplatRenderConfiguration(),
+        device: MTLDevice? = MTLCreateSystemDefaultDevice()
+    ) throws {
         guard let device else {
             throw MetalGaussianSplatRenderError.deviceUnavailable
         }
         guard let commandQueue = device.makeCommandQueue() else {
             throw MetalGaussianSplatRenderError.commandQueueUnavailable
         }
+        self.configuration = configuration
         self.device = device
         self.commandQueue = commandQueue
         let library = try Self.makeLibrary(device: device)
@@ -472,21 +487,22 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
     ) throws -> MetalSplatRenderProducts {
         let width = cameraRig.intrinsics.width
         let height = cameraRig.intrinsics.height
+        let frameSplats = Array(cloud.splats.prefix(configuration.maxSplatsPerFrame ?? cloud.splats.count))
         let prepared = prepareTileSortedSplats(
-            cloud.splats,
+            frameSplats,
             frame: frame,
             cameraRig: cameraRig,
             width: width,
             height: height,
-            tileSize: 16
+            tileSize: configuration.tileSize
         )
         let gpuPreparation = try prepareTileBinsOnGPU(
-            cloud.splats,
+            frameSplats,
             frame: frame,
             cameraRig: cameraRig,
             width: width,
             height: height,
-            tileSize: 16,
+            tileSize: configuration.tileSize,
             tileColumns: prepared.tileReport.tileColumns,
             tileRows: prepared.tileReport.tileRows
         )
@@ -583,7 +599,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             tileBinURL: tileBinURL,
             visibleSplatCount: prepared.projectedSplats.count,
             drawCommandCount: gpuPreparation.drawCommandCount,
-            totalSplatCount: cloud.splats.count
+            totalSplatCount: frameSplats.count
         )
     }
 

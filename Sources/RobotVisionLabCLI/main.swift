@@ -475,7 +475,10 @@ struct RobotVisionLabCLI {
     }
 
     private static func renderMetalSplatFrames(manifest: DatasetManifest, outputDirectory: URL) throws {
-        let renderer = try MetalGaussianSplatRenderer()
+        let renderer = try MetalGaussianSplatRenderer(configuration: MetalGaussianSplatRenderConfiguration(
+            tileSize: intValue(for: "--metal-tile-size", default: 16),
+            maxSplatsPerFrame: stringValue(for: "--metal-max-splats").flatMap(Int.init)
+        ))
         let report = try renderer.renderDataset(manifest, outputDirectory: outputDirectory)
         let reportURL = outputDirectory.appendingPathComponent("metal_splat_render_report.json")
         try MetalSplatRenderReportWriter().write(report, to: reportURL)
