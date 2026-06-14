@@ -157,6 +157,10 @@ manage signing for physical iPhone, Mac, and Vision Pro deployment.
 - `RobotRouteAligner`: estimates ARKit-to-splat transforms.
 - `RobotRouteExpander`: generates robot-camera route variants from captured
   routes.
+- `RouteIntelligenceAnalyzer`: applies manual coordinate transforms and
+  floor/height constraints, computes route confidence metrics, generates
+  floor-constrained robot-valid paths, edits navigation graphs, and reports
+  missing-view, repeated-view, and low-parallax coverage issues.
 - `GaussianSplatImporter`: inspects `.ply` and `.splat` assets.
 - `SplatPointProjectionRenderer`: CPU reference renderer for camera geometry
   validation only.

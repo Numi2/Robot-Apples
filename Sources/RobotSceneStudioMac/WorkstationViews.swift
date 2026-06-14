@@ -290,12 +290,60 @@ private struct RouteControlPanel: View {
                     .textFieldStyle(.roundedBorder)
                 TextField("Yaw offsets", text: $model.routeExpansionYawOffsets)
                     .textFieldStyle(.roundedBorder)
+                HStack {
+                    NumberField(title: "Floor Y", value: $model.floorY)
+                    NumberField(title: "Min H", value: $model.minimumCameraHeight)
+                    NumberField(title: "Max H", value: $model.maximumCameraHeight)
+                }
+                HStack {
+                    NumberField(title: "TX", value: $model.transformTranslationX)
+                    NumberField(title: "TY", value: $model.transformTranslationY)
+                    NumberField(title: "TZ", value: $model.transformTranslationZ)
+                }
+                HStack {
+                    NumberField(title: "Yaw", value: $model.transformYawDegrees)
+                    NumberField(title: "SX", value: $model.transformScaleX)
+                    NumberField(title: "SZ", value: $model.transformScaleZ)
+                }
+                Button {
+                    model.applyCoordinateTransformEditor()
+                } label: {
+                    Label("Apply Transform Editor", systemImage: "move.3d")
+                }
+                .disabled(model.state.activeCaptureURL == nil)
                 Button {
                     model.generateRouteVariants()
                 } label: {
                     Label("Generate Variants", systemImage: "arrow.triangle.branch")
                 }
                 .disabled(model.state.activeCaptureURL == nil)
+                HStack {
+                    NumberField(title: "Row", value: $model.robotPathRowSpacing)
+                    NumberField(title: "Column", value: $model.robotPathColumnSpacing)
+                }
+                Button {
+                    model.generateRobotValidPath()
+                } label: {
+                    Label("Generate Robot-Valid Path", systemImage: "point.3.filled.connected.trianglepath.dotted")
+                }
+                Button {
+                    model.analyzeRouteCoverage()
+                } label: {
+                    Label("Analyze Coverage", systemImage: "viewfinder")
+                }
+                .disabled(model.state.activeCaptureURL == nil)
+                Button {
+                    model.addNavigationNode()
+                } label: {
+                    Label("Add Graph Node", systemImage: "plus.circle")
+                }
+                if let first = model.navigationGraph?.nodes.first, let second = model.navigationGraph?.nodes.dropFirst().first {
+                    Button {
+                        model.connectNavigationNodes(from: first.id, to: second.id)
+                    } label: {
+                        Label("Connect First Nodes", systemImage: "link")
+                    }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -540,6 +588,69 @@ private struct RouteAlignmentPanel: View {
             if let report = model.routeExpansionReport {
                 Text("Generated \(report.variantCount) variants and \(report.expandedKeyframeCount) keyframes.")
                     .foregroundStyle(.secondary)
+            }
+            if let metrics = model.routeConfidenceMetrics {
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                    GridRow {
+                        MetricCell(title: "Confidence", value: String(format: "%.2f", metrics.alignmentConfidence))
+                        MetricCell(title: "Anchors", value: "\(metrics.anchorCount)")
+                        MetricCell(title: "Constrained", value: "\(metrics.constrainedKeyframeCount)")
+                    }
+                }
+                if let residual = metrics.meanAnchorResidualMeters {
+                    Text("Mean anchor residual \(String(format: "%.2f", residual))m.")
+                        .foregroundStyle(.secondary)
+                }
+                DiagnosticsList(messages: metrics.warnings)
+            }
+            if let coverage = model.coverageReport {
+                Text("Coverage Analysis")
+                    .font(.headline)
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                    GridRow {
+                        MetricCell(title: "Missing", value: "\(coverage.missingViewCount)")
+                        MetricCell(title: "Repeated", value: "\(coverage.repeatedViewCount)")
+                        MetricCell(title: "Low Parallax", value: "\(coverage.lowParallaxCount)")
+                    }
+                }
+                List(coverage.issues) { issue in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(issue.kind.rawValue)
+                        Text(issue.note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(minHeight: 140)
+            }
+            if let graph = model.navigationGraph {
+                Text("Navigation Graph")
+                    .font(.headline)
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                    GridRow {
+                        MetricCell(title: "Nodes", value: "\(graph.nodes.count)")
+                        MetricCell(title: "Edges", value: "\(graph.edges.count)")
+                        MetricCell(title: "Manual", value: "\(graph.nodes.filter { $0.id.hasPrefix("manual_") }.count)")
+                    }
+                }
+                List(graph.nodes, id: \.id) { node in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(node.id)
+                            Text(node.label ?? "Route node")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            model.removeNavigationNode(id: node.id)
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                .frame(minHeight: 140)
             }
         }
     }

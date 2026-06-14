@@ -158,6 +158,21 @@ public final class WorkstationModel {
     public var routeExpansionLateralOffsets = "-0.25,0,0.25"
     public var routeExpansionHeightOffsets = "-0.08,0,0.08"
     public var routeExpansionYawOffsets = "-8,0,8"
+    public var floorY = 0.0
+    public var minimumCameraHeight = 0.2
+    public var maximumCameraHeight = 2.0
+    public var transformTranslationX = 0.0
+    public var transformTranslationY = 0.0
+    public var transformTranslationZ = 0.0
+    public var transformYawDegrees = 0.0
+    public var transformScaleX = 1.0
+    public var transformScaleY = 1.0
+    public var transformScaleZ = 1.0
+    public var robotPathRowSpacing = 0.75
+    public var robotPathColumnSpacing = 0.75
+    public private(set) var routeConfidenceMetrics: RouteConfidenceMetrics?
+    public private(set) var coverageReport: RouteCoverageReport?
+    public private(set) var navigationGraph: NavigationGraph?
     public private(set) var isMultipeerReceiverRunning = false
     public private(set) var transferEvents: [WorkstationTransferEvent] = []
     public private(set) var pendingPairingInvitations: [String] = []
@@ -281,9 +296,14 @@ public final class WorkstationModel {
             guard let preparation else {
                 throw WorkstationError.missingPreparedCapture
             }
-            let sceneBounds = try activeSceneBounds(for: preparation.route)
+            let editedSourceRoute = RouteIntelligenceAnalyzer().apply(
+                route: preparation.route,
+                transformEditor: routeTransformEditor,
+                floorConstraint: floorConstraint
+            )
+            let sceneBounds = try activeSceneBounds(for: editedSourceRoute)
             let request = RouteAlignmentRequest(
-                sourceRoute: preparation.route,
+                sourceRoute: editedSourceRoute,
                 sceneBounds: sceneBounds,
                 method: method,
                 controlPoints: routeAlignmentAnchors.map(\.controlPoint),
@@ -295,14 +315,45 @@ public final class WorkstationModel {
             )
             alignedRoute = output.alignedRoute
             routeAlignmentReport = output.report
+            routeConfidenceMetrics = RouteIntelligenceAnalyzer().confidence(
+                sourceRoute: preparation.route,
+                alignedRoute: output.alignedRoute,
+                anchors: routeAlignmentAnchors.map(\.controlPoint),
+                floorConstraint: floorConstraint
+            )
             state.warningCount += output.report.warnings.count
             state.diagnostics.append(contentsOf: output.report.warnings)
+            state.diagnostics.append(contentsOf: routeConfidenceMetrics?.warnings ?? [])
             appendArtifact(title: "Aligned Route", url: output.report.alignedRouteURL, kind: "aligned-route")
             appendArtifact(
                 title: "Route Alignment Report",
                 url: state.workspaceURL.appendingPathComponent("RouteAlignment/route_alignment_report.json"),
                 kind: "route-alignment"
             )
+        }
+    }
+
+    public func applyCoordinateTransformEditor() {
+        perform(stage: .preparingCapture) {
+            guard let preparation else {
+                throw WorkstationError.missingPreparedCapture
+            }
+            let route = RouteIntelligenceAnalyzer().apply(
+                route: alignedRoute ?? preparation.route,
+                transformEditor: routeTransformEditor,
+                floorConstraint: floorConstraint
+            )
+            alignedRoute = route
+            let routeURL = state.workspaceURL.appendingPathComponent("RouteAlignment/edited_aligned_route.json")
+            try FileManager.default.createDirectory(at: routeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder.robotVisionLabEncoder.encode(route).write(to: routeURL)
+            routeConfidenceMetrics = RouteIntelligenceAnalyzer().confidence(
+                sourceRoute: preparation.route,
+                alignedRoute: route,
+                anchors: routeAlignmentAnchors.map(\.controlPoint),
+                floorConstraint: floorConstraint
+            )
+            appendArtifact(title: "Edited Aligned Route", url: routeURL, kind: "aligned-route")
         }
     }
 
@@ -335,6 +386,63 @@ public final class WorkstationModel {
                 kind: "route-variants"
             )
         }
+    }
+
+    public func generateRobotValidPath() {
+        perform(stage: .preparingCapture) {
+            let route = expandedRoute ?? alignedRoute ?? preparation?.route
+            let bounds = try activeSceneBounds(for: route ?? RobotPath(keyframes: []))
+            let output = try RouteIntelligenceAnalyzer().generateRobotValidPath(
+                RobotValidPathRequest(
+                    bounds: bounds,
+                    floorConstraint: floorConstraint,
+                    rowSpacingMeters: robotPathRowSpacing,
+                    columnSpacingMeters: robotPathColumnSpacing
+                ),
+                outputDirectory: state.workspaceURL.appendingPathComponent("RobotValidPaths", isDirectory: true)
+            )
+            expandedRoute = output.route
+            navigationGraph = output.navigationGraph
+            state.frameCount = output.route.keyframes.count
+            appendArtifact(title: "Robot-Valid Route", url: output.routeURL, kind: "robot-valid-route")
+            appendArtifact(title: "Editable Navigation Graph", url: output.navigationGraphURL, kind: "navigation-graph")
+        }
+    }
+
+    public func analyzeRouteCoverage() {
+        perform(stage: .preparingCapture) {
+            guard let route = expandedRoute ?? alignedRoute ?? preparation?.route else {
+                throw WorkstationError.missingPreparedCapture
+            }
+            let report = RouteIntelligenceAnalyzer().analyzeCoverage(route: route)
+            coverageReport = report
+            let reportURL = state.workspaceURL.appendingPathComponent("route_coverage_report.json")
+            try JSONEncoder.robotVisionLabEncoder.encode(report).write(to: reportURL)
+            appendArtifact(title: "Route Coverage Report", url: reportURL, kind: "coverage")
+        }
+    }
+
+    public func addNavigationNode() {
+        let existing = navigationGraph ?? NavigationGraph(nodes: [], edges: [])
+        let index = existing.nodes.count
+        let position = (expandedRoute ?? alignedRoute ?? preparation?.route)?.keyframes.first?.pose.position ?? .zero
+        navigationGraph = RouteIntelligenceAnalyzer().addNode(
+            to: existing,
+            node: NavigationNode(id: "manual_\(index)", position: position, label: "Manual")
+        )
+    }
+
+    public func removeNavigationNode(id: String) {
+        guard let navigationGraph else { return }
+        self.navigationGraph = RouteIntelligenceAnalyzer().removeNode(from: navigationGraph, nodeID: id)
+    }
+
+    public func connectNavigationNodes(from: String, to: String) {
+        guard let navigationGraph else { return }
+        self.navigationGraph = RouteIntelligenceAnalyzer().addEdge(
+            to: navigationGraph,
+            edge: NavigationEdge(from: from, to: to, traversalCost: 1)
+        )
     }
 
     public func startMultipeerReceiver() {
@@ -528,6 +636,22 @@ public final class WorkstationModel {
         planTraining()
         evaluateBaselineModel()
         exportRobotScene()
+    }
+
+    public var floorConstraint: RouteFloorHeightConstraint {
+        RouteFloorHeightConstraint(
+            floorY: floorY,
+            minimumCameraHeight: minimumCameraHeight,
+            maximumCameraHeight: maximumCameraHeight
+        )
+    }
+
+    public var routeTransformEditor: RouteTransformEditor {
+        RouteTransformEditor(
+            translation: SIMD3<Double>(transformTranslationX, transformTranslationY, transformTranslationZ),
+            yawDegrees: transformYawDegrees,
+            scale: SIMD3<Double>(transformScaleX, transformScaleY, transformScaleZ)
+        )
     }
 
     private func perform(stage: WorkstationStage, _ work: () throws -> Void) {
