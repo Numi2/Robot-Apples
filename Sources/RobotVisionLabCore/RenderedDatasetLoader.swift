@@ -7,11 +7,13 @@ public struct RenderedModelSample: Codable, Equatable, Sendable {
     public var rgbURL: URL?
     public var depthURL: URL?
     public var visibilityURL: URL?
+    public var lidarScanURL: URL?
     public var pose: Pose3D
     public var intrinsics: CameraIntrinsics
     public var rgbCHW: [Float]
     public var depthCHW: [Float]
     public var visibilityCHW: [Float]
+    public var lidarFeatureVector: [Float]
     public var poseVector: [Float]
     public var intrinsicsVector: [Float]
     public var warnings: [String]
@@ -22,11 +24,13 @@ public struct RenderedModelSample: Codable, Equatable, Sendable {
         rgbURL: URL?,
         depthURL: URL?,
         visibilityURL: URL?,
+        lidarScanURL: URL?,
         pose: Pose3D,
         intrinsics: CameraIntrinsics,
         rgbCHW: [Float],
         depthCHW: [Float],
         visibilityCHW: [Float],
+        lidarFeatureVector: [Float],
         poseVector: [Float],
         intrinsicsVector: [Float],
         warnings: [String] = []
@@ -36,11 +40,13 @@ public struct RenderedModelSample: Codable, Equatable, Sendable {
         self.rgbURL = rgbURL
         self.depthURL = depthURL
         self.visibilityURL = visibilityURL
+        self.lidarScanURL = lidarScanURL
         self.pose = pose
         self.intrinsics = intrinsics
         self.rgbCHW = rgbCHW
         self.depthCHW = depthCHW
         self.visibilityCHW = visibilityCHW
+        self.lidarFeatureVector = lidarFeatureVector
         self.poseVector = poseVector
         self.intrinsicsVector = intrinsicsVector
         self.warnings = warnings
@@ -59,9 +65,12 @@ public struct RenderedDatasetLoader: Sendable {
         let rgbURL = frame.productURL(for: .rgb)
         let depthURL = frame.productURL(for: .depth)
         let visibilityURL = frame.productURL(for: .visibility)
+        let lidarScanURL = frame.productURL(for: .lidarScan)
         let rgb = rgbURL.flatMap { try? readPPMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
         let depth = depthURL.flatMap { try? readPGMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
         let visibility = visibilityURL.flatMap { try? readPGMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
+        let loadedLiDARFeatures = lidarScanURL.flatMap { try? readLiDARFeatureVector(url: $0) }
+        let lidarFeatures = loadedLiDARFeatures ?? Array(repeating: Float(0), count: 6)
 
         if rgbURL == nil {
             warnings.append("Frame has no RGB product URL.")
@@ -78,6 +87,11 @@ public struct RenderedDatasetLoader: Sendable {
         } else if visibility == nil {
             warnings.append("Unable to load visibility tensor from \(visibilityURL?.path ?? "unknown").")
         }
+        if lidarScanURL == nil {
+            warnings.append("Frame has no LiDAR scan product URL.")
+        } else if loadedLiDARFeatures == nil {
+            warnings.append("Unable to load LiDAR scan summary from \(lidarScanURL?.path ?? "unknown").")
+        }
 
         return RenderedModelSample(
             frameIndex: frame.index,
@@ -85,11 +99,13 @@ public struct RenderedDatasetLoader: Sendable {
             rgbURL: rgbURL,
             depthURL: depthURL,
             visibilityURL: visibilityURL,
+            lidarScanURL: lidarScanURL,
             pose: frame.cameraPose,
             intrinsics: intrinsics,
             rgbCHW: rgb ?? Array(repeating: 0, count: max(1, intrinsics.width * intrinsics.height * 3)),
             depthCHW: depth ?? Array(repeating: 0, count: max(1, intrinsics.width * intrinsics.height)),
             visibilityCHW: visibility ?? Array(repeating: 0, count: max(1, intrinsics.width * intrinsics.height)),
+            lidarFeatureVector: lidarFeatures,
             poseVector: poseVector(frame.cameraPose),
             intrinsicsVector: intrinsicsVector(intrinsics),
             warnings: warnings
@@ -142,6 +158,23 @@ public struct RenderedDatasetLoader: Sendable {
         }
         let scale = Float(max(parsed.maxValue, 1))
         return (0..<pixelCount).map { Float(parsed.payload[$0]) / scale }
+    }
+
+    private func readLiDARFeatureVector(url: URL) throws -> [Float] {
+        let report = try JSONDecoder.robotVisionLabDecoder.decode(RenderedLiDARScanReport.self, from: Data(contentsOf: url))
+        let rayCount = max(report.metrics.rayCount, 1)
+        let validFraction = Float(report.metrics.validRayCount) / Float(rayCount)
+        let rayCountScale = min(Float(report.metrics.rayCount) / 1024, 4)
+        let meanRangeScale = Float(max(report.specification.farRangeMeters, 0.01))
+        let meanRange = Float(report.metrics.meanRangeMeters ?? 0) / meanRangeScale
+        return [
+            validFraction,
+            Float(report.metrics.dropoutRate),
+            min(max(meanRange, 0), 1),
+            Float(report.metrics.meanIntensity ?? 0),
+            Float(report.metrics.lowSupportRate),
+            rayCountScale
+        ]
     }
 
     private func parsePNM(

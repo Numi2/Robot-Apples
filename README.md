@@ -112,12 +112,12 @@ The required iPhone capture output is a `.robotcapture` package containing:
   intensity, range, support metrics, and JSON reports for robot datasets.
 - `MLXTrainingPackageBuilder`: trains a compact Apple MLX model from fused
   pose, intrinsics, RGB statistics, depth coverage, visibility coverage, and
-  rendered failure labels, while exposing LiDAR scan summaries for research
-  scripts, then provides a Core ML export path.
+  synthetic LiDAR scan metrics plus rendered failure labels, then provides a
+  Core ML export path for the same `scene_features` contract.
 - `CoreMLDatasetEvaluator`: inspects Core ML models, supplies fused
-  `scene_features` inputs when exported from MLX, and maps vector outputs back
-  to free-space, obstacle, localization uncertainty, and failure-score
-  predictions.
+  30-value `scene_features` inputs when exported from MLX, and maps vector
+  outputs back to free-space, obstacle, localization uncertainty, and
+  failure-score predictions.
 - `RobotScenePackageExporter` and `SharedProjectFormatTools`: `.robotscene`
   export, validation, migration, checksum, compaction, and reporting.
 

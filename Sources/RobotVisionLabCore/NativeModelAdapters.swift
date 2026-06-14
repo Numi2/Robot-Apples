@@ -138,7 +138,7 @@ public final class CoreMLRenderedSampleFeatureProvider: MLFeatureProvider {
         case .visibility:
             return multiArrayValue(sample.visibilityCHW, shape: feature.shape)
         case .renderedFeatures:
-            return multiArrayValue(renderedFeatureVector(sample), shape: feature.shape.isEmpty ? [1, 24] : feature.shape)
+            return multiArrayValue(renderedFeatureVector(sample), shape: feature.shape.isEmpty ? [1, 30] : feature.shape)
         case .cameraPose:
             return multiArrayValue(sample.poseVector, shape: feature.shape.isEmpty ? [1, 7] : feature.shape)
         case .intrinsics:
@@ -162,6 +162,7 @@ public final class CoreMLRenderedSampleFeatureProvider: MLFeatureProvider {
             + channelStandardDeviations(sample.rgbCHW, channels: 3)
             + scalarImageFeatures(sample.depthCHW, highThreshold: 0.82)
             + visibilityFeatures(sample.visibilityCHW)
+            + lidarFeatures(sample)
     }
 
     private func channelMeans(_ values: [Float], channels: Int) -> [Float] {
@@ -205,6 +206,13 @@ public final class CoreMLRenderedSampleFeatureProvider: MLFeatureProvider {
         let lowCoverage = Float(values.filter { $0 < 0.18 }.count) / Float(values.count)
         let highCoverage = Float(values.filter { $0 > 0.65 }.count) / Float(values.count)
         return [mean, sqrt(variance), lowCoverage, highCoverage]
+    }
+
+    private func lidarFeatures(_ sample: RenderedModelSample) -> [Float] {
+        if sample.lidarFeatureVector.count == 6 {
+            return sample.lidarFeatureVector
+        }
+        return Array(sample.lidarFeatureVector.prefix(6)) + Array(repeating: 0, count: max(0, 6 - sample.lidarFeatureVector.count))
     }
 
     private func multiArrayValue(_ values: [Float], shape: [Int]) -> MLFeatureValue? {
