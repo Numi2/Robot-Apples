@@ -100,8 +100,9 @@ developer tool for exercising the native contracts.
   artifact browsing, and `.robotscene` export.
 - `WorkstationModel`: Observation-backed Mac workstation controller that imports
   captures, prepares routes, links splats, builds dataset manifests, plans Metal
-  rendering, plans Apple-native MLX training, evaluates baseline model outputs,
-  and exports Vision Pro scene packages.
+  rendering, runs the native Metal splat renderer, records RGB/depth/visibility
+  render artifacts, plans Apple-native MLX training, evaluates baseline model
+  outputs, and exports Vision Pro scene packages.
 - `FinderFileSharingFallbackGuide`: wired local transfer fallback for large
   capture packages.
 - `RobotCaptureImporter`: Mac-side `.robotcapture` validation and ingest.

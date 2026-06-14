@@ -10,6 +10,7 @@ public enum WorkstationStage: String, Codable, CaseIterable, Sendable {
     case linkingSplat
     case buildingDataset
     case planningMetalRender
+    case renderingMetalSplats
     case planningTraining
     case evaluatingModel
     case exportingRobotScene
@@ -175,6 +176,39 @@ public final class WorkstationModel {
         }
     }
 
+    public func renderMetalSplats(tileSize: Int = 16, maxSplatsPerFrame: Int? = nil) {
+        perform(stage: .renderingMetalSplats) {
+            guard state.activeSplatURL != nil else {
+                throw WorkstationError.missingSplat
+            }
+            let manifest = try ensureDatasetManifest()
+            let renderer = try MetalGaussianSplatRenderer(
+                configuration: MetalGaussianSplatRenderConfiguration(
+                    tileSize: tileSize,
+                    maxSplatsPerFrame: maxSplatsPerFrame
+                )
+            )
+            let report = try renderer.renderDataset(manifest, outputDirectory: state.workspaceURL)
+            let reportURL = state.workspaceURL.appendingPathComponent("metal_splat_render_report.json")
+
+            appendArtifact(title: "Metal Splat Render Report", url: reportURL, kind: "metal-render")
+            appendArtifact(title: "Metal RGB Frames", url: state.workspaceURL.appendingPathComponent("rgb", isDirectory: true), kind: "rgb")
+            appendArtifact(title: "Metal Depth Products", url: state.workspaceURL.appendingPathComponent("depth", isDirectory: true), kind: "depth")
+            appendArtifact(title: "Metal Visibility Products", url: state.workspaceURL.appendingPathComponent("visibility", isDirectory: true), kind: "visibility")
+            appendArtifact(title: "Metal Tile Bins", url: state.workspaceURL.appendingPathComponent("tile_bins", isDirectory: true), kind: "metal-tile-bins")
+
+            if let slowestFrame = report.frameProducts.max(by: { $0.timing.totalSeconds < $1.timing.totalSeconds }) {
+                let visibleSplatCount = report.frameProducts.reduce(0) { $0 + $1.visibleSplatCount }
+                let drawCommandCount = report.frameProducts.reduce(0) { $0 + $1.drawCommandCount }
+                appendDiagnostic(
+                    "Metal splat render complete: \(report.frameProducts.count) frames, \(visibleSplatCount) visible splats, \(drawCommandCount) draw commands, slowest frame \(String(format: "%.3f", slowestFrame.timing.totalSeconds))s."
+                )
+            } else {
+                appendDiagnostic("Metal splat render complete: no route frames requested.")
+            }
+        }
+    }
+
     public func planTraining() {
         perform(stage: .planningTraining) {
             guard let trainingManifest = preparation?.splatTrainingManifest else {
@@ -334,6 +368,7 @@ public final class WorkstationModel {
 public enum WorkstationError: Error, LocalizedError {
     case missingCapture
     case missingPreparedCapture
+    case missingSplat
 
     public var errorDescription: String? {
         switch self {
@@ -341,6 +376,8 @@ public enum WorkstationError: Error, LocalizedError {
             "Import a .robotcapture package first."
         case .missingPreparedCapture:
             "Prepare a capture package before running this workstation step."
+        case .missingSplat:
+            "Link a .ply or .splat scene before rendering Metal splats."
         }
     }
 }

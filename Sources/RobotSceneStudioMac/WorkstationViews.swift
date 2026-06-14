@@ -122,6 +122,13 @@ public struct WorkstationControlPanel: View {
                     .disabled(model.state.frameCount == 0)
 
                     Button {
+                        model.renderMetalSplats()
+                    } label: {
+                        Label("Render Metal Splats", systemImage: "rectangle.stack.badge.play")
+                    }
+                    .disabled(model.state.frameCount == 0 || model.state.activeSplatURL == nil)
+
+                    Button {
                         model.planTraining()
                     } label: {
                         Label("Plan MLX Training", systemImage: "brain")
@@ -308,6 +315,7 @@ private extension WorkstationStage {
         case .linkingSplat: "Linking Splat"
         case .buildingDataset: "Building Dataset"
         case .planningMetalRender: "Planning Metal Render"
+        case .renderingMetalSplats: "Rendering Metal Splats"
         case .planningTraining: "Planning Training"
         case .evaluatingModel: "Evaluating Model"
         case .exportingRobotScene: "Exporting Robot Scene"
