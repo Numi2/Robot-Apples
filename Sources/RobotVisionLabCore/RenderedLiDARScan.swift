@@ -239,7 +239,9 @@ public struct RenderedLiDARSimulator: Sendable {
                 let support = sampledValue(image: visibility, values: visibilityValues, x: x, y: y) ?? 0.5
                 let cameraDirection = rayDirection(azimuthDegrees: azimuth, elevationDegrees: elevation)
 
-                let metricRange = metricDepth?.sampleMeters(x: x, y: y)
+                let metricRange = metricDepth?.sampleMeters(x: x, y: y).map {
+                    rangeMeters(fromCameraSpaceZDepth: $0, cameraDirection: cameraDirection)
+                }
                 let visualDepthValue = sampledValue(image: depth, values: depthValues, x: x, y: y)
                 guard let range = metricRange ?? visualDepthValue.map(rangeMeters(fromDepthVisualization:)), range > 0.005 else {
                     rays.append(RenderedLiDARRay(
@@ -334,6 +336,11 @@ public struct RenderedLiDARSimulator: Sendable {
         let far = max(near + 0.01, specification.farRangeMeters)
         let normalizedFar = 1 - min(max(value, 0), 1)
         return near + normalizedFar * (far - near)
+    }
+
+    private func rangeMeters(fromCameraSpaceZDepth zDepth: Double, cameraDirection: SIMD3<Double>) -> Double {
+        let forwardComponent = max(0.001, -cameraDirection.z)
+        return zDepth / forwardComponent
     }
 
     private func dropoutProbability(rangeMeters: Double, visibilitySupport: Double) -> Double {
