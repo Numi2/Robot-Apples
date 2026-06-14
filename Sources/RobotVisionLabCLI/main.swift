@@ -10,6 +10,10 @@ struct RobotVisionLabCLI {
     static func main() throws {
         let outputDirectory = parseOutputDirectory()
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        if let packageURL = parseValidationPackageURL() {
+            try validatePackage(at: packageURL)
+            return
+        }
 
         let recipe = try sampleRecipe()
         let manifest = DatasetGenerator().makeManifest(
@@ -208,6 +212,30 @@ struct RobotVisionLabCLI {
             return nil
         }
         return URL(fileURLWithPath: args[index + 1])
+    }
+
+    private static func parseValidationPackageURL() -> URL? {
+        let args = CommandLine.arguments
+        guard let index = args.firstIndex(of: "--validate-package"), args.indices.contains(index + 1) else {
+            return nil
+        }
+        return URL(fileURLWithPath: args[index + 1])
+    }
+
+    private static func validatePackage(at packageURL: URL) throws {
+        let migrator = SharedProjectPackageMigrator()
+        let report: PackageValidationReport
+        if packageURL.pathExtension == "robotscene"
+            || FileManager.default.fileExists(atPath: packageURL.appendingPathComponent("robotscene.json").path) {
+            report = try migrator.migrateRobotScenePackage(at: packageURL)
+        } else {
+            report = try migrator.migrateRobotCapturePackage(at: packageURL)
+        }
+        print("Validated \(report.packageKind) package \(report.packageID)")
+        print("Schema \(report.schemaVersion.major).\(report.schemaVersion.minor).\(report.schemaVersion.patch), \(report.artifactCount) artifacts, \(report.totalByteCount) bytes")
+        if report.hasErrors {
+            print("Validation completed with errors")
+        }
     }
 
     private static func captureRouteIfRequested(target: NavigationTarget) throws -> RobotPath? {

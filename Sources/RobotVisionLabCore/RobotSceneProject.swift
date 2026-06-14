@@ -35,10 +35,15 @@ public struct TransferPolicy: Codable, Equatable, Sendable {
 }
 
 public struct RobotCapturePackageManifest: Codable, Equatable, Sendable {
+    public var schemaVersion: ProjectSchemaVersion
     public var id: String
     public var createdAt: Date
     public var producerRole: AppleDeviceRole
     public var transferPolicy: TransferPolicy
+    public var artifactPolicy: PackageArtifactSizePolicy
+    public var artifacts: [PackageArtifactRecord]
+    public var validationReportURL: URL?
+    public var humanReportURL: URL?
     public var videoURL: URL?
     public var framesJSONLURL: URL
     public var motionJSONLURL: URL?
@@ -47,10 +52,15 @@ public struct RobotCapturePackageManifest: Codable, Equatable, Sendable {
     public var notes: String
 
     public init(
+        schemaVersion: ProjectSchemaVersion = .robotCaptureV1,
         id: String,
         createdAt: Date = Date(),
         producerRole: AppleDeviceRole = .iPhoneCaptureClient,
         transferPolicy: TransferPolicy = TransferPolicy(packageExtension: "robotcapture"),
+        artifactPolicy: PackageArtifactSizePolicy = PackageArtifactSizePolicy(),
+        artifacts: [PackageArtifactRecord] = [],
+        validationReportURL: URL? = nil,
+        humanReportURL: URL? = nil,
         videoURL: URL? = nil,
         framesJSONLURL: URL,
         motionJSONLURL: URL? = nil,
@@ -58,16 +68,62 @@ public struct RobotCapturePackageManifest: Codable, Equatable, Sendable {
         captureBundleURL: URL,
         notes: String = ""
     ) {
+        self.schemaVersion = schemaVersion
         self.id = id
         self.createdAt = createdAt
         self.producerRole = producerRole
         self.transferPolicy = transferPolicy
+        self.artifactPolicy = artifactPolicy
+        self.artifacts = artifacts
+        self.validationReportURL = validationReportURL
+        self.humanReportURL = humanReportURL
         self.videoURL = videoURL
         self.framesJSONLURL = framesJSONLURL
         self.motionJSONLURL = motionJSONLURL
         self.sessionJSONURL = sessionJSONURL
         self.captureBundleURL = captureBundleURL
         self.notes = notes
+    }
+}
+
+public extension RobotCapturePackageManifest {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            schemaVersion: try container.decodeIfPresent(ProjectSchemaVersion.self, forKey: .schemaVersion) ?? .robotCaptureV1,
+            id: try container.decode(String.self, forKey: .id),
+            createdAt: try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date(timeIntervalSince1970: 0),
+            producerRole: try container.decodeIfPresent(AppleDeviceRole.self, forKey: .producerRole) ?? .iPhoneCaptureClient,
+            transferPolicy: try container.decodeIfPresent(TransferPolicy.self, forKey: .transferPolicy) ?? TransferPolicy(packageExtension: "robotcapture"),
+            artifactPolicy: try container.decodeIfPresent(PackageArtifactSizePolicy.self, forKey: .artifactPolicy) ?? PackageArtifactSizePolicy(),
+            artifacts: try container.decodeIfPresent([PackageArtifactRecord].self, forKey: .artifacts) ?? [],
+            validationReportURL: try container.decodeIfPresent(URL.self, forKey: .validationReportURL),
+            humanReportURL: try container.decodeIfPresent(URL.self, forKey: .humanReportURL),
+            videoURL: try container.decodeIfPresent(URL.self, forKey: .videoURL),
+            framesJSONLURL: try container.decode(URL.self, forKey: .framesJSONLURL),
+            motionJSONLURL: try container.decodeIfPresent(URL.self, forKey: .motionJSONLURL),
+            sessionJSONURL: try container.decode(URL.self, forKey: .sessionJSONURL),
+            captureBundleURL: try container.decode(URL.self, forKey: .captureBundleURL),
+            notes: try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case id
+        case createdAt
+        case producerRole
+        case transferPolicy
+        case artifactPolicy
+        case artifacts
+        case validationReportURL
+        case humanReportURL
+        case videoURL
+        case framesJSONLURL
+        case motionJSONLURL
+        case sessionJSONURL
+        case captureBundleURL
+        case notes
     }
 }
 
@@ -163,10 +219,15 @@ public struct VisionProReviewAsset: Codable, Equatable, Sendable {
 }
 
 public struct RobotScenePackageManifest: Codable, Equatable, Sendable {
+    public var schemaVersion: ProjectSchemaVersion
     public var id: String
     public var createdAt: Date
     public var deviceRoles: [AppleDeviceRole]
     public var transferPolicy: TransferPolicy
+    public var artifactPolicy: PackageArtifactSizePolicy
+    public var artifacts: [PackageArtifactRecord]
+    public var validationReportURL: URL?
+    public var humanReportURL: URL?
     public var capturePackageURL: URL?
     public var splatScene: GaussianSplatScene
     public var datasetManifestURL: URL
@@ -175,10 +236,15 @@ public struct RobotScenePackageManifest: Codable, Equatable, Sendable {
     public var visionProReviewAsset: VisionProReviewAsset
 
     public init(
+        schemaVersion: ProjectSchemaVersion = .robotSceneV1,
         id: String,
         createdAt: Date = Date(),
         deviceRoles: [AppleDeviceRole] = AppleDeviceRole.allCases,
         transferPolicy: TransferPolicy = TransferPolicy(packageExtension: "robotscene"),
+        artifactPolicy: PackageArtifactSizePolicy = PackageArtifactSizePolicy(),
+        artifacts: [PackageArtifactRecord] = [],
+        validationReportURL: URL? = nil,
+        humanReportURL: URL? = nil,
         capturePackageURL: URL? = nil,
         splatScene: GaussianSplatScene,
         datasetManifestURL: URL,
@@ -186,16 +252,62 @@ public struct RobotScenePackageManifest: Codable, Equatable, Sendable {
         failureMapURL: URL,
         visionProReviewAsset: VisionProReviewAsset
     ) {
+        self.schemaVersion = schemaVersion
         self.id = id
         self.createdAt = createdAt
         self.deviceRoles = deviceRoles
         self.transferPolicy = transferPolicy
+        self.artifactPolicy = artifactPolicy
+        self.artifacts = artifacts
+        self.validationReportURL = validationReportURL
+        self.humanReportURL = humanReportURL
         self.capturePackageURL = capturePackageURL
         self.splatScene = splatScene
         self.datasetManifestURL = datasetManifestURL
         self.navigationGraphURL = navigationGraphURL
         self.failureMapURL = failureMapURL
         self.visionProReviewAsset = visionProReviewAsset
+    }
+}
+
+public extension RobotScenePackageManifest {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            schemaVersion: try container.decodeIfPresent(ProjectSchemaVersion.self, forKey: .schemaVersion) ?? .robotSceneV1,
+            id: try container.decode(String.self, forKey: .id),
+            createdAt: try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date(timeIntervalSince1970: 0),
+            deviceRoles: try container.decodeIfPresent([AppleDeviceRole].self, forKey: .deviceRoles) ?? AppleDeviceRole.allCases,
+            transferPolicy: try container.decodeIfPresent(TransferPolicy.self, forKey: .transferPolicy) ?? TransferPolicy(packageExtension: "robotscene"),
+            artifactPolicy: try container.decodeIfPresent(PackageArtifactSizePolicy.self, forKey: .artifactPolicy) ?? PackageArtifactSizePolicy(),
+            artifacts: try container.decodeIfPresent([PackageArtifactRecord].self, forKey: .artifacts) ?? [],
+            validationReportURL: try container.decodeIfPresent(URL.self, forKey: .validationReportURL),
+            humanReportURL: try container.decodeIfPresent(URL.self, forKey: .humanReportURL),
+            capturePackageURL: try container.decodeIfPresent(URL.self, forKey: .capturePackageURL),
+            splatScene: try container.decode(GaussianSplatScene.self, forKey: .splatScene),
+            datasetManifestURL: try container.decode(URL.self, forKey: .datasetManifestURL),
+            navigationGraphURL: try container.decode(URL.self, forKey: .navigationGraphURL),
+            failureMapURL: try container.decode(URL.self, forKey: .failureMapURL),
+            visionProReviewAsset: try container.decode(VisionProReviewAsset.self, forKey: .visionProReviewAsset)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case id
+        case createdAt
+        case deviceRoles
+        case transferPolicy
+        case artifactPolicy
+        case artifacts
+        case validationReportURL
+        case humanReportURL
+        case capturePackageURL
+        case splatScene
+        case datasetManifestURL
+        case navigationGraphURL
+        case failureMapURL
+        case visionProReviewAsset
     }
 }
 
@@ -209,8 +321,10 @@ public struct RobotScenePackageExporter: Sendable {
         to packageDirectory: URL
     ) throws -> RobotScenePackageManifest {
         let fileManager = FileManager.default
+        let tools = SharedProjectFormatTools()
         try fileManager.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: packageDirectory.appendingPathComponent("review", isDirectory: true), withIntermediateDirectories: true)
+        _ = try tools.compactBundle(at: packageDirectory)
 
         let datasetManifestURL = packageDirectory.appendingPathComponent("dataset.json")
         try JSONEncoder.robotVisionLabEncoder.encode(manifest).write(to: datasetManifestURL)
@@ -236,8 +350,27 @@ public struct RobotScenePackageExporter: Sendable {
             datasetManifestURL: datasetManifestURL,
             evaluationReportURL: evaluationReportURL
         )
+        let artifactURLs: [(String, URL)] = [
+            ("dataset-manifest", datasetManifestURL),
+            ("navigation-graph", navigationGraphURL),
+            ("failure-map", failureMapURL),
+            ("review-route", routeURL)
+        ] + [evaluationReportURL.map { ("evaluation-report", $0) }].compactMap { $0 }
+        let artifacts = artifactURLs.map { tools.artifactRecord(role: $0.0, url: $0.1, packageRoot: packageDirectory) }
+        let report = tools.validate(
+            packageID: "\(manifest.recipeID)-robot-scene",
+            packageKind: "robotscene",
+            schemaVersion: .robotSceneV1,
+            artifacts: artifacts,
+            policy: PackageArtifactSizePolicy(),
+            packageRoot: packageDirectory
+        )
+        let reportURLs = try tools.writeReports(report, to: packageDirectory, title: ".robotscene Project Report")
         let package = RobotScenePackageManifest(
             id: "\(manifest.recipeID)-robot-scene",
+            artifacts: artifacts,
+            validationReportURL: reportURLs.json,
+            humanReportURL: reportURLs.markdown,
             capturePackageURL: capturePackageURL,
             splatScene: manifest.scene,
             datasetManifestURL: datasetManifestURL,

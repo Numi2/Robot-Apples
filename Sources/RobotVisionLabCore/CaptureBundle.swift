@@ -258,9 +258,32 @@ public struct CaptureBundleExporter: Sendable {
         )
         try JSONEncoder.robotVisionLabEncoder.encode(sessionMetadata).write(to: sessionJSONURL)
 
+        let tools = SharedProjectFormatTools()
+        let packageVideoURL = FileManager.default.fileExists(atPath: videoURL.path) ? videoURL : nil
+        let artifactURLs: [(String, URL)] = [
+            ("frames", framesJSONLURL),
+            ("motion", motionJSONLURL),
+            ("session", sessionJSONURL),
+            ("capture-bundle", outputDirectory.appendingPathComponent("capture_bundle.json")),
+            ("splat-training-manifest", trainingManifestURL)
+        ] + [packageVideoURL.map { ("video", $0) }].compactMap { $0 }
+        let artifacts = artifactURLs.map { tools.artifactRecord(role: $0.0, url: $0.1, packageRoot: outputDirectory) }
+        let report = tools.validate(
+            packageID: "\(packagedScanSession.id)-robot-capture",
+            packageKind: "robotcapture",
+            schemaVersion: .robotCaptureV1,
+            artifacts: artifacts,
+            policy: PackageArtifactSizePolicy(),
+            packageRoot: outputDirectory
+        )
+        let reportURLs = try tools.writeReports(report, to: outputDirectory, title: ".robotcapture Project Report")
+
         let capturePackage = RobotCapturePackageManifest(
             id: "\(packagedScanSession.id)-robot-capture",
-            videoURL: videoURL,
+            artifacts: artifacts,
+            validationReportURL: reportURLs.json,
+            humanReportURL: reportURLs.markdown,
+            videoURL: packageVideoURL,
             framesJSONLURL: framesJSONLURL,
             motionJSONLURL: motionJSONLURL,
             sessionJSONURL: sessionJSONURL,

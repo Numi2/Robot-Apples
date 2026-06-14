@@ -377,8 +377,31 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
     }
 
     private func writeRobotCaptureManifest(to outputDirectory: URL) throws {
+        let tools = SharedProjectFormatTools()
+        let artifactURLs: [(String, URL)] = [
+            ("video", outputDirectory.appendingPathComponent("video.mov")),
+            ("frames", outputDirectory.appendingPathComponent("frames.jsonl")),
+            ("motion", outputDirectory.appendingPathComponent("motion.jsonl")),
+            ("session", outputDirectory.appendingPathComponent("session.json")),
+            ("capture-bundle", outputDirectory.appendingPathComponent("capture_bundle.json")),
+            ("splat-training-manifest", outputDirectory.appendingPathComponent("splat_training_manifest.json"))
+        ]
+        let artifacts = artifactURLs.map { tools.artifactRecord(role: $0.0, url: $0.1, packageRoot: outputDirectory) }
+        let report = tools.validate(
+            packageID: "\(outputDirectory.lastPathComponent)-robot-capture",
+            packageKind: "robotcapture",
+            schemaVersion: .robotCaptureV1,
+            artifacts: artifacts,
+            policy: PackageArtifactSizePolicy(),
+            packageRoot: outputDirectory
+        )
+        let reportURLs = try tools.writeReports(report, to: outputDirectory, title: ".robotcapture Project Report")
+
         let capturePackage = RobotCapturePackageManifest(
             id: "\(outputDirectory.lastPathComponent)-robot-capture",
+            artifacts: artifacts,
+            validationReportURL: reportURLs.json,
+            humanReportURL: reportURLs.markdown,
             videoURL: outputDirectory.appendingPathComponent("video.mov"),
             framesJSONLURL: outputDirectory.appendingPathComponent("frames.jsonl"),
             motionJSONLURL: outputDirectory.appendingPathComponent("motion.jsonl"),

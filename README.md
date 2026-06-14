@@ -16,6 +16,11 @@ Shared package formats:
 - `.robotcapture`: iPhone-to-Mac capture package.
 - `.robotscene`: Mac-to-Vision-Pro review and robotics asset package.
 
+Both package formats carry schema versions, artifact size policies, SHA-256
+checksums where available, validation reports, and human-readable
+`PROJECT_REPORT.md` summaries. Older unversioned manifests decode into v1
+defaults and can be re-written through the validation/migration command.
+
 Device roles:
 
 - iPhone: SwiftUI capture client using AVFoundation, ARKit, Core Motion, LiDAR,
@@ -70,6 +75,7 @@ swift run robot-vision-lab --output ./GeneratedDataset --splat ./Fixtures/sample
 swift run robot-vision-lab --output ./GeneratedDatasetBinaryPLY --splat ./Fixtures/sample_gaussian_splats_binary.ply --render-metal-splats
 swift run robot-vision-lab --output ./GeneratedDatasetSplat --splat ./Fixtures/sample_gaussian_splats.splat --render-metal-splats
 swift run robot-vision-lab --output ./GeneratedDataset --export-sample-capture
+swift run robot-vision-lab --validate-package ./GeneratedDataset/CaptureBundle
 swift run robot-vision-lab --output ./GeneratedDataset --import-robotcapture ./GeneratedDataset/CaptureBundle --capture-holdout-every 5
 swift run robot-vision-lab --output ./GeneratedDataset --capture-route ./GeneratedDataset/PreparedCapture/capture_route.json --align-capture-route
 swift run robot-vision-lab --output ./GeneratedDataset --use-aligned-route --expand-capture-route --route-lateral-offsets=-0.2,0,0.2 --route-height-offsets=0 --route-yaw-offsets=-5,0,5
@@ -142,6 +148,9 @@ developer tool for exercising the native contracts.
   with rendered-dataset loader code and Core ML export/conversion artifacts.
 - `RobotScenePackageExporter`: writes `.robotscene` packages for Vision Pro
   spatial review.
+- `SharedProjectFormatTools`: versioned `.robotcapture`/`.robotscene` helpers
+  for validation, migration, artifact size policy checks, SHA-256 checksums,
+  compaction cleanup, and human-readable project reports.
 - `FailureMapMarker`: spatial markers for confident, blocked, uncertain,
   missing-view, ambiguous-view, bad-lighting, and low-texture regions, including
   calibrated markers from Core ML/MLX obstacle, free-space, uncertainty, and

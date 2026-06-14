@@ -101,6 +101,19 @@ public struct RobotCaptureImporter: Sendable {
         let packageRoot = manifestURL(for: packageURL).deletingLastPathComponent()
         let manifest = importedPackage.manifest
         var warnings: [String] = []
+        let validation = SharedProjectFormatTools().validate(
+            packageID: manifest.id,
+            packageKind: "robotcapture",
+            schemaVersion: manifest.schemaVersion,
+            artifacts: manifest.artifacts,
+            policy: manifest.artifactPolicy,
+            packageRoot: packageRoot
+        )
+
+        if manifest.schemaVersion < .robotCaptureV1 {
+            warnings.append("robotcapture.json uses an older schema and was migrated to v1 defaults.")
+        }
+        warnings.append(contentsOf: validation.issues.map { "\($0.severity.rawValue): \($0.message)" })
 
         if importedPackage.frames.isEmpty {
             warnings.append("frames.jsonl contains no camera pose records.")
