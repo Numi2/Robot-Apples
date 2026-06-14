@@ -160,7 +160,7 @@ struct RobotVisionLabCLI {
         let manifestURL = outputDirectory.appendingPathComponent("dataset.json")
         print("Wrote \(manifest.frames.count) planned frames to \(manifestURL.path)")
         if CommandLine.arguments.contains("--render-preview") {
-            print("Rendered preview RGB/depth/segmentation/obstacle artifacts")
+            print("Rendered preview RGB/depth/visibility/segmentation/obstacle artifacts")
         }
     }
 
@@ -278,7 +278,7 @@ struct RobotVisionLabCLI {
             scene: scene,
             cameraRig: cameraRig(),
             path: path,
-            requestedProducts: [.rgb, .depth, .pose, .segmentation, .obstacleMask, .navigationTarget],
+            requestedProducts: [.rgb, .depth, .visibility, .pose, .segmentation, .obstacleMask, .navigationTarget],
             augmentations: [
                 .exposureEV(-0.5),
                 .gaussianNoise(sigma: 0.015),
@@ -316,10 +316,10 @@ struct RobotVisionLabCLI {
 
     private static func requestedProducts() -> Set<RenderProduct> {
         guard let raw = stringValue(for: "--products") else {
-            return [.rgb, .depth, .pose, .segmentation, .obstacleMask, .navigationTarget]
+            return [.rgb, .depth, .visibility, .pose, .segmentation, .obstacleMask, .navigationTarget]
         }
         let products = raw.split(separator: ",").compactMap { RenderProduct(rawValue: String($0.trimmingCharacters(in: .whitespaces))) }
-        return products.isEmpty ? [.rgb, .depth, .pose] : Set(products)
+        return products.isEmpty ? [.rgb, .depth, .visibility, .pose] : Set(products)
     }
 
     private static func labelSources() -> [LabelSource] {

@@ -739,7 +739,7 @@ public final class WorkstationModel {
             scene: scene,
             cameraRig: cameraRig,
             path: route,
-            requestedProducts: [.rgb, .depth, .pose, .segmentation, .obstacleMask, .navigationTarget],
+            requestedProducts: [.rgb, .depth, .visibility, .pose, .segmentation, .obstacleMask, .navigationTarget],
             labelSources: scene.roomPlanModelURL.map { [.roomPlanGeometry($0)] } ?? []
         )
         return DatasetGenerator().makeManifest(recipe: recipe, outputDirectory: state.workspaceURL)

@@ -199,6 +199,7 @@ public struct DatasetRecipe: Codable, Equatable, Sendable {
 public enum RenderProduct: String, Codable, CaseIterable, Sendable {
     case rgb
     case depth
+    case visibility
     case pose
     case segmentation
     case obstacleMask
@@ -426,8 +427,8 @@ private extension RenderProduct {
         switch self {
         case .rgb:
             "ppm"
-        case .depth:
-            "json"
+        case .depth, .visibility:
+            "pgm"
         case .pose, .segmentation, .obstacleMask, .navigationTarget:
             "json"
         }

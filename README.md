@@ -102,8 +102,8 @@ The required iPhone capture output is a `.robotcapture` package containing:
 - `RenderedDatasetLoader`, `NativeModelAdapterSchema`, `CoreMLDatasetEvaluator`,
   `MLXTrainingPackageBuilder`, `FailureMapCalibrationReporter`, and
   `ModelComparisonReporter`: Apple Silicon ML dataset loading, adapter schemas,
-  Core ML evaluation, MLX training package generation, failure-map calibration,
-  and model comparison.
+  dense RGB/depth/visibility tensor loading, Core ML evaluation, MLX training
+  package generation, failure-map calibration, and model comparison.
 - `RobotScenePackageExporter` and `SharedProjectFormatTools`: `.robotscene`
   export, validation, migration, checksum, compaction, and reporting.
 

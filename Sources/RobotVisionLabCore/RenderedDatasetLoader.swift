@@ -6,10 +6,12 @@ public struct RenderedModelSample: Codable, Equatable, Sendable {
     public var timestamp: TimeInterval
     public var rgbURL: URL?
     public var depthURL: URL?
+    public var visibilityURL: URL?
     public var pose: Pose3D
     public var intrinsics: CameraIntrinsics
     public var rgbCHW: [Float]
     public var depthCHW: [Float]
+    public var visibilityCHW: [Float]
     public var poseVector: [Float]
     public var intrinsicsVector: [Float]
     public var warnings: [String]
@@ -19,10 +21,12 @@ public struct RenderedModelSample: Codable, Equatable, Sendable {
         timestamp: TimeInterval,
         rgbURL: URL?,
         depthURL: URL?,
+        visibilityURL: URL?,
         pose: Pose3D,
         intrinsics: CameraIntrinsics,
         rgbCHW: [Float],
         depthCHW: [Float],
+        visibilityCHW: [Float],
         poseVector: [Float],
         intrinsicsVector: [Float],
         warnings: [String] = []
@@ -31,10 +35,12 @@ public struct RenderedModelSample: Codable, Equatable, Sendable {
         self.timestamp = timestamp
         self.rgbURL = rgbURL
         self.depthURL = depthURL
+        self.visibilityURL = visibilityURL
         self.pose = pose
         self.intrinsics = intrinsics
         self.rgbCHW = rgbCHW
         self.depthCHW = depthCHW
+        self.visibilityCHW = visibilityCHW
         self.poseVector = poseVector
         self.intrinsicsVector = intrinsicsVector
         self.warnings = warnings
@@ -52,8 +58,10 @@ public struct RenderedDatasetLoader: Sendable {
         var warnings: [String] = []
         let rgbURL = frame.productURL(for: .rgb)
         let depthURL = frame.productURL(for: .depth)
+        let visibilityURL = frame.productURL(for: .visibility)
         let rgb = rgbURL.flatMap { try? readPPMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
         let depth = depthURL.flatMap { try? readPGMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
+        let visibility = visibilityURL.flatMap { try? readPGMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
 
         if rgbURL == nil {
             warnings.append("Frame has no RGB product URL.")
@@ -65,16 +73,23 @@ public struct RenderedDatasetLoader: Sendable {
         } else if depth == nil {
             warnings.append("Unable to load depth tensor from \(depthURL?.path ?? "unknown").")
         }
+        if visibilityURL == nil {
+            warnings.append("Frame has no visibility product URL.")
+        } else if visibility == nil {
+            warnings.append("Unable to load visibility tensor from \(visibilityURL?.path ?? "unknown").")
+        }
 
         return RenderedModelSample(
             frameIndex: frame.index,
             timestamp: frame.timestamp,
             rgbURL: rgbURL,
             depthURL: depthURL,
+            visibilityURL: visibilityURL,
             pose: frame.cameraPose,
             intrinsics: intrinsics,
             rgbCHW: rgb ?? Array(repeating: 0, count: max(1, intrinsics.width * intrinsics.height * 3)),
             depthCHW: depth ?? Array(repeating: 0, count: max(1, intrinsics.width * intrinsics.height)),
+            visibilityCHW: visibility ?? Array(repeating: 0, count: max(1, intrinsics.width * intrinsics.height)),
             poseVector: poseVector(frame.cameraPose),
             intrinsicsVector: intrinsicsVector(intrinsics),
             warnings: warnings

@@ -17,6 +17,7 @@ public struct PreviewSyntheticRenderer: SplatRenderer {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("rgb", isDirectory: true), withIntermediateDirectories: true)
         try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("depth", isDirectory: true), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("visibility", isDirectory: true), withIntermediateDirectories: true)
         try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("segmentation", isDirectory: true), withIntermediateDirectories: true)
         try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("obstacleMask", isDirectory: true), withIntermediateDirectories: true)
 
@@ -27,8 +28,18 @@ public struct PreviewSyntheticRenderer: SplatRenderer {
 
         let depthURL = outputDirectory
             .appendingPathComponent("depth", isDirectory: true)
-            .appendingPathComponent(String(format: "frame_%06d.json", frame.index))
-        try JSONEncoder.robotVisionLabEncoder.encode(makeDepthApproximation(frame: frame, scene: scene)).write(to: depthURL)
+            .appendingPathComponent(String(format: "frame_%06d.pgm", frame.index))
+        try makePreviewDepthPGM(frame: frame, scene: scene, cameraRig: cameraRig).write(to: depthURL)
+
+        let depthMetadataURL = outputDirectory
+            .appendingPathComponent("depth", isDirectory: true)
+            .appendingPathComponent(String(format: "frame_%06d_summary.json", frame.index))
+        try JSONEncoder.robotVisionLabEncoder.encode(makeDepthApproximation(frame: frame, scene: scene)).write(to: depthMetadataURL)
+
+        let visibilityURL = outputDirectory
+            .appendingPathComponent("visibility", isDirectory: true)
+            .appendingPathComponent(String(format: "frame_%06d.pgm", frame.index))
+        try makePreviewVisibilityPGM(frame: frame, scene: scene, cameraRig: cameraRig).write(to: visibilityURL)
 
         let segmentationURL = outputDirectory
             .appendingPathComponent("segmentation", isDirectory: true)
@@ -61,6 +72,46 @@ public struct PreviewSyntheticRenderer: SplatRenderer {
             }
         }
 
+        return Data(bytes)
+    }
+
+    private func makePreviewDepthPGM(frame: DatasetFrame, scene: GaussianSplatScene, cameraRig: RobotCameraRig) -> Data {
+        let width = min(cameraRig.intrinsics.width, 320)
+        let height = min(cameraRig.intrinsics.height, 180)
+        let depth = makeDepthApproximation(frame: frame, scene: scene)
+        let nearest = max(depth.nearestObstacleMeters, 0.05)
+        let far = max(depth.farClipMeters, nearest + 0.001)
+        var bytes = Array("P5\n\(width) \(height)\n255\n".utf8)
+        bytes.reserveCapacity(bytes.count + width * height)
+        for y in 0..<height {
+            for x in 0..<width {
+                let horizontal = abs(Double(x) / Double(max(width - 1, 1)) - 0.5)
+                let vertical = abs(Double(y) / Double(max(height - 1, 1)) - 0.5)
+                let meters = min(far, nearest + (horizontal + vertical) * 2.5)
+                let normalized = UInt8(clamping: Int(((meters - nearest) / (far - nearest) * 255.0).rounded()))
+                bytes.append(255 &- normalized)
+            }
+        }
+        return Data(bytes)
+    }
+
+    private func makePreviewVisibilityPGM(frame: DatasetFrame, scene: GaussianSplatScene, cameraRig: RobotCameraRig) -> Data {
+        let width = min(cameraRig.intrinsics.width, 320)
+        let height = min(cameraRig.intrinsics.height, 180)
+        let position = frame.cameraPose.position
+        let center = (scene.bounds.minimum + scene.bounds.maximum) / 2
+        let distance = simd_length(position - center)
+        let baseCoverage = max(0.1, min(1.0, 1.0 / max(distance, 0.5)))
+        var bytes = Array("P5\n\(width) \(height)\n255\n".utf8)
+        bytes.reserveCapacity(bytes.count + width * height)
+        for y in 0..<height {
+            for x in 0..<width {
+                let u = Double(x) / Double(max(width - 1, 1))
+                let v = Double(y) / Double(max(height - 1, 1))
+                let radial = 1.0 - min(1.0, hypot(u - 0.5, v - 0.5) * 1.8)
+                bytes.append(UInt8(clamping: Int((baseCoverage * radial * 255.0).rounded())))
+            }
+        }
         return Data(bytes)
     }
 
@@ -156,4 +207,3 @@ public struct ObstacleApproximation: Codable, Equatable, Sendable {
         self.method = method
     }
 }
-

@@ -62,7 +62,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
             sampleCount: manifest.frames.count,
             notes: [
                 "Runs locally on Apple Silicon with MLX unified memory and automatic differentiation.",
-                "Loads rendered RGB/depth plus pose/intrinsics from dataset.json through robot_scene_dataset.py.",
+                "Loads rendered RGB/depth/visibility plus pose/intrinsics from dataset.json through robot_scene_dataset.py.",
                 "Exports deployment artifacts through Apple's Core ML Tools conversion path for Core ML app integration."
             ]
         )
@@ -110,17 +110,28 @@ public struct MLXTrainingPackageBuilder: Sendable {
             image = np.frombuffer(payload[: width * height], dtype=np.uint8).astype(np.float32) / float(max_value)
             return image.reshape(1, height, width)
 
+        def read_visibility_chw(path):
+            return read_depth_chw(path)
+
+        def vector(value, count):
+            if isinstance(value, dict):
+                keys = ["x", "y", "z", "w"][:count]
+                return [value[key] for key in keys]
+            return value[:count]
+
         def pose_vector(frame):
             pose = frame["cameraPose"]
-            p = pose["position"]
-            q = pose["orientation"]
-            return np.array([p["x"], p["y"], p["z"], q["vector"]["x"], q["vector"]["y"], q["vector"]["z"], q["vector"]["w"]], dtype=np.float32)
+            p = vector(pose["position"], 3)
+            q = vector(pose["orientation"]["vector"], 4)
+            return np.array([p[0], p[1], p[2], q[0], q[1], q[2], q[3]], dtype=np.float32)
 
         def intrinsics_vector(camera):
-            fx = camera["focalLengthPixels"]["x"]
-            fy = camera["focalLengthPixels"]["y"]
-            cx = camera["principalPointPixels"]["x"]
-            cy = camera["principalPointPixels"]["y"]
+            focal = vector(camera["focalLengthPixels"], 2)
+            principal = vector(camera["principalPointPixels"], 2)
+            fx = focal[0]
+            fy = focal[1]
+            cx = principal[0]
+            cy = principal[1]
             return np.array([fx, fy, cx, cy], dtype=np.float32)
 
         def product_url(frame, product):
@@ -137,8 +148,10 @@ public struct MLXTrainingPackageBuilder: Sendable {
             for frame in dataset["frames"]:
                 rgb_path = product_url(frame, "rgb")
                 depth_path = product_url(frame, "depth")
+                visibility_path = product_url(frame, "visibility")
                 rgb = read_rgb_chw(rgb_path) if rgb_path else None
                 depth = read_depth_chw(depth_path) if depth_path else None
+                visibility = read_visibility_chw(visibility_path) if visibility_path else None
                 pose_input = pose_vector(frame)
                 model_input = np.concatenate([pose_input, intrinsics]).astype(np.float32)
                 free_space = 1.0 if frame.get("navigationTarget") is not None else 0.65
@@ -149,6 +162,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
                     "frame_index": int(frame["index"]),
                     "rgb": rgb,
                     "depth": depth,
+                    "visibility": visibility,
                     "pose_intrinsics": model_input,
                     "target": target,
                 })
