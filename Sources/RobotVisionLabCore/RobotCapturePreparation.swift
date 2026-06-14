@@ -23,10 +23,13 @@ public struct RobotCapturePreparationReport: Codable, Equatable, Sendable {
     public var routeURL: URL
     public var splitURL: URL
     public var splatTrainingManifestURL: URL
+    public var structuredGeometryReportURL: URL
     public var routeKeyframeCount: Int
     public var trainingFrameCount: Int
     public var evaluationFrameCount: Int
     public var lidarDepthFrameCount: Int
+    public var roomPlanAssetCount: Int
+    public var objectCaptureAssetCount: Int
     public var estimatedDurationSeconds: TimeInterval
     public var warnings: [String]
 
@@ -37,10 +40,13 @@ public struct RobotCapturePreparationReport: Codable, Equatable, Sendable {
         routeURL: URL,
         splitURL: URL,
         splatTrainingManifestURL: URL,
+        structuredGeometryReportURL: URL,
         routeKeyframeCount: Int,
         trainingFrameCount: Int,
         evaluationFrameCount: Int,
         lidarDepthFrameCount: Int,
+        roomPlanAssetCount: Int,
+        objectCaptureAssetCount: Int,
         estimatedDurationSeconds: TimeInterval,
         warnings: [String]
     ) {
@@ -50,10 +56,13 @@ public struct RobotCapturePreparationReport: Codable, Equatable, Sendable {
         self.routeURL = routeURL
         self.splitURL = splitURL
         self.splatTrainingManifestURL = splatTrainingManifestURL
+        self.structuredGeometryReportURL = structuredGeometryReportURL
         self.routeKeyframeCount = routeKeyframeCount
         self.trainingFrameCount = trainingFrameCount
         self.evaluationFrameCount = evaluationFrameCount
         self.lidarDepthFrameCount = lidarDepthFrameCount
+        self.roomPlanAssetCount = roomPlanAssetCount
+        self.objectCaptureAssetCount = objectCaptureAssetCount
         self.estimatedDurationSeconds = estimatedDurationSeconds
         self.warnings = warnings
     }
@@ -63,17 +72,20 @@ public struct RobotCapturePreparationOutput: Codable, Equatable, Sendable {
     public var route: RobotPath
     public var split: CaptureFrameSplit
     public var splatTrainingManifest: SplatTrainingManifest
+    public var structuredGeometry: StructuredGeometryAnalysisReport
     public var report: RobotCapturePreparationReport
 
     public init(
         route: RobotPath,
         split: CaptureFrameSplit,
         splatTrainingManifest: SplatTrainingManifest,
+        structuredGeometry: StructuredGeometryAnalysisReport,
         report: RobotCapturePreparationReport
     ) {
         self.route = route
         self.split = split
         self.splatTrainingManifest = splatTrainingManifest
+        self.structuredGeometry = structuredGeometry
         self.report = report
     }
 }
@@ -103,16 +115,23 @@ public struct RobotCapturePreparer: Sendable {
             split: split,
             outputDirectory: outputDirectory
         )
+        let geometryReport = StructuredGeometryAnalyzer().analyze(
+            captureBundle: importedCapture.captureBundle,
+            packageRoot: importedCapture.packageRoot,
+            generatedAt: preparedAt
+        )
 
         let routeURL = outputDirectory.appendingPathComponent("capture_route.json")
         let splitURL = outputDirectory.appendingPathComponent("capture_evaluation_split.json")
         let trainingManifestURL = outputDirectory.appendingPathComponent("prepared_splat_training_manifest.json")
+        let geometryReportURL = outputDirectory.appendingPathComponent("structured_geometry_report.json")
         let reportURL = outputDirectory.appendingPathComponent("robotcapture_prepare_report.json")
 
         let encoder = JSONEncoder.robotVisionLabEncoder
         try encoder.encode(route).write(to: routeURL)
         try encoder.encode(split).write(to: splitURL)
         try encoder.encode(trainingManifest).write(to: trainingManifestURL)
+        try StructuredGeometryAnalyzer().write(geometryReport, to: geometryReportURL)
 
         let report = RobotCapturePreparationReport(
             preparedAt: preparedAt,
@@ -121,12 +140,15 @@ public struct RobotCapturePreparer: Sendable {
             routeURL: routeURL,
             splitURL: splitURL,
             splatTrainingManifestURL: trainingManifestURL,
+            structuredGeometryReportURL: geometryReportURL,
             routeKeyframeCount: route.keyframes.count,
             trainingFrameCount: split.trainingFrameIndexes.count,
             evaluationFrameCount: split.evaluationFrameIndexes.count,
             lidarDepthFrameCount: trainingManifest.lidarFrames.count,
+            roomPlanAssetCount: geometryReport.roomPlanAssetCount,
+            objectCaptureAssetCount: geometryReport.objectCaptureAssetCount,
             estimatedDurationSeconds: estimatedDuration(from: importedCapture.frames),
-            warnings: preparationWarnings(importedCapture: importedCapture, split: split)
+            warnings: preparationWarnings(importedCapture: importedCapture, split: split) + geometryReport.warnings
         )
         try encoder.encode(report).write(to: reportURL)
 
@@ -134,6 +156,7 @@ public struct RobotCapturePreparer: Sendable {
             route: route,
             split: split,
             splatTrainingManifest: trainingManifest,
+            structuredGeometry: geometryReport,
             report: report
         )
     }

@@ -91,6 +91,9 @@ The required iPhone capture output is a `.robotcapture` package containing:
   pairing, progress, retry/cancel, and receipts.
 - `RobotCaptureImporter` and `RobotCapturePreparer`: Mac ingest, validation,
   route creation, train/eval split, and `prepared_splat_training_manifest.json`.
+- `StructuredGeometryAnalyzer`: validates RoomPlan and Object Capture geometry
+  assets, records format/size/existence, and writes a structured-geometry report
+  for alignment, obstacle, and segmentation priors.
 - `SplatTrainingPackageBuilder`: writes Apple MLX training assets for building
   a Gaussian splat PLY from captured RGB views, ARKit/RoomPlan-aligned poses,
   camera intrinsics, strict ARKit LiDAR Float32 depth priors, tracking quality,

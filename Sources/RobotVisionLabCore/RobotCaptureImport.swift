@@ -1,6 +1,7 @@
 import Foundation
 
 public struct RobotCaptureImport: Codable, Equatable, Sendable {
+    public var packageRoot: URL
     public var manifest: RobotCapturePackageManifest
     public var session: RobotCaptureSessionMetadata
     public var frames: [RobotCaptureFrameRecord]
@@ -8,12 +9,14 @@ public struct RobotCaptureImport: Codable, Equatable, Sendable {
     public var captureBundle: CaptureBundleManifest
 
     public init(
+        packageRoot: URL,
         manifest: RobotCapturePackageManifest,
         session: RobotCaptureSessionMetadata,
         frames: [RobotCaptureFrameRecord],
         motion: [RobotCaptureMotionRecord],
         captureBundle: CaptureBundleManifest
     ) {
+        self.packageRoot = packageRoot
         self.manifest = manifest
         self.session = session
         self.frames = frames
@@ -85,6 +88,7 @@ public struct RobotCaptureImporter: Sendable {
         let captureBundle = try decoder.decode(CaptureBundleManifest.self, from: Data(contentsOf: captureBundleURL))
 
         return RobotCaptureImport(
+            packageRoot: packageRoot,
             manifest: manifest,
             session: session,
             frames: frames,

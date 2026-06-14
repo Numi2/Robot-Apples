@@ -303,13 +303,16 @@ public struct CaptureBundleExporter: Sendable {
                 ("lidar-metadata", frame.metadataURL)
             ] + [frame.confidenceURL.map { ("lidar-confidence", $0) }].compactMap { $0 }
         }
+        let structuredGeometryArtifactURLs: [(String, URL)] =
+            [packagedScanSession.roomPlanModelURL.map { ("roomplan-geometry", $0) }].compactMap { $0 }
+            + packagedScanSession.objectCaptureAssetURLs.map { ("object-capture-geometry", $0) }
         let artifactURLs: [(String, URL)] = [
             ("frames", framesJSONLURL),
             ("motion", motionJSONLURL),
             ("session", sessionJSONURL),
             ("capture-bundle", outputDirectory.appendingPathComponent("capture_bundle.json")),
             ("splat-training-manifest", trainingManifestURL)
-        ] + [packageVideoURL.map { ("video", $0) }].compactMap { $0 } + lidarArtifactURLs
+        ] + [packageVideoURL.map { ("video", $0) }].compactMap { $0 } + lidarArtifactURLs + structuredGeometryArtifactURLs
         let artifacts = artifactURLs.map { tools.artifactRecord(role: $0.0, url: $0.1, packageRoot: outputDirectory) }
         let report = tools.validate(
             packageID: "\(packagedScanSession.id)-robot-capture",

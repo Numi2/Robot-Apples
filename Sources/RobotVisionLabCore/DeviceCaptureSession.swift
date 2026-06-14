@@ -457,6 +457,9 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
                 ("lidar-metadata", frame.metadataURL)
             ] + [frame.confidenceURL.map { ("lidar-confidence", $0) }].compactMap { $0 }
         }
+        let structuredGeometryArtifactURLs: [(String, URL)] =
+            [roomPlanModelURL.map { ("roomplan-geometry", $0) }].compactMap { $0 }
+            + objectCaptureAssetURLs.map { ("object-capture-geometry", $0) }
         let artifactURLs: [(String, URL)] = [
             ("video", outputDirectory.appendingPathComponent("video.mov")),
             ("frames", outputDirectory.appendingPathComponent("frames.jsonl")),
@@ -464,7 +467,7 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
             ("session", outputDirectory.appendingPathComponent("session.json")),
             ("capture-bundle", outputDirectory.appendingPathComponent("capture_bundle.json")),
             ("splat-training-manifest", outputDirectory.appendingPathComponent("splat_training_manifest.json"))
-        ] + lidarArtifactURLs
+        ] + lidarArtifactURLs + structuredGeometryArtifactURLs
         let artifacts = artifactURLs.map { tools.artifactRecord(role: $0.0, url: $0.1, packageRoot: outputDirectory) }
         let report = tools.validate(
             packageID: "\(outputDirectory.lastPathComponent)-robot-capture",

@@ -239,6 +239,7 @@ public final class WorkstationModel {
             appendArtifact(title: "Prepared Route", url: output.report.routeURL, kind: "route")
             appendArtifact(title: "Training Manifest", url: output.report.splatTrainingManifestURL, kind: "splat-training")
             appendArtifact(title: "Evaluation Split", url: output.report.splitURL, kind: "capture-split")
+            appendArtifact(title: "Structured Geometry Report", url: output.report.structuredGeometryReportURL, kind: "structured-geometry")
         }
     }
 
