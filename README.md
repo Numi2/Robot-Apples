@@ -112,9 +112,10 @@ The required iPhone capture output is a `.robotcapture` package containing:
 - `RenderedDatasetLoader`, `NativeModelAdapterSchema`, `CoreMLDatasetEvaluator`,
   `MLXTrainingPackageBuilder`, `FailureMapCalibrationReporter`, and
   `ModelComparisonReporter`: Apple Silicon ML dataset loading, adapter schemas,
-  dense RGB/depth/visibility tensors, synthetic LiDAR geometry features, Core
-  ML evaluation, MLX training package generation, native-evidence failure-map
-  calibration, and model comparison.
+  dense RGB/depth/visibility tensors, synthetic LiDAR geometry features,
+  structured RoomPlan/Object Capture priors, Core ML evaluation, MLX training
+  package generation, native-evidence failure-map calibration, and model
+  comparison.
 - `RenderedFailureLabeler`: derives blocked, missing-view, ambiguity,
   low-texture, and lighting failure labels from rendered RGB/depth/visibility
   products for MLX/Core ML supervision and Vision Pro review markers.
@@ -131,10 +132,11 @@ The required iPhone capture output is a `.robotcapture` package containing:
   route coverage, image quality, scene-boundary, and geometry-prior sources.
 - `MLXTrainingPackageBuilder`: trains a compact Apple MLX model from fused
   pose, intrinsics, RGB statistics, depth coverage, visibility coverage, and
-  synthetic LiDAR geometry/occupancy metrics plus rendered failure labels, then
-  provides a Core ML export path for the same `scene_features` contract.
+  synthetic LiDAR geometry/occupancy metrics plus structured segmentation and
+  obstacle priors, then provides a Core ML export path for the same
+  `scene_features` contract.
 - `CoreMLDatasetEvaluator`: inspects Core ML models, supplies fused
-  54-value `scene_features` inputs when exported from MLX, and maps vector
+  70-value `scene_features` inputs when exported from MLX, and maps vector
   outputs back to free-space, obstacle, localization uncertainty, and
   failure-score predictions.
 - `RobotScenePackageExporter` and `SharedProjectFormatTools`: `.robotscene`

@@ -8,12 +8,15 @@ public struct RenderedModelSample: Codable, Equatable, Sendable {
     public var depthURL: URL?
     public var visibilityURL: URL?
     public var lidarScanURL: URL?
+    public var segmentationURL: URL?
+    public var obstacleMaskURL: URL?
     public var pose: Pose3D
     public var intrinsics: CameraIntrinsics
     public var rgbCHW: [Float]
     public var depthCHW: [Float]
     public var visibilityCHW: [Float]
     public var lidarFeatureVector: [Float]
+    public var structuredGeometryFeatureVector: [Float]
     public var poseVector: [Float]
     public var intrinsicsVector: [Float]
     public var warnings: [String]
@@ -25,12 +28,15 @@ public struct RenderedModelSample: Codable, Equatable, Sendable {
         depthURL: URL?,
         visibilityURL: URL?,
         lidarScanURL: URL?,
+        segmentationURL: URL?,
+        obstacleMaskURL: URL?,
         pose: Pose3D,
         intrinsics: CameraIntrinsics,
         rgbCHW: [Float],
         depthCHW: [Float],
         visibilityCHW: [Float],
         lidarFeatureVector: [Float],
+        structuredGeometryFeatureVector: [Float],
         poseVector: [Float],
         intrinsicsVector: [Float],
         warnings: [String] = []
@@ -41,12 +47,15 @@ public struct RenderedModelSample: Codable, Equatable, Sendable {
         self.depthURL = depthURL
         self.visibilityURL = visibilityURL
         self.lidarScanURL = lidarScanURL
+        self.segmentationURL = segmentationURL
+        self.obstacleMaskURL = obstacleMaskURL
         self.pose = pose
         self.intrinsics = intrinsics
         self.rgbCHW = rgbCHW
         self.depthCHW = depthCHW
         self.visibilityCHW = visibilityCHW
         self.lidarFeatureVector = lidarFeatureVector
+        self.structuredGeometryFeatureVector = structuredGeometryFeatureVector
         self.poseVector = poseVector
         self.intrinsicsVector = intrinsicsVector
         self.warnings = warnings
@@ -66,11 +75,15 @@ public struct RenderedDatasetLoader: Sendable {
         let depthURL = frame.productURL(for: .depth)
         let visibilityURL = frame.productURL(for: .visibility)
         let lidarScanURL = frame.productURL(for: .lidarScan)
+        let segmentationURL = frame.productURL(for: .segmentation)
+        let obstacleMaskURL = frame.productURL(for: .obstacleMask)
         let rgb = rgbURL.flatMap { try? readPPMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
         let depth = depthURL.flatMap { try? readPGMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
         let visibility = visibilityURL.flatMap { try? readPGMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
         let loadedLiDARFeatures = lidarScanURL.flatMap { try? readLiDARFeatureVector(url: $0) }
         let lidarFeatures = loadedLiDARFeatures ?? Array(repeating: Float(0), count: 30)
+        let loadedStructuredGeometryFeatures = readStructuredGeometryFeatureVector(segmentationURL: segmentationURL, obstacleMaskURL: obstacleMaskURL)
+        let structuredGeometryFeatures = loadedStructuredGeometryFeatures ?? Array(repeating: Float(0), count: 16)
 
         if rgbURL == nil {
             warnings.append("Frame has no RGB product URL.")
@@ -92,6 +105,11 @@ public struct RenderedDatasetLoader: Sendable {
         } else if loadedLiDARFeatures == nil {
             warnings.append("Unable to load LiDAR scan summary from \(lidarScanURL?.path ?? "unknown").")
         }
+        if segmentationURL == nil && obstacleMaskURL == nil {
+            warnings.append("Frame has no structured geometry segmentation or obstacle product URL.")
+        } else if loadedStructuredGeometryFeatures == nil {
+            warnings.append("Unable to load structured geometry products from \(obstacleMaskURL?.path ?? segmentationURL?.path ?? "unknown").")
+        }
 
         return RenderedModelSample(
             frameIndex: frame.index,
@@ -100,12 +118,15 @@ public struct RenderedDatasetLoader: Sendable {
             depthURL: depthURL,
             visibilityURL: visibilityURL,
             lidarScanURL: lidarScanURL,
+            segmentationURL: segmentationURL,
+            obstacleMaskURL: obstacleMaskURL,
             pose: frame.cameraPose,
             intrinsics: intrinsics,
             rgbCHW: rgb ?? Array(repeating: 0, count: max(1, intrinsics.width * intrinsics.height * 3)),
             depthCHW: depth ?? Array(repeating: 0, count: max(1, intrinsics.width * intrinsics.height)),
             visibilityCHW: visibility ?? Array(repeating: 0, count: max(1, intrinsics.width * intrinsics.height)),
             lidarFeatureVector: lidarFeatures,
+            structuredGeometryFeatureVector: structuredGeometryFeatures,
             poseVector: poseVector(frame.cameraPose),
             intrinsicsVector: intrinsicsVector(intrinsics),
             warnings: warnings
@@ -183,6 +204,57 @@ public struct RenderedDatasetLoader: Sendable {
             Float(report.metrics.lowSupportRate),
             rayCountScale
         ] + worldStats + cameraStats + bandOccupancy + rangeStats
+    }
+
+    private func readStructuredGeometryFeatureVector(segmentationURL: URL?, obstacleMaskURL: URL?) -> [Float]? {
+        guard let reportURL = obstacleMaskURL ?? segmentationURL,
+              let data = try? Data(contentsOf: reportURL),
+              let report = try? JSONDecoder.robotVisionLabDecoder.decode(StructuredGeometryFrameProductReport.self, from: data) else {
+            return nil
+        }
+
+        let segmentationConfidences = report.segmentationHints.map(\.confidence)
+        let obstaclePriors = report.obstacleHints.map(\.obstaclePrior)
+        let obstacleDistances = report.obstacleHints.map(\.distanceMeters)
+        let regionAreas = report.segmentationHints.map { hint in
+            let region = hint.approximateImageRegion
+            return max(0, region.maxX - region.minX) * max(0, region.maxY - region.minY)
+        }
+        let semanticClasses = Set(report.segmentationHints.map { $0.semanticClass.lowercased() })
+        let obstacleLabels = Set(report.obstacleHints.map { $0.label.lowercased() })
+        let hasFloor = semanticClasses.contains { $0.contains("floor") } || obstacleLabels.contains { $0.contains("floor") }
+        let hasWall = semanticClasses.contains { $0.contains("wall") } || obstacleLabels.contains { $0.contains("wall") }
+        let hasObject = semanticClasses.contains { $0.contains("object") } || obstacleLabels.contains { $0.contains("object") }
+        let nearestDistance = obstacleDistances.min().map { min(max($0 / 12.0, 0), 1) } ?? 0
+        let totalCoverage = min(regionAreas.reduce(0, +), 1)
+
+        return [
+            min(Float(report.visibleLayerIDs.count) / 16, 4),
+            min(Float(report.segmentationHints.count) / 16, 4),
+            min(Float(report.obstacleHints.count) / 16, 4),
+            Float(min(max(report.obstacleProbability, 0), 1)),
+            mean(segmentationConfidences),
+            maxValue(segmentationConfidences),
+            mean(obstaclePriors),
+            maxValue(obstaclePriors),
+            Float(nearestDistance),
+            hasFloor ? 1 : 0,
+            hasWall ? 1 : 0,
+            hasObject ? 1 : 0,
+            mean(regionAreas),
+            maxValue(regionAreas),
+            Float(totalCoverage),
+            min(Float(report.warnings.count) / 8, 1)
+        ]
+    }
+
+    private func mean(_ values: [Double]) -> Float {
+        guard !values.isEmpty else { return 0 }
+        return Float(values.reduce(0, +) / Double(values.count))
+    }
+
+    private func maxValue(_ values: [Double]) -> Float {
+        Float(values.max() ?? 0)
     }
 
     private func pointCloudStats(_ points: [SIMD3<Double>]) -> [Float] {

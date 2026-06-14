@@ -225,12 +225,59 @@ public struct MLXTrainingPackageBuilder: Sendable {
                 range_stats(ranges),
             ]).astype(np.float32)
 
+        def geometry_summary(segmentation_path, obstacle_path):
+            path = obstacle_path or segmentation_path
+            if not path:
+                return None
+            return json.loads(Path(path).read_text())
+
+        def structured_geometry_features(report):
+            if not report:
+                return np.zeros((16,), dtype=np.float32)
+            segmentation = report.get("segmentationHints", [])
+            obstacles = report.get("obstacleHints", [])
+            visible_layers = report.get("visibleLayerIDs", [])
+            segmentation_confidences = np.asarray([float(item.get("confidence", 0.0)) for item in segmentation], dtype=np.float32)
+            obstacle_priors = np.asarray([float(item.get("obstaclePrior", 0.0)) for item in obstacles], dtype=np.float32)
+            obstacle_distances = [float(item.get("distanceMeters", 0.0)) for item in obstacles if item.get("distanceMeters") is not None]
+            semantic_classes = {str(item.get("semanticClass", "")).lower() for item in segmentation}
+            obstacle_labels = {str(item.get("label", "")).lower() for item in obstacles}
+            region_areas = []
+            for item in segmentation:
+                region = item.get("approximateImageRegion", {})
+                width = max(float(region.get("maxX", 0.0)) - float(region.get("minX", 0.0)), 0.0)
+                height = max(float(region.get("maxY", 0.0)) - float(region.get("minY", 0.0)), 0.0)
+                region_areas.append(width * height)
+            region_areas = np.asarray(region_areas, dtype=np.float32)
+            has_floor = any("floor" in item for item in semantic_classes | obstacle_labels)
+            has_wall = any("wall" in item for item in semantic_classes | obstacle_labels)
+            has_object = any("object" in item for item in semantic_classes | obstacle_labels)
+            nearest_distance = min(obstacle_distances) if obstacle_distances else 0.0
+            return np.array([
+                min(float(len(visible_layers)) / 16.0, 4.0),
+                min(float(len(segmentation)) / 16.0, 4.0),
+                min(float(len(obstacles)) / 16.0, 4.0),
+                min(max(float(report.get("obstacleProbability", 0.0)), 0.0), 1.0),
+                float(segmentation_confidences.mean()) if segmentation_confidences.size else 0.0,
+                float(segmentation_confidences.max()) if segmentation_confidences.size else 0.0,
+                float(obstacle_priors.mean()) if obstacle_priors.size else 0.0,
+                float(obstacle_priors.max()) if obstacle_priors.size else 0.0,
+                min(max(nearest_distance / 12.0, 0.0), 1.0),
+                1.0 if has_floor else 0.0,
+                1.0 if has_wall else 0.0,
+                1.0 if has_object else 0.0,
+                float(region_areas.mean()) if region_areas.size else 0.0,
+                float(region_areas.max()) if region_areas.size else 0.0,
+                min(float(region_areas.sum()) if region_areas.size else 0.0, 1.0),
+                min(float(len(report.get("warnings", []))) / 8.0, 1.0),
+            ], dtype=np.float32)
+
         def safe_stats(values, count):
             if values is None:
                 return np.zeros((count,), dtype=np.float32)
             return values.astype(np.float32)
 
-        def scene_feature_vector(pose_input, intrinsics, rgb, depth, visibility, lidar):
+        def scene_feature_vector(pose_input, intrinsics, rgb, depth, visibility, lidar, geometry):
             if rgb is None:
                 rgb_mean = np.zeros((3,), dtype=np.float32)
                 rgb_std = np.zeros((3,), dtype=np.float32)
@@ -264,6 +311,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
                 depth_features,
                 visibility_features,
                 lidar_features(lidar),
+                structured_geometry_features(geometry),
             ]).astype(np.float32)
 
         def load_samples(dataset_path):
@@ -276,13 +324,16 @@ public struct MLXTrainingPackageBuilder: Sendable {
                 depth_path = product_url(frame, "depth")
                 visibility_path = product_url(frame, "visibility")
                 lidar_path = product_url(frame, "lidarScan")
+                segmentation_path = product_url(frame, "segmentation")
+                obstacle_path = product_url(frame, "obstacleMask")
                 failure_path = product_url(frame, "failureLabels")
                 rgb = read_rgb_chw(rgb_path) if rgb_path else None
                 depth = read_depth_chw(depth_path) if depth_path else None
                 visibility = read_visibility_chw(visibility_path) if visibility_path else None
                 lidar = lidar_summary(lidar_path)
+                geometry = geometry_summary(segmentation_path, obstacle_path)
                 pose_input = pose_vector(frame)
-                model_input = scene_feature_vector(pose_input, intrinsics, rgb, depth, visibility, lidar)
+                model_input = scene_feature_vector(pose_input, intrinsics, rgb, depth, visibility, lidar, geometry)
                 target = failure_signal(failure_path)
                 samples.append({
                     "frame_index": int(frame["index"]),
@@ -290,6 +341,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
                     "depth": depth,
                     "visibility": visibility,
                     "lidar": lidar,
+                    "structured_geometry": geometry,
                     "scene_features": model_input,
                     "target": target,
                 })
@@ -315,7 +367,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
             def __init__(self):
                 super().__init__()
                 self.scene = nn.Sequential(
-                    nn.Linear(54, 128),
+                    nn.Linear(70, 128),
                     nn.relu,
                     nn.Linear(128, 64),
                     nn.relu,
@@ -360,7 +412,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
                 "model": "RobotSceneNet",
                 "inputs": ["scene_features"],
                 "outputs": ["free_space_probability", "obstacle_probability", "localization_uncertainty", "failure_kind_score"],
-                "input_size": 54,
+                "input_size": 70,
                 "output_size": 4,
             }, indent=2))
             (output / "training_summary.json").write_text(json.dumps({"samples": len(samples), "epochs": args.epochs}, indent=2))
@@ -387,7 +439,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
             def __init__(self):
                 super().__init__()
                 self.scene = nn.Sequential(
-                    nn.Linear(54, 128),
+                    nn.Linear(70, 128),
                     nn.relu,
                     nn.Linear(128, 64),
                     nn.relu,
@@ -408,7 +460,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
 
             model = RobotSceneNet()
             model.load_weights(str(mlx_output / "robot_scene_net.safetensors"))
-            example = mx.zeros((1, 54), dtype=mx.float32)
+            example = mx.zeros((1, 70), dtype=mx.float32)
             mx.eval(model(example))
 
             params = dict(model.parameters())
@@ -419,7 +471,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
             dense2_w = np.array(params["scene.layers.4.weight"])
             dense2_b = np.array(params["scene.layers.4.bias"])
 
-            @mb.program(input_specs=[mb.TensorSpec(shape=(1, 54), dtype=mb.fp32)])
+            @mb.program(input_specs=[mb.TensorSpec(shape=(1, 70), dtype=mb.fp32)])
             def robot_scene_program(scene_features):
                 x = mb.linear(x=scene_features, weight=dense0_w, bias=dense0_b)
                 x = mb.relu(x=x)
@@ -433,13 +485,13 @@ public struct MLXTrainingPackageBuilder: Sendable {
                     robot_scene_program,
                     source="milinternal",
                     convert_to="mlprogram",
-                    inputs=[ct.TensorType(name="scene_features", shape=(1, 54), dtype=np.float32)],
+                    inputs=[ct.TensorType(name="scene_features", shape=(1, 70), dtype=np.float32)],
                     outputs=[ct.TensorType(name="robot_scene_outputs", dtype=np.float32)],
                     minimum_deployment_target=ct.target.macOS13,
                     compute_units=ct.ComputeUnit.ALL,
                 )
                 mlmodel.short_description = "Robot Scene Studio route evaluation model exported from Apple MLX training."
-                mlmodel.input_description["scene_features"] = "Camera pose, intrinsics, rendered RGB/depth/visibility statistics, and synthetic LiDAR geometry/occupancy features."
+                mlmodel.input_description["scene_features"] = "Camera pose, intrinsics, rendered RGB/depth/visibility statistics, synthetic LiDAR geometry/occupancy features, and structured RoomPlan/Object Capture segmentation-obstacle priors."
                 mlmodel.output_description["robot_scene_outputs"] = "free_space, obstacle, localization_uncertainty, failure_kind_score."
                 mlmodel.save(str(coreml_output))
                 print(f"Wrote Core ML model package to {coreml_output}")
@@ -448,7 +500,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
                     "source_weights": str((mlx_output / "robot_scene_net.safetensors").resolve()),
                     "target": str(coreml_output.resolve()),
                     "runtime": "Core ML",
-                    "input": {"name": "scene_features", "shape": [1, 54], "dtype": "float32"},
+                    "input": {"name": "scene_features", "shape": [1, 70], "dtype": "float32"},
                     "outputs": ["robot_scene_outputs"],
                     "coremltools_version": getattr(ct, "__version__", "unknown"),
                     "error": str(error),

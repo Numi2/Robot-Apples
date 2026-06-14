@@ -138,7 +138,7 @@ public final class CoreMLRenderedSampleFeatureProvider: MLFeatureProvider {
         case .visibility:
             return multiArrayValue(sample.visibilityCHW, shape: feature.shape)
         case .renderedFeatures:
-            return multiArrayValue(renderedFeatureVector(sample), shape: feature.shape.isEmpty ? [1, 54] : feature.shape)
+            return multiArrayValue(renderedFeatureVector(sample), shape: feature.shape.isEmpty ? [1, 70] : feature.shape)
         case .cameraPose:
             return multiArrayValue(sample.poseVector, shape: feature.shape.isEmpty ? [1, 7] : feature.shape)
         case .intrinsics:
@@ -163,6 +163,7 @@ public final class CoreMLRenderedSampleFeatureProvider: MLFeatureProvider {
             + scalarImageFeatures(sample.depthCHW, highThreshold: 0.82)
             + visibilityFeatures(sample.visibilityCHW)
             + lidarFeatures(sample)
+            + structuredGeometryFeatures(sample)
     }
 
     private func channelMeans(_ values: [Float], channels: Int) -> [Float] {
@@ -213,6 +214,13 @@ public final class CoreMLRenderedSampleFeatureProvider: MLFeatureProvider {
             return sample.lidarFeatureVector
         }
         return Array(sample.lidarFeatureVector.prefix(30)) + Array(repeating: 0, count: max(0, 30 - sample.lidarFeatureVector.count))
+    }
+
+    private func structuredGeometryFeatures(_ sample: RenderedModelSample) -> [Float] {
+        if sample.structuredGeometryFeatureVector.count == 16 {
+            return sample.structuredGeometryFeatureVector
+        }
+        return Array(sample.structuredGeometryFeatureVector.prefix(16)) + Array(repeating: 0, count: max(0, 16 - sample.structuredGeometryFeatureVector.count))
     }
 
     private func multiArrayValue(_ values: [Float], shape: [Int]) -> MLFeatureValue? {
