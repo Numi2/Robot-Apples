@@ -109,7 +109,18 @@ public struct NativeRenderProductValidator: Sendable {
             switch product {
             case .rgb:
                 _ = try RenderedProductHeaderReader.readPNMHeader(url: url, expectedMagic: "P6")
-            case .depth, .visibility:
+            case .depth:
+                let header = try RenderedProductHeaderReader.readPNMHeader(url: url, expectedMagic: "P5")
+                guard let metricDepth = MetricDepthProductIO.readIfPresent(forVisualizationURL: url) else {
+                    return "Depth product is missing the required Float32 meter sidecar."
+                }
+                if metricDepth.metadata.width != header.width || metricDepth.metadata.height != header.height {
+                    return "Depth sidecar dimensions \(metricDepth.metadata.width)x\(metricDepth.metadata.height) do not match visualization \(header.width)x\(header.height)."
+                }
+                if metricDepth.valuesMeters.count < header.width * header.height {
+                    return "Depth sidecar does not contain one Float32 value per pixel."
+                }
+            case .visibility:
                 _ = try RenderedProductHeaderReader.readPNMHeader(url: url, expectedMagic: "P5")
             case .lidarScan:
                 let report = try JSONDecoder.robotVisionLabDecoder.decode(RenderedLiDARScanReport.self, from: Data(contentsOf: url))

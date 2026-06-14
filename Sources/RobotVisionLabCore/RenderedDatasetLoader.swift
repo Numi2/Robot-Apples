@@ -78,7 +78,7 @@ public struct RenderedDatasetLoader: Sendable {
         let segmentationURL = frame.productURL(for: .segmentation)
         let obstacleMaskURL = frame.productURL(for: .obstacleMask)
         let rgb = rgbURL.flatMap { try? readPPMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
-        let depth = depthURL.flatMap { try? readPGMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
+        let depth = depthURL.flatMap { try? readDepthCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
         let visibility = visibilityURL.flatMap { try? readPGMCHW(url: $0, expectedWidth: intrinsics.width, expectedHeight: intrinsics.height) }
         let loadedLiDARFeatures = lidarScanURL.flatMap { try? readLiDARFeatureVector(url: $0) }
         let lidarFeatures = loadedLiDARFeatures ?? Array(repeating: Float(0), count: 30)
@@ -168,6 +168,19 @@ public struct RenderedDatasetLoader: Sendable {
             output[pixelCount * 2 + pixel] = Float(parsed.payload[pixel * 3 + 2]) / 255
         }
         return output
+    }
+
+    private func readDepthCHW(url: URL, expectedWidth: Int, expectedHeight: Int) throws -> [Float] {
+        if let metricDepth = MetricDepthProductIO.readIfPresent(forVisualizationURL: url),
+           metricDepth.metadata.width == expectedWidth,
+           metricDepth.metadata.height == expectedHeight {
+            let farMeters: Float = 20
+            return metricDepth.valuesMeters.map { value in
+                guard value.isFinite, value > 0 else { return 0 }
+                return min(max(value / farMeters, 0), 1)
+            }
+        }
+        return try readPGMCHW(url: url, expectedWidth: expectedWidth, expectedHeight: expectedHeight)
     }
 
     private func readPGMCHW(url: URL, expectedWidth: Int, expectedHeight: Int) throws -> [Float] {

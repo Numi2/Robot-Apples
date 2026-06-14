@@ -107,6 +107,15 @@ public struct MLXTrainingPackageBuilder: Sendable {
             return image.reshape(height, width, 3).transpose(2, 0, 1)
 
         def read_depth_chw(path):
+            metric_path = Path(path).with_suffix(".meters.f32")
+            metric_metadata_path = Path(path).with_suffix(".meters.json")
+            if metric_path.exists() and metric_metadata_path.exists():
+                metadata = json.loads(metric_metadata_path.read_text())
+                width, height = int(metadata["width"]), int(metadata["height"])
+                depth = np.fromfile(metric_path, dtype="<f4", count=width * height).astype(np.float32)
+                depth = np.where(np.isfinite(depth) & (depth > 0.0), depth, 0.0)
+                depth = np.clip(depth / 20.0, 0.0, 1.0)
+                return depth.reshape(1, height, width)
             width, height, max_value, payload = _read_pnm(path, "P5")
             image = np.frombuffer(payload[: width * height], dtype=np.uint8).astype(np.float32) / float(max_value)
             return image.reshape(1, height, width)
