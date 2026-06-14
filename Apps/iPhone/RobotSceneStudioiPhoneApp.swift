@@ -188,6 +188,13 @@ private struct TransferScreen: View {
                         )
                     }
 
+                    if !model.discoveredMacs.isEmpty {
+                        ForEach(model.discoveredMacs, id: \.self) { mac in
+                            Label(mac, systemImage: "macbook.and.iphone")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
                     if model.connectedMacs.isEmpty {
                         Text("No connected Mac receiver.")
                             .foregroundStyle(.secondary)
@@ -207,6 +214,21 @@ private struct TransferScreen: View {
                         Label("Send to Connected Mac", systemImage: "paperplane")
                     }
                     .disabled(model.state.selectedPackageURL == nil)
+
+                    HStack {
+                        Button {
+                            model.cancelTransfer()
+                        } label: {
+                            Label("Cancel", systemImage: "xmark.circle")
+                        }
+                        .disabled(model.state.stage != .transferring)
+
+                        Button {
+                            model.retryLastTransfer()
+                        } label: {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                        }
+                    }
                 }
 
                 Section("Events") {

@@ -159,6 +159,7 @@ public final class CaptureClientModel {
     public private(set) var quality = CaptureQualityState()
     public private(set) var packages: [CapturePackageRecord] = []
     public private(set) var transferEvents: [CaptureTransferEvent] = []
+    public private(set) var discoveredMacs: [String] = []
     public private(set) var connectedMacs: [String] = []
     public private(set) var isBrowsingForMac = false
     public private(set) var documentsURL: URL
@@ -167,6 +168,8 @@ public final class CaptureClientModel {
     private var sender: RobotCaptureMultipeerTransfer?
     private var senderDelegate: CaptureTransferDelegate?
     private var qualityTimer: Timer?
+    private var lastTransferPackageURL: URL?
+    private var lastTransferPeerName: String?
 
     public init(
         configuration: CaptureClientConfiguration = CaptureClientConfiguration(),
@@ -323,6 +326,7 @@ public final class CaptureClientModel {
         sender = nil
         senderDelegate = nil
         connectedMacs.removeAll()
+        discoveredMacs.removeAll()
         isBrowsingForMac = false
         state.stage = .idle
         transferEvents.insert(CaptureTransferEvent(title: "Discovery Stopped", detail: "Multipeer browser stopped."), at: 0)
@@ -340,7 +344,33 @@ public final class CaptureClientModel {
             state.stage = .transferring
             state.transferProgress = 0.05
             state.latestMessage = "Sending \(packageURL.lastPathComponent) to Mac."
+            lastTransferPackageURL = packageURL
+            lastTransferPeerName = macName
             try sender?.sendRobotCapturePackage(at: packageURL, to: macName)
+        } catch {
+            fail(error.localizedDescription)
+        }
+    }
+
+    public func cancelTransfer() {
+        sender?.cancelTransfers()
+        state.stage = .idle
+        state.latestMessage = "Transfer cancelled."
+        state.transferProgress = 0
+    }
+
+    public func retryLastTransfer() {
+        do {
+            if sender == nil {
+                startMacDiscovery()
+            }
+            if let packageURL = lastTransferPackageURL {
+                try sender?.sendRobotCapturePackage(at: packageURL, to: lastTransferPeerName)
+            } else {
+                try sender?.retryLastPackage(to: lastTransferPeerName)
+            }
+            state.stage = .transferring
+            state.latestMessage = "Retrying transfer."
         } catch {
             fail(error.localizedDescription)
         }
@@ -373,10 +403,20 @@ public final class CaptureClientModel {
     private func handleTransferEvent(_ event: RobotCaptureTransferEvent) {
         switch event {
         case .peerFound(let name):
+            if !discoveredMacs.contains(name) {
+                discoveredMacs.append(name)
+            }
             transferEvents.insert(CaptureTransferEvent(title: "Mac Found", detail: name), at: 0)
         case .peerLost(let name):
+            discoveredMacs.removeAll { $0 == name }
             connectedMacs.removeAll { $0 == name }
             transferEvents.insert(CaptureTransferEvent(title: "Mac Lost", detail: name), at: 0)
+        case .pairingInvitation(let name):
+            transferEvents.insert(CaptureTransferEvent(title: "Pairing Requested", detail: name), at: 0)
+        case .pairingAccepted(let name):
+            transferEvents.insert(CaptureTransferEvent(title: "Pairing Accepted", detail: name), at: 0)
+        case .pairingRejected(let name):
+            transferEvents.insert(CaptureTransferEvent(title: "Pairing Rejected", detail: name), at: 0)
         case .peerConnected(let name):
             if !connectedMacs.contains(name) {
                 connectedMacs.append(name)
@@ -388,6 +428,8 @@ public final class CaptureClientModel {
         case .packageSendStarted(let url, let peer):
             state.stage = .transferring
             state.transferProgress = 0.2
+            lastTransferPackageURL = url
+            lastTransferPeerName = peer
             transferEvents.insert(CaptureTransferEvent(title: "Transfer Started", detail: "\(url.lastPathComponent) to \(peer)"), at: 0)
         case .packageSendProgress(_, let peer, let progress):
             state.stage = .transferring
@@ -400,7 +442,12 @@ public final class CaptureClientModel {
             transferEvents.insert(CaptureTransferEvent(title: "Transfer Complete", detail: "\(url.lastPathComponent) to \(peer)"), at: 0)
         case .failed(let message):
             fail(message)
-        case .packageReceiveStarted, .packageReceiveFinished:
+        case .recoverableFailure(let message, let packageURL):
+            if let packageURL {
+                lastTransferPackageURL = packageURL
+            }
+            transferEvents.insert(CaptureTransferEvent(title: "Recoverable Failure", detail: message), at: 0)
+        case .packageReceiveStarted, .packageReceiveProgress, .packageReceiveFinished, .transferReceiptWritten:
             break
         }
         if transferEvents.count > 30 {

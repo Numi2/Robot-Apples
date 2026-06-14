@@ -131,14 +131,16 @@ manage signing for physical iPhone, Mac, and Vision Pro deployment.
   `.robotcapture` package browsing, Multipeer sender controls, and wired Finder
   fallback guidance.
 - `RobotCaptureMultipeerTransfer`: app-controlled nearby iPhone-to-Mac transfer
-  using Multipeer Connectivity resource transfer, progress, completion, and
-  receipt reporting.
+  using Multipeer Connectivity resource transfer, explicit receiver-side
+  pairing approval, send/receive progress, cancel/retry recovery hooks,
+  completion events, and receipt reporting.
 - `RobotSceneStudioMacApp`: native SwiftUI Mac workstation shell with
   `NavigationSplitView`, project browser, `.robotscene` document opening,
-  Multipeer receiver controls, `.robotcapture` health inspection, splat
-  linking/inspection, route alignment anchors, route variant controls,
-  failure-map viewing, Metal renderer budget controls, diagnostics, artifact
-  browsing, and `.robotscene` export.
+  Multipeer receiver controls, pairing accept/reject UI, receive progress,
+  transfer receipts, Finder-copied `.robotcapture` import, `.robotcapture`
+  health inspection, splat linking/inspection, route alignment anchors, route
+  variant controls, failure-map viewing, Metal renderer budget controls,
+  diagnostics, artifact browsing, and `.robotscene` export.
 - `WorkstationModel`: Observation-backed Mac workstation controller that imports
   captures, prepares routes, links splats, builds dataset manifests, plans Metal
   rendering, runs the native Metal splat renderer, records RGB/depth/visibility

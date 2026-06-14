@@ -124,6 +124,18 @@ public struct WorkstationTransferEvent: Identifiable, Equatable, Sendable {
     }
 }
 
+public struct WorkstationTransferReceiptRecord: Identifiable, Equatable, Sendable {
+    public var id: String
+    public var receipt: RobotCaptureTransferReceipt
+    public var receiptURL: URL
+
+    public init(receipt: RobotCaptureTransferReceipt, receiptURL: URL) {
+        self.id = receiptURL.path
+        self.receipt = receipt
+        self.receiptURL = receiptURL
+    }
+}
+
 public enum WorkstationPaths {
     public static func defaultWorkspaceURL() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -148,6 +160,9 @@ public final class WorkstationModel {
     public var routeExpansionYawOffsets = "-8,0,8"
     public private(set) var isMultipeerReceiverRunning = false
     public private(set) var transferEvents: [WorkstationTransferEvent] = []
+    public private(set) var pendingPairingInvitations: [String] = []
+    public private(set) var receivingProgressByPeer: [String: Double] = [:]
+    public private(set) var transferReceipts: [WorkstationTransferReceiptRecord] = []
 
     private var importedCapture: RobotCaptureImport?
     private var preparation: RobotCapturePreparationOutput?
@@ -328,7 +343,11 @@ public final class WorkstationModel {
             let delegate = WorkstationMultipeerReceiverDelegate { [weak self] event in
                 self?.handleTransferEvent(event)
             }
-            let receiver = RobotCaptureMultipeerTransfer(role: .receiver, inboxDirectory: inboxURL)
+            let receiver = RobotCaptureMultipeerTransfer(
+                role: .receiver,
+                inboxDirectory: inboxURL,
+                automaticallyAcceptInvitations: false
+            )
             receiver.delegate = delegate
             try receiver.start()
             multipeerDelegate = delegate
@@ -347,6 +366,39 @@ public final class WorkstationModel {
         multipeerDelegate = nil
         isMultipeerReceiverRunning = false
         transferEvents.insert(WorkstationTransferEvent(title: "Receiver Stopped", detail: "Multipeer Connectivity advertising stopped."), at: 0)
+    }
+
+    public func acceptPairingInvitation(from peerName: String) {
+        multipeerReceiver?.acceptInvitation(from: peerName)
+        pendingPairingInvitations.removeAll { $0 == peerName }
+    }
+
+    public func rejectPairingInvitation(from peerName: String) {
+        multipeerReceiver?.rejectInvitation(from: peerName)
+        pendingPairingInvitations.removeAll { $0 == peerName }
+    }
+
+    public func importFinderCopiedCapture(at packageURL: URL) {
+        transferEvents.insert(WorkstationTransferEvent(title: "Finder Import", detail: packageURL.path), at: 0)
+        importCapture(at: packageURL)
+    }
+
+    public func refreshTransferReceipts() {
+        let inboxURL = state.workspaceURL.appendingPathComponent("Inbox", isDirectory: true)
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: inboxURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        transferReceipts = urls
+            .filter { $0.pathExtension == "json" && $0.lastPathComponent.hasSuffix("transfer-receipt.json") }
+            .compactMap { url in
+                guard let data = try? Data(contentsOf: url),
+                      let receipt = try? JSONDecoder.robotVisionLabDecoder.decode(RobotCaptureTransferReceipt.self, from: data)
+                else { return nil }
+                return WorkstationTransferReceiptRecord(receipt: receipt, receiptURL: url)
+            }
+            .sorted { $0.receipt.receivedAt > $1.receipt.receivedAt }
     }
 
     public func planMetalRender() {
@@ -598,15 +650,40 @@ public final class WorkstationModel {
             transferEvents.insert(WorkstationTransferEvent(title: "iPhone Found", detail: name), at: 0)
         case .peerLost(let name):
             transferEvents.insert(WorkstationTransferEvent(title: "iPhone Lost", detail: name), at: 0)
+        case .pairingInvitation(let name):
+            if !pendingPairingInvitations.contains(name) {
+                pendingPairingInvitations.append(name)
+            }
+            transferEvents.insert(WorkstationTransferEvent(title: "Pairing Requested", detail: name), at: 0)
+        case .pairingAccepted(let name):
+            pendingPairingInvitations.removeAll { $0 == name }
+            transferEvents.insert(WorkstationTransferEvent(title: "Pairing Accepted", detail: name), at: 0)
+        case .pairingRejected(let name):
+            pendingPairingInvitations.removeAll { $0 == name }
+            transferEvents.insert(WorkstationTransferEvent(title: "Pairing Rejected", detail: name), at: 0)
         case .peerConnected(let name):
             transferEvents.insert(WorkstationTransferEvent(title: "iPhone Connected", detail: name), at: 0)
         case .peerDisconnected(let name):
             transferEvents.insert(WorkstationTransferEvent(title: "iPhone Disconnected", detail: name), at: 0)
+            receivingProgressByPeer[name] = nil
         case .packageReceiveStarted(let packageName, let peer):
+            receivingProgressByPeer[peer] = 0
             transferEvents.insert(WorkstationTransferEvent(title: "Receiving Capture", detail: "\(packageName) from \(peer)"), at: 0)
+        case .packageReceiveProgress(let packageName, let peer, let progress):
+            receivingProgressByPeer[peer] = progress
+            if progress >= 1 {
+                transferEvents.insert(WorkstationTransferEvent(title: "Receive Complete", detail: "\(packageName) from \(peer)"), at: 0)
+            }
         case .packageReceiveFinished(let peer, let url):
+            receivingProgressByPeer[peer] = nil
             transferEvents.insert(WorkstationTransferEvent(title: "Capture Received", detail: "\(url.lastPathComponent) from \(peer)"), at: 0)
+            refreshTransferReceipts()
             importCapture(at: url)
+        case .transferReceiptWritten(let url):
+            transferEvents.insert(WorkstationTransferEvent(title: "Receipt Written", detail: url.lastPathComponent), at: 0)
+            refreshTransferReceipts()
+        case .recoverableFailure(let message, _):
+            transferEvents.insert(WorkstationTransferEvent(title: "Recoverable Transfer Failure", detail: message), at: 0)
         case .failed(let message):
             transferEvents.insert(WorkstationTransferEvent(title: "Transfer Failed", detail: message), at: 0)
             appendDiagnostic(message)

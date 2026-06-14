@@ -8,13 +8,19 @@ public enum RobotCaptureTransferRole: String, Codable, Sendable {
 public enum RobotCaptureTransferEvent: Equatable, Sendable {
     case peerFound(String)
     case peerLost(String)
+    case pairingInvitation(String)
+    case pairingAccepted(String)
+    case pairingRejected(String)
     case peerConnected(String)
     case peerDisconnected(String)
     case packageSendStarted(URL, String)
     case packageSendProgress(URL, String, Double)
     case packageSendFinished(URL, String)
     case packageReceiveStarted(String, String)
+    case packageReceiveProgress(String, String, Double)
     case packageReceiveFinished(String, URL)
+    case transferReceiptWritten(URL)
+    case recoverableFailure(String, URL?)
     case failed(String)
 }
 
@@ -116,6 +122,7 @@ public final class RobotCaptureMultipeerTransfer: NSObject {
     public weak var delegate: RobotCaptureTransferDelegate?
 
     public private(set) var connectedPeers: [String] = []
+    public var automaticallyAcceptInvitations: Bool
 
     private let role: RobotCaptureTransferRole
     private let inboxDirectory: URL
@@ -124,14 +131,20 @@ public final class RobotCaptureMultipeerTransfer: NSObject {
     private var advertiser: MCNearbyServiceAdvertiser?
     private var browser: MCNearbyServiceBrowser?
     private var sendProgress: [Progress] = []
+    private var progressObservers: [NSKeyValueObservation] = []
+    private var pendingInvitations: [String: (Bool, MCSession?) -> Void] = [:]
+    private var knownPeers: [String: MCPeerID] = [:]
+    private var lastPackageURLByPeer: [String: URL] = [:]
 
     public init(
         role: RobotCaptureTransferRole,
         displayName: String = RobotCaptureMultipeerTransfer.defaultDisplayName(),
-        inboxDirectory: URL
+        inboxDirectory: URL,
+        automaticallyAcceptInvitations: Bool = true
     ) {
         self.role = role
         self.inboxDirectory = inboxDirectory
+        self.automaticallyAcceptInvitations = automaticallyAcceptInvitations
         self.peerID = MCPeerID(displayName: displayName)
         self.session = MCSession(peer: peerID, securityIdentity: nil, encryptionPreference: .required)
         super.init()
@@ -177,6 +190,43 @@ public final class RobotCaptureMultipeerTransfer: NSObject {
         advertiser = nil
         session.disconnect()
         connectedPeers = []
+        sendProgress.forEach { $0.cancel() }
+        sendProgress.removeAll()
+        progressObservers.removeAll()
+        pendingInvitations.removeAll()
+        knownPeers.removeAll()
+    }
+
+    public func acceptInvitation(from peerDisplayName: String) {
+        guard let handler = pendingInvitations.removeValue(forKey: peerDisplayName) else { return }
+        handler(role == .receiver, session)
+        delegate?.robotCaptureTransferDidEmit(.pairingAccepted(peerDisplayName))
+    }
+
+    public func rejectInvitation(from peerDisplayName: String) {
+        guard let handler = pendingInvitations.removeValue(forKey: peerDisplayName) else { return }
+        handler(false, nil)
+        delegate?.robotCaptureTransferDidEmit(.pairingRejected(peerDisplayName))
+    }
+
+    public func cancelTransfers() {
+        sendProgress.forEach { $0.cancel() }
+        sendProgress.removeAll()
+        progressObservers.removeAll()
+        delegate?.robotCaptureTransferDidEmit(.failed("Active transfer was cancelled."))
+    }
+
+    public func retryLastPackage(to peerDisplayName: String? = nil) throws {
+        let packageURL: URL?
+        if let peerDisplayName {
+            packageURL = lastPackageURLByPeer[peerDisplayName]
+        } else {
+            packageURL = lastPackageURLByPeer.values.first
+        }
+        guard let packageURL else {
+            throw RobotCaptureTransferError.noRecoverablePackage
+        }
+        try sendRobotCapturePackage(at: packageURL, to: peerDisplayName)
     }
 
     public func sendRobotCapturePackage(at packageURL: URL, to peerDisplayName: String? = nil) throws {
@@ -188,6 +238,7 @@ public final class RobotCaptureMultipeerTransfer: NSObject {
         }
 
         for peer in peers {
+            lastPackageURLByPeer[peer.displayName] = packageURL
             delegate?.robotCaptureTransferDidEmit(.packageSendStarted(packageURL, peer.displayName))
             let progress = session.sendResource(
                 at: packageURL,
@@ -202,6 +253,7 @@ public final class RobotCaptureMultipeerTransfer: NSObject {
             }
             if let progress {
                 sendProgress.append(progress)
+                observe(progress: progress, resourceName: packageURL.lastPathComponent, peerDisplayName: peer.displayName, sendingURL: packageURL)
                 progress.cancellationHandler = { [weak self] in
                     self?.delegate?.robotCaptureTransferDidEmit(.failed("Robot capture package transfer was cancelled."))
                 }
@@ -221,7 +273,14 @@ extension RobotCaptureMultipeerTransfer: MCNearbyServiceAdvertiserDelegate {
         withContext context: Data?,
         invitationHandler: @escaping (Bool, MCSession?) -> Void
     ) {
-        invitationHandler(role == .receiver, session)
+        knownPeers[peerID.displayName] = peerID
+        delegate?.robotCaptureTransferDidEmit(.pairingInvitation(peerID.displayName))
+        if automaticallyAcceptInvitations {
+            invitationHandler(role == .receiver, session)
+            delegate?.robotCaptureTransferDidEmit(.pairingAccepted(peerID.displayName))
+        } else {
+            pendingInvitations[peerID.displayName] = invitationHandler
+        }
     }
 
     public func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
@@ -231,6 +290,7 @@ extension RobotCaptureMultipeerTransfer: MCNearbyServiceAdvertiserDelegate {
 
 extension RobotCaptureMultipeerTransfer: MCNearbyServiceBrowserDelegate {
     public func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String: String]?) {
+        knownPeers[peerID.displayName] = peerID
         delegate?.robotCaptureTransferDidEmit(.peerFound(peerID.displayName))
         browser.invitePeer(peerID, to: session, withContext: nil, timeout: 30)
     }
@@ -268,6 +328,7 @@ extension RobotCaptureMultipeerTransfer: MCSessionDelegate {
         with progress: Progress
     ) {
         delegate?.robotCaptureTransferDidEmit(.packageReceiveStarted(resourceName, peerID.displayName))
+        observe(progress: progress, resourceName: resourceName, peerDisplayName: peerID.displayName, sendingURL: nil)
     }
 
     public func session(
@@ -278,6 +339,7 @@ extension RobotCaptureMultipeerTransfer: MCSessionDelegate {
         withError error: Error?
     ) {
         if let error {
+            delegate?.robotCaptureTransferDidEmit(.recoverableFailure(error.localizedDescription, nil))
             delegate?.robotCaptureTransferDidEmit(.failed(error.localizedDescription))
             return
         }
@@ -300,7 +362,8 @@ extension RobotCaptureMultipeerTransfer: MCSessionDelegate {
             )
             try JSONEncoder.robotVisionLabEncoder
                 .encode(receipt)
-                .write(to: destination.deletingPathExtension().appendingPathExtension("transfer-receipt.json"))
+                .write(to: receiptURL(for: destination))
+            delegate?.robotCaptureTransferDidEmit(.transferReceiptWritten(receiptURL(for: destination)))
             delegate?.robotCaptureTransferDidEmit(.packageReceiveFinished(peerID.displayName, destination))
         } catch {
             delegate?.robotCaptureTransferDidEmit(.failed(error.localizedDescription))
@@ -333,23 +396,47 @@ extension RobotCaptureMultipeerTransfer: MCSessionDelegate {
         let suffix = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
         return inboxDirectory.appendingPathComponent("\(baseURL.deletingPathExtension().lastPathComponent)-\(suffix).\(baseURL.pathExtension)")
     }
+
+    private func receiptURL(for destination: URL) -> URL {
+        destination.deletingPathExtension().appendingPathExtension("transfer-receipt.json")
+    }
+
+    private func observe(progress: Progress, resourceName: String, peerDisplayName: String, sendingURL: URL?) {
+        let observer = progress.observe(\.fractionCompleted, options: [.initial, .new]) { [weak self] progress, _ in
+            let fraction = max(0, min(1, progress.fractionCompleted))
+            if let sendingURL {
+                self?.delegate?.robotCaptureTransferDidEmit(.packageSendProgress(sendingURL, peerDisplayName, fraction))
+            } else {
+                self?.delegate?.robotCaptureTransferDidEmit(.packageReceiveProgress(resourceName, peerDisplayName, fraction))
+            }
+        }
+        progressObservers.append(observer)
+    }
 }
 
 public enum RobotCaptureTransferError: Error, LocalizedError {
     case noConnectedPeers
+    case noRecoverablePackage
 
     public var errorDescription: String? {
         switch self {
         case .noConnectedPeers:
             "No Multipeer Connectivity peers are connected."
+        case .noRecoverablePackage:
+            "No previous package is available to retry."
         }
     }
 }
 #else
 public final class RobotCaptureMultipeerTransfer {
-    public init(role: RobotCaptureTransferRole, displayName: String = "", inboxDirectory: URL) {}
+    public var automaticallyAcceptInvitations = true
+    public init(role: RobotCaptureTransferRole, displayName: String = "", inboxDirectory: URL, automaticallyAcceptInvitations: Bool = true) {}
     public func start() throws {}
     public func stop() {}
+    public func acceptInvitation(from peerDisplayName: String) {}
+    public func rejectInvitation(from peerDisplayName: String) {}
+    public func cancelTransfers() {}
+    public func retryLastPackage(to peerDisplayName: String? = nil) throws {}
     public func sendRobotCapturePackage(at packageURL: URL, to peerDisplayName: String? = nil) throws {}
 }
 #endif

@@ -26,6 +26,7 @@ public struct WorkstationRootView: View {
     @State private var isImportingCapture = false
     @State private var isImportingSplat = false
     @State private var isOpeningRobotScene = false
+    @State private var isImportingFinderCapture = false
 
     public init(model: WorkstationModel) {
         self.model = model
@@ -44,7 +45,8 @@ public struct WorkstationRootView: View {
                 section: selectedSection ?? .project,
                 isImportingCapture: $isImportingCapture,
                 isImportingSplat: $isImportingSplat,
-                isOpeningRobotScene: $isOpeningRobotScene
+                isOpeningRobotScene: $isOpeningRobotScene,
+                isImportingFinderCapture: $isImportingFinderCapture
             )
             .navigationTitle(selectedSection?.title ?? "Workstation")
         } detail: {
@@ -77,6 +79,15 @@ public struct WorkstationRootView: View {
                 model.openRobotScene(at: url)
             }
         }
+        .fileImporter(
+            isPresented: $isImportingFinderCapture,
+            allowedContentTypes: [.robotCapturePackage, .json],
+            allowsMultipleSelection: false
+        ) { result in
+            if let url = try? result.get().first {
+                model.importFinderCopiedCapture(at: url)
+            }
+        }
     }
 }
 
@@ -86,6 +97,7 @@ public struct WorkstationControlPanel: View {
     @Binding var isImportingCapture: Bool
     @Binding var isImportingSplat: Bool
     @Binding var isOpeningRobotScene: Bool
+    @Binding var isImportingFinderCapture: Bool
     @State private var metalTileSize = 16
     @State private var metalMaxSplats = ""
     @State private var metalStreamingChunkSplats = ""
@@ -97,7 +109,7 @@ public struct WorkstationControlPanel: View {
             case .project:
                 ProjectControlPanel(model: model, isOpeningRobotScene: $isOpeningRobotScene)
             case .receiver:
-                ReceiverControlPanel(model: model)
+                ReceiverControlPanel(model: model, isImportingFinderCapture: $isImportingFinderCapture)
             case .capture:
                 CaptureControlPanel(model: model, isImportingCapture: $isImportingCapture)
             case .splat:
@@ -160,6 +172,7 @@ private struct ProjectControlPanel: View {
 
 private struct ReceiverControlPanel: View {
     @Bindable var model: WorkstationModel
+    @Binding var isImportingFinderCapture: Bool
 
     var body: some View {
         GroupBox("iPhone Receiver") {
@@ -173,6 +186,33 @@ private struct ReceiverControlPanel: View {
                     )
                 }
                 ProjectPathRow(title: "Inbox", url: model.state.workspaceURL.appendingPathComponent("Inbox", isDirectory: true))
+                Button {
+                    isImportingFinderCapture = true
+                } label: {
+                    Label("Import Finder-Copied Package", systemImage: "cable.connector")
+                }
+                if !model.pendingPairingInvitations.isEmpty {
+                    Divider()
+                    ForEach(model.pendingPairingInvitations, id: \.self) { peer in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label(peer, systemImage: "iphone")
+                            HStack {
+                                Button("Accept") {
+                                    model.acceptPairingInvitation(from: peer)
+                                }
+                                Button("Reject", role: .destructive) {
+                                    model.rejectPairingInvitation(from: peer)
+                                }
+                            }
+                        }
+                    }
+                }
+                if !model.receivingProgressByPeer.isEmpty {
+                    Divider()
+                    ForEach(model.receivingProgressByPeer.keys.sorted(), id: \.self) { peer in
+                        ProgressView(peer, value: model.receivingProgressByPeer[peer] ?? 0)
+                    }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -590,6 +630,19 @@ private struct TransferEventList: View {
                     }
                 }
                 .frame(minHeight: 220)
+            }
+            if !model.transferReceipts.isEmpty {
+                Text("Receipts")
+                    .font(.headline)
+                List(model.transferReceipts) { record in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(record.receipt.packageName)
+                        Text("\(record.receipt.peerDisplayName) · \(record.receipt.packageURL.lastPathComponent)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(minHeight: 160)
             }
         }
     }
