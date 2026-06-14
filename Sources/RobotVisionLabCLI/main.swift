@@ -293,6 +293,7 @@ struct RobotVisionLabCLI {
             ],
             labelSources: [
                 .roomPlanGeometry(URL(fileURLWithPath: "DemoAssets/RoomPlan/demo_room.usdz")),
+                .objectCaptureMesh(URL(fileURLWithPath: "DemoAssets/ObjectCapture/chair.usdz")),
                 .manualAnnotations(URL(fileURLWithPath: "DemoAssets/Labels/demo_room_labels.json"))
             ]
         )

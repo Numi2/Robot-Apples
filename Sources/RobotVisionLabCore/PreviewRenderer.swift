@@ -134,25 +134,131 @@ public struct PreviewSyntheticRenderer: SplatRenderer {
     }
 
     private func makeSegmentationApproximation(frame: DatasetFrame) -> SegmentationApproximation {
-        SegmentationApproximation(
+        let context = StructuredGeometryLabelContext(labelSources: frame.labelSources)
+        var classes = [
+            SegmentationClass(id: 0, name: "background", source: "renderer_preview")
+        ]
+        var nextID = 1
+        for semanticClass in context.semanticClasses {
+            classes.append(SegmentationClass(id: nextID, name: semanticClass.name, source: semanticClass.sourceDescription))
+            nextID += 1
+        }
+        if let target = frame.navigationTarget {
+            classes.append(SegmentationClass(id: nextID, name: "navigation_target", source: target.label))
+        }
+        return SegmentationApproximation(
             frameIndex: frame.index,
-            classes: [
-                SegmentationClass(id: 0, name: "background", source: "preview"),
-                SegmentationClass(id: 1, name: "floor", source: "RoomPlan"),
-                SegmentationClass(id: 2, name: "wall", source: "RoomPlan"),
-                SegmentationClass(id: 3, name: "navigation_target", source: frame.navigationTarget?.label ?? "none")
-            ]
+            classes: classes,
+            labelSourceSummary: context.summary,
+            notes: context.notes
         )
     }
 
     private func makeObstacleApproximation(frame: DatasetFrame, scene: GaussianSplatScene) -> ObstacleApproximation {
         let depth = makeDepthApproximation(frame: frame, scene: scene)
+        let context = StructuredGeometryLabelContext(labelSources: frame.labelSources)
         return ObstacleApproximation(
             frameIndex: frame.index,
             hasObstacleAhead: depth.nearestObstacleMeters < 0.45,
             nearestObstacleMeters: depth.nearestObstacleMeters,
-            method: depth.method
+            method: depth.method,
+            labelSourceSummary: context.summary,
+            structuredGeometryObstaclePriors: context.obstaclePriorDescriptions
         )
+    }
+}
+
+public struct StructuredGeometryLabelContext: Equatable, Sendable {
+    public var summary: GeometryLabelSourceSummary
+    public var semanticClasses: [GeometrySemanticClass]
+    public var obstaclePriorDescriptions: [String]
+    public var notes: [String]
+
+    public init(labelSources: [LabelSource]) {
+        var roomPlanURLs: [URL] = []
+        var objectCaptureURLs: [URL] = []
+        var manualAnnotationURLs: [URL] = []
+
+        for source in labelSources {
+            switch source {
+            case .roomPlanGeometry(let url):
+                roomPlanURLs.append(url)
+            case .objectCaptureMesh(let url):
+                objectCaptureURLs.append(url)
+            case .manualAnnotations(let url):
+                manualAnnotationURLs.append(url)
+            }
+        }
+
+        self.summary = GeometryLabelSourceSummary(
+            roomPlanGeometryURLs: roomPlanURLs,
+            objectCaptureMeshURLs: objectCaptureURLs,
+            manualAnnotationURLs: manualAnnotationURLs
+        )
+
+        var classes: [GeometrySemanticClass] = []
+        if !roomPlanURLs.isEmpty {
+            classes.append(contentsOf: [
+                GeometrySemanticClass(name: "floor", sourceDescription: "RoomPlan geometry"),
+                GeometrySemanticClass(name: "wall", sourceDescription: "RoomPlan geometry"),
+                GeometrySemanticClass(name: "opening", sourceDescription: "RoomPlan geometry"),
+                GeometrySemanticClass(name: "room_boundary", sourceDescription: "RoomPlan geometry")
+            ])
+        }
+        for url in objectCaptureURLs {
+            let stem = url.deletingPathExtension().lastPathComponent
+            let objectName = StructuredGeometryLabelContext.semanticName(from: stem)
+            classes.append(GeometrySemanticClass(name: objectName, sourceDescription: "Object Capture mesh"))
+        }
+        if !manualAnnotationURLs.isEmpty {
+            classes.append(GeometrySemanticClass(name: "manual_annotation", sourceDescription: "curated annotation layer"))
+        }
+        self.semanticClasses = classes
+
+        self.obstaclePriorDescriptions = objectCaptureURLs.map {
+            "Object Capture mesh \($0.lastPathComponent) contributes an obstacle prior."
+        }
+
+        var notes: [String] = []
+        if roomPlanURLs.isEmpty {
+            notes.append("No RoomPlan geometry source was provided for floor, wall, opening, or room-boundary semantics.")
+        }
+        if objectCaptureURLs.isEmpty {
+            notes.append("No Object Capture meshes were provided for object obstacle priors.")
+        }
+        if manualAnnotationURLs.isEmpty {
+            notes.append("No manual annotation layer was provided.")
+        }
+        self.notes = notes
+    }
+
+    private static func semanticName(from stem: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
+        let scalars = stem.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
+        let sanitized = String(scalars).lowercased().replacingOccurrences(of: "-", with: "_")
+        return sanitized.isEmpty ? "object_capture_asset" : "object_\(sanitized)"
+    }
+}
+
+public struct GeometryLabelSourceSummary: Codable, Equatable, Sendable {
+    public var roomPlanGeometryURLs: [URL]
+    public var objectCaptureMeshURLs: [URL]
+    public var manualAnnotationURLs: [URL]
+
+    public init(roomPlanGeometryURLs: [URL], objectCaptureMeshURLs: [URL], manualAnnotationURLs: [URL]) {
+        self.roomPlanGeometryURLs = roomPlanGeometryURLs
+        self.objectCaptureMeshURLs = objectCaptureMeshURLs
+        self.manualAnnotationURLs = manualAnnotationURLs
+    }
+}
+
+public struct GeometrySemanticClass: Codable, Equatable, Sendable {
+    public var name: String
+    public var sourceDescription: String
+
+    public init(name: String, sourceDescription: String) {
+        self.name = name
+        self.sourceDescription = sourceDescription
     }
 }
 
@@ -175,10 +281,19 @@ public struct DepthApproximation: Codable, Equatable, Sendable {
 public struct SegmentationApproximation: Codable, Equatable, Sendable {
     public var frameIndex: Int
     public var classes: [SegmentationClass]
+    public var labelSourceSummary: GeometryLabelSourceSummary
+    public var notes: [String]
 
-    public init(frameIndex: Int, classes: [SegmentationClass]) {
+    public init(
+        frameIndex: Int,
+        classes: [SegmentationClass],
+        labelSourceSummary: GeometryLabelSourceSummary,
+        notes: [String]
+    ) {
         self.frameIndex = frameIndex
         self.classes = classes
+        self.labelSourceSummary = labelSourceSummary
+        self.notes = notes
     }
 }
 
@@ -199,11 +314,22 @@ public struct ObstacleApproximation: Codable, Equatable, Sendable {
     public var hasObstacleAhead: Bool
     public var nearestObstacleMeters: Double
     public var method: String
+    public var labelSourceSummary: GeometryLabelSourceSummary
+    public var structuredGeometryObstaclePriors: [String]
 
-    public init(frameIndex: Int, hasObstacleAhead: Bool, nearestObstacleMeters: Double, method: String) {
+    public init(
+        frameIndex: Int,
+        hasObstacleAhead: Bool,
+        nearestObstacleMeters: Double,
+        method: String,
+        labelSourceSummary: GeometryLabelSourceSummary,
+        structuredGeometryObstaclePriors: [String]
+    ) {
         self.frameIndex = frameIndex
         self.hasObstacleAhead = hasObstacleAhead
         self.nearestObstacleMeters = nearestObstacleMeters
         self.method = method
+        self.labelSourceSummary = labelSourceSummary
+        self.structuredGeometryObstaclePriors = structuredGeometryObstaclePriors
     }
 }

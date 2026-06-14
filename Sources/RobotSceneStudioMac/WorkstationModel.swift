@@ -745,9 +745,47 @@ public final class WorkstationModel {
             cameraRig: cameraRig,
             path: route,
             requestedProducts: [.rgb, .depth, .visibility, .pose, .segmentation, .obstacleMask, .lidarScan, .failureLabels, .navigationTarget],
-            labelSources: scene.roomPlanModelURL.map { [.roomPlanGeometry($0)] } ?? []
+            labelSources: labelSourcesForDataset(scene: scene)
         )
         return DatasetGenerator().makeManifest(recipe: recipe, outputDirectory: state.workspaceURL)
+    }
+
+    private func labelSourcesForDataset(scene: GaussianSplatScene) -> [LabelSource] {
+        var sources: [LabelSource] = []
+        var seen = Set<String>()
+
+        func append(_ source: LabelSource) {
+            let key: String
+            switch source {
+            case .roomPlanGeometry(let url):
+                key = "roomplan:\(url.standardizedFileURL.path)"
+            case .objectCaptureMesh(let url):
+                key = "object:\(url.standardizedFileURL.path)"
+            case .manualAnnotations(let url):
+                key = "manual:\(url.standardizedFileURL.path)"
+            }
+            guard !seen.contains(key) else { return }
+            seen.insert(key)
+            sources.append(source)
+        }
+
+        if let roomPlanModelURL = scene.roomPlanModelURL {
+            append(.roomPlanGeometry(resolveCaptureAssetURL(roomPlanModelURL)))
+        }
+        if let roomPlanModelURL = importedCapture?.captureBundle.roomPlanModelURL {
+            append(.roomPlanGeometry(resolveCaptureAssetURL(roomPlanModelURL)))
+        }
+        for objectCaptureURL in importedCapture?.captureBundle.objectCaptureAssetURLs ?? [] {
+            append(.objectCaptureMesh(resolveCaptureAssetURL(objectCaptureURL)))
+        }
+        return sources
+    }
+
+    private func resolveCaptureAssetURL(_ url: URL) -> URL {
+        guard url.scheme == nil, let packageRoot = importedCapture?.packageRoot else {
+            return url
+        }
+        return packageRoot.appendingPathComponent(url.relativePath)
     }
 
     private func ensureDatasetManifest() throws -> DatasetManifest {
