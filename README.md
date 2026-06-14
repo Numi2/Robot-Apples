@@ -115,8 +115,9 @@ developer tool for exercising the native contracts.
   capability before the real Gaussian splat renderer.
 - `MetalGaussianSplatRenderer`: native Metal renderer that loads Gaussian PLY
   properties, uploads splats into Metal buffers, projects splats in the vertex
-  shader, composites Gaussian point discs on the GPU, and writes RGB, depth, and
-  visibility products.
+  shader, builds tile bins with back-to-front draw ordering, projects
+  anisotropic covariance into screen space, composites Gaussian point discs on
+  the GPU, and writes RGB, depth, visibility, and tile-bin products.
 - `SplatTrainingJob`: Apple-native training plan for MLX/Create ML/Metal
   Performance Shaders workflows.
 - `CoreMLDatasetEvaluator`: Core ML evaluation path for deployed on-device
@@ -162,8 +163,8 @@ developer tool for exercising the native contracts.
    - Export `.robotscene`.
 
 5. Deepen the native Metal Gaussian splat renderer.
-   - Replace current CPU depth ordering with GPU binning/sorting.
-   - Add full anisotropic Gaussian covariance projection.
+   - Move tile binning/sorting from CPU preparation into Metal compute passes.
+   - Use covariance ellipse orientation in fragment weighting, not just radius.
    - Add compute-pass depth and visibility textures instead of JSON summaries.
    - Add tile-based memory and large-scene streaming.
 

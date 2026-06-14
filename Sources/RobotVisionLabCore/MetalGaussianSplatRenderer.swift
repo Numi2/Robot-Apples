@@ -44,7 +44,9 @@ public struct MetalSplatRenderProducts: Codable, Equatable, Sendable {
     public var rgbURL: URL
     public var depthURL: URL
     public var visibilityURL: URL
+    public var tileBinURL: URL
     public var visibleSplatCount: Int
+    public var drawCommandCount: Int
     public var totalSplatCount: Int
 
     public init(
@@ -52,14 +54,18 @@ public struct MetalSplatRenderProducts: Codable, Equatable, Sendable {
         rgbURL: URL,
         depthURL: URL,
         visibilityURL: URL,
+        tileBinURL: URL,
         visibleSplatCount: Int,
+        drawCommandCount: Int,
         totalSplatCount: Int
     ) {
         self.frameIndex = frameIndex
         self.rgbURL = rgbURL
         self.depthURL = depthURL
         self.visibilityURL = visibilityURL
+        self.tileBinURL = tileBinURL
         self.visibleSplatCount = visibleSplatCount
+        self.drawCommandCount = drawCommandCount
         self.totalSplatCount = totalSplatCount
     }
 }
@@ -89,6 +95,91 @@ public struct MetalSplatRenderReportWriter: Sendable {
     public func write(_ report: MetalSplatRenderReport, to outputURL: URL) throws {
         try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONEncoder.robotVisionLabEncoder.encode(report).write(to: outputURL)
+    }
+}
+
+public struct ProjectedGaussianSplat: Codable, Equatable, Sendable {
+    public var splatIndex: Int
+    public var centerPixels: SIMD2<Float>
+    public var depthMeters: Float
+    public var covariance2D: SIMD4<Float>
+    public var majorRadiusPixels: Float
+    public var minorRadiusPixels: Float
+    public var tileRange: MetalTileRange
+    public var color: SIMD4<Float>
+
+    public init(
+        splatIndex: Int,
+        centerPixels: SIMD2<Float>,
+        depthMeters: Float,
+        covariance2D: SIMD4<Float>,
+        majorRadiusPixels: Float,
+        minorRadiusPixels: Float,
+        tileRange: MetalTileRange,
+        color: SIMD4<Float>
+    ) {
+        self.splatIndex = splatIndex
+        self.centerPixels = centerPixels
+        self.depthMeters = depthMeters
+        self.covariance2D = covariance2D
+        self.majorRadiusPixels = majorRadiusPixels
+        self.minorRadiusPixels = minorRadiusPixels
+        self.tileRange = tileRange
+        self.color = color
+    }
+}
+
+public struct MetalTileRange: Codable, Equatable, Sendable {
+    public var minX: Int
+    public var minY: Int
+    public var maxX: Int
+    public var maxY: Int
+
+    public init(minX: Int, minY: Int, maxX: Int, maxY: Int) {
+        self.minX = minX
+        self.minY = minY
+        self.maxX = maxX
+        self.maxY = maxY
+    }
+}
+
+public struct MetalTileBin: Codable, Equatable, Sendable {
+    public var tileX: Int
+    public var tileY: Int
+    public var splatIndexesBackToFront: [Int]
+
+    public init(tileX: Int, tileY: Int, splatIndexesBackToFront: [Int]) {
+        self.tileX = tileX
+        self.tileY = tileY
+        self.splatIndexesBackToFront = splatIndexesBackToFront
+    }
+}
+
+public struct MetalTileBinReport: Codable, Equatable, Sendable {
+    public var frameIndex: Int
+    public var tileSize: Int
+    public var tileColumns: Int
+    public var tileRows: Int
+    public var projectedSplatCount: Int
+    public var drawCommandCount: Int
+    public var bins: [MetalTileBin]
+
+    public init(
+        frameIndex: Int,
+        tileSize: Int,
+        tileColumns: Int,
+        tileRows: Int,
+        projectedSplatCount: Int,
+        drawCommandCount: Int,
+        bins: [MetalTileBin]
+    ) {
+        self.frameIndex = frameIndex
+        self.tileSize = tileSize
+        self.tileColumns = tileColumns
+        self.tileRows = tileRows
+        self.projectedSplatCount = projectedSplatCount
+        self.drawCommandCount = drawCommandCount
+        self.bins = bins
     }
 }
 
@@ -250,7 +341,8 @@ private extension Float {
 import Metal
 
 private struct MetalSplatVertex {
-    var positionRadius: SIMD4<Float>
+    var projectedCenterDepth: SIMD4<Float>
+    var covarianceRadius: SIMD4<Float>
     var colorOpacity: SIMD4<Float>
 }
 
@@ -320,10 +412,28 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
     ) throws -> MetalSplatRenderProducts {
         let width = cameraRig.intrinsics.width
         let height = cameraRig.intrinsics.height
-        let visibleSplats = visibleSortedSplats(cloud.splats, frame: frame)
-        let vertices = visibleSplats.map { splat in
+        let prepared = prepareTileSortedSplats(
+            cloud.splats,
+            frame: frame,
+            cameraRig: cameraRig,
+            width: width,
+            height: height,
+            tileSize: 16
+        )
+        let vertices = prepared.drawSplats.map { splat in
             MetalSplatVertex(
-                positionRadius: SIMD4<Float>(splat.position.x, splat.position.y, splat.position.z, max(splat.scale.x, max(splat.scale.y, splat.scale.z))),
+                projectedCenterDepth: SIMD4<Float>(
+                    splat.centerPixels.x,
+                    splat.centerPixels.y,
+                    splat.depthMeters,
+                    1
+                ),
+                covarianceRadius: SIMD4<Float>(
+                    splat.covariance2D.x,
+                    splat.covariance2D.y,
+                    splat.covariance2D.z,
+                    splat.majorRadiusPixels
+                ),
                 colorOpacity: splat.color
             )
         }
@@ -389,16 +499,19 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         let rgbURL = outputDirectory.appendingPathComponent("rgb", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_metal.ppm", frame.index))
         let depthURL = outputDirectory.appendingPathComponent("depth", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_depth.json", frame.index))
         let visibilityURL = outputDirectory.appendingPathComponent("visibility", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_visibility.json", frame.index))
+        let tileBinURL = outputDirectory.appendingPathComponent("tile_bins", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_tile_bins.json", frame.index))
         try FileManager.default.createDirectory(at: rgbURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: depthURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: visibilityURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: tileBinURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try readPPM(texture: colorTexture, width: width, height: height).write(to: rgbURL)
         try writeDepthAndVisibility(
             frame: frame,
-            splats: visibleSplats,
+            splats: prepared.projectedSplats,
             depthURL: depthURL,
             visibilityURL: visibilityURL
         )
+        try JSONEncoder.robotVisionLabEncoder.encode(prepared.tileReport).write(to: tileBinURL)
 
         _ = depthTexture
         _ = visibilityTexture
@@ -408,19 +521,167 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             rgbURL: rgbURL,
             depthURL: depthURL,
             visibilityURL: visibilityURL,
-            visibleSplatCount: vertices.count,
+            tileBinURL: tileBinURL,
+            visibleSplatCount: prepared.projectedSplats.count,
+            drawCommandCount: vertices.count,
             totalSplatCount: cloud.splats.count
         )
     }
 
-    private func visibleSortedSplats(_ splats: [RenderableGaussianSplat], frame: DatasetFrame) -> [RenderableGaussianSplat] {
-        splats
-            .filter { -(Double($0.position.z) - frame.cameraPose.position.z) > 0.01 }
-            .sorted {
-                let leftDepth = -(Double($0.position.z) - frame.cameraPose.position.z)
-                let rightDepth = -(Double($1.position.z) - frame.cameraPose.position.z)
-                return leftDepth > rightDepth
+    private func prepareTileSortedSplats(
+        _ splats: [RenderableGaussianSplat],
+        frame: DatasetFrame,
+        cameraRig: RobotCameraRig,
+        width: Int,
+        height: Int,
+        tileSize: Int
+    ) -> (projectedSplats: [ProjectedGaussianSplat], drawSplats: [ProjectedGaussianSplat], tileReport: MetalTileBinReport) {
+        let tileColumns = max(1, Int(ceil(Double(width) / Double(tileSize))))
+        let tileRows = max(1, Int(ceil(Double(height) / Double(tileSize))))
+        let projected = splats.enumerated().compactMap { index, splat in
+            project(
+                splat: splat,
+                splatIndex: index,
+                frame: frame,
+                cameraRig: cameraRig,
+                width: width,
+                height: height,
+                tileSize: tileSize,
+                tileColumns: tileColumns,
+                tileRows: tileRows
+            )
+        }
+
+        var binsByTile: [Int: [ProjectedGaussianSplat]] = [:]
+        for splat in projected {
+            for tileY in splat.tileRange.minY...splat.tileRange.maxY {
+                for tileX in splat.tileRange.minX...splat.tileRange.maxX {
+                    binsByTile[tileY * tileColumns + tileX, default: []].append(splat)
+                }
             }
+        }
+
+        let sortedBins = binsByTile.keys.sorted().map { tileKey -> MetalTileBin in
+            let sortedSplats = (binsByTile[tileKey] ?? []).sorted { $0.depthMeters > $1.depthMeters }
+            return MetalTileBin(
+                tileX: tileKey % tileColumns,
+                tileY: tileKey / tileColumns,
+                splatIndexesBackToFront: sortedSplats.map(\.splatIndex)
+            )
+        }
+        let drawSplats = sortedBins.flatMap { bin in
+            bin.splatIndexesBackToFront.compactMap { splatIndex in
+                projected.first { $0.splatIndex == splatIndex }
+            }
+        }
+        let report = MetalTileBinReport(
+            frameIndex: frame.index,
+            tileSize: tileSize,
+            tileColumns: tileColumns,
+            tileRows: tileRows,
+            projectedSplatCount: projected.count,
+            drawCommandCount: drawSplats.count,
+            bins: sortedBins
+        )
+        return (projected, drawSplats, report)
+    }
+
+    private func project(
+        splat: RenderableGaussianSplat,
+        splatIndex: Int,
+        frame: DatasetFrame,
+        cameraRig: RobotCameraRig,
+        width: Int,
+        height: Int,
+        tileSize: Int,
+        tileColumns: Int,
+        tileRows: Int
+    ) -> ProjectedGaussianSplat? {
+        let cameraSpace = SIMD3<Float>(
+            splat.position.x - Float(frame.cameraPose.position.x),
+            splat.position.y - Float(frame.cameraPose.position.y),
+            splat.position.z - Float(frame.cameraPose.position.z)
+        )
+        let depth = -cameraSpace.z
+        guard depth > 0.01 else { return nil }
+
+        let fx = Float(cameraRig.intrinsics.focalLengthPixels.x)
+        let fy = Float(cameraRig.intrinsics.focalLengthPixels.y)
+        let cx = Float(cameraRig.intrinsics.principalPointPixels.x)
+        let cy = Float(cameraRig.intrinsics.principalPointPixels.y)
+        let center = SIMD2<Float>(
+            cameraSpace.x * fx / depth + cx,
+            -cameraSpace.y * fy / depth + cy
+        )
+
+        let covariance3D = covarianceMatrix(scale: splat.scale, rotation: splat.rotation)
+        let covariance2DMatrix = projectCovariance2D(covariance3D, cameraSpace: cameraSpace, fx: fx, fy: fy)
+        let covariance2D = regularizedCovariance(covariance2DMatrix)
+        let radii = eigenRadii(covariance2D)
+        let majorRadius = min(max(radii.major * 3, 1), 512)
+        let minorRadius = min(max(radii.minor * 3, 1), 512)
+        let minX = max(0, Int(floor((Double(center.x - majorRadius)) / Double(tileSize))))
+        let minY = max(0, Int(floor((Double(center.y - majorRadius)) / Double(tileSize))))
+        let maxX = min(tileColumns - 1, Int(floor((Double(center.x + majorRadius)) / Double(tileSize))))
+        let maxY = min(tileRows - 1, Int(floor((Double(center.y + majorRadius)) / Double(tileSize))))
+        guard maxX >= 0, maxY >= 0, minX < tileColumns, minY < tileRows else {
+            return nil
+        }
+
+        return ProjectedGaussianSplat(
+            splatIndex: splatIndex,
+            centerPixels: center,
+            depthMeters: depth,
+            covariance2D: SIMD4<Float>(covariance2D[0, 0], covariance2D[0, 1], covariance2D[1, 1], 0),
+            majorRadiusPixels: majorRadius,
+            minorRadiusPixels: minorRadius,
+            tileRange: MetalTileRange(minX: minX, minY: minY, maxX: maxX, maxY: maxY),
+            color: splat.color
+        )
+    }
+
+    private func covarianceMatrix(scale: SIMD3<Float>, rotation: SIMD4<Float>) -> simd_float3x3 {
+        let q = simd_quatf(ix: rotation.x, iy: rotation.y, iz: rotation.z, r: rotation.w).normalized
+        let rotationMatrix = simd_float3x3(q)
+        let variance = simd_float3x3(diagonal: SIMD3<Float>(
+            scale.x * scale.x,
+            scale.y * scale.y,
+            scale.z * scale.z
+        ))
+        return rotationMatrix * variance * rotationMatrix.transpose
+    }
+
+    private func projectCovariance2D(
+        _ covariance: simd_float3x3,
+        cameraSpace: SIMD3<Float>,
+        fx: Float,
+        fy: Float
+    ) -> simd_float2x2 {
+        let z = max(-cameraSpace.z, 0.001)
+        let rowU = SIMD3<Float>(fx / z, 0, fx * cameraSpace.x / (z * z))
+        let rowV = SIMD3<Float>(0, -fy / z, -fy * cameraSpace.y / (z * z))
+        return simd_float2x2(rows: [
+            SIMD2<Float>(dot(rowU, covariance * rowU), dot(rowU, covariance * rowV)),
+            SIMD2<Float>(dot(rowV, covariance * rowU), dot(rowV, covariance * rowV))
+        ])
+    }
+
+    private func regularizedCovariance(_ covariance: simd_float2x2) -> simd_float2x2 {
+        var output = covariance
+        output[0, 0] = max(output[0, 0], 0.25)
+        output[1, 1] = max(output[1, 1], 0.25)
+        return output
+    }
+
+    private func eigenRadii(_ covariance: simd_float2x2) -> (major: Float, minor: Float) {
+        let a = covariance[0, 0]
+        let b = covariance[0, 1]
+        let d = covariance[1, 1]
+        let trace = a + d
+        let determinantTerm = sqrt(max((a - d) * (a - d) + 4 * b * b, 0))
+        let lambdaMax = max((trace + determinantTerm) * 0.5, 0.25)
+        let lambdaMin = max((trace - determinantTerm) * 0.5, 0.25)
+        return (sqrt(lambdaMax), sqrt(lambdaMin))
     }
 
     private func makeTexture(width: Int, height: Int, pixelFormat: MTLPixelFormat) throws -> MTLTexture {
@@ -460,13 +721,11 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
 
     private func writeDepthAndVisibility(
         frame: DatasetFrame,
-        splats: [RenderableGaussianSplat],
+        splats: [ProjectedGaussianSplat],
         depthURL: URL,
         visibilityURL: URL
     ) throws {
-        let depths = splats.prefix(4096).map {
-            -(Double($0.position.z) - frame.cameraPose.position.z)
-        }
+        let depths = splats.prefix(4096).map { Double($0.depthMeters) }
         let depthSummary = MetalDepthSummary(
             frameIndex: frame.index,
             sampleCount: depths.count,
@@ -477,7 +736,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         let visibility = MetalVisibilitySummary(
             frameIndex: frame.index,
             visibleSplatCount: splats.count,
-            sampledVisibleSplatIndexes: Array(0..<min(splats.count, 4096))
+            sampledVisibleSplatIndexes: splats.prefix(4096).map(\.splatIndex)
         )
         try JSONEncoder.robotVisionLabEncoder.encode(depthSummary).write(to: depthURL)
         try JSONEncoder.robotVisionLabEncoder.encode(visibility).write(to: visibilityURL)
@@ -546,7 +805,8 @@ private let shaderSource = """
 using namespace metal;
 
 struct SplatVertex {
-    float4 positionRadius;
+    float4 projectedCenterDepth;
+    float4 covarianceRadius;
     float4 colorOpacity;
 };
 
@@ -568,16 +828,14 @@ vertex VertexOut robot_splat_vertex(
     constant CameraUniforms &camera [[buffer(1)]]
 ) {
     SplatVertex splat = splats[vertexID];
-    float3 cameraSpace = splat.positionRadius.xyz - camera.cameraPosition.xyz;
-    float depth = max(-cameraSpace.z, 0.001);
-    float u = (cameraSpace.x * camera.focalPrincipal.x / depth) + camera.focalPrincipal.z;
-    float v = (-cameraSpace.y * camera.focalPrincipal.y / depth) + camera.focalPrincipal.w;
+    float u = splat.projectedCenterDepth.x;
+    float v = splat.projectedCenterDepth.y;
     float x = (u / camera.viewport.x) * 2.0 - 1.0;
     float y = 1.0 - (v / camera.viewport.y) * 2.0;
 
     VertexOut out;
     out.position = float4(x, y, 0.5, 1.0);
-    out.pointSize = clamp((splat.positionRadius.w * camera.focalPrincipal.x / depth) * 2.0, 1.0, 64.0);
+    out.pointSize = clamp(splat.covarianceRadius.w * 2.0, 1.0, 128.0);
     out.color = splat.colorOpacity;
     return out;
 }
