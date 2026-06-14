@@ -238,24 +238,18 @@ struct RobotVisionLabCLI {
     }
 
     private static func demoRecipe() throws -> DatasetRecipe {
+        let fixtureSplatURL = URL(fileURLWithPath: "Fixtures/demo_native_gaussian_wall.ply")
         let scene: GaussianSplatScene
         if let splatURL = parseSplatURL() {
             let asset = try GaussianSplatImporter().inspect(url: splatURL)
             scene = asset.makeScene(
-                id: splatURL.deletingPathExtension().lastPathComponent,
-                roomPlanModelURL: URL(fileURLWithPath: "DemoAssets/RoomPlan/demo_room.usdz")
+                id: splatURL.deletingPathExtension().lastPathComponent
             )
             print("Imported \(asset.format.rawValue) splat with \(asset.vertexCount) vertices from \(splatURL.path)")
         } else {
-            scene = GaussianSplatScene(
-                id: "demo-room-splat",
-                source: .importedPLY(URL(fileURLWithPath: "DemoAssets/Splats/demo_room.ply")),
-                bounds: AxisAlignedBounds(
-                    minimum: SIMD3<Double>(-3.0, 0.0, -3.0),
-                    maximum: SIMD3<Double>(3.0, 2.8, 3.0)
-                ),
-                roomPlanModelURL: URL(fileURLWithPath: "DemoAssets/RoomPlan/demo_room.usdz")
-            )
+            let asset = try GaussianSplatImporter().inspect(url: fixtureSplatURL)
+            scene = asset.makeScene(id: "demo-native-gaussian-wall")
+            print("Imported \(asset.format.rawValue) splat with \(asset.vertexCount) vertices from \(fixtureSplatURL.path)")
         }
 
         let target = NavigationTarget(label: "charging_dock", position: SIMD3<Double>(2.4, 0.0, -1.8))
@@ -283,11 +277,7 @@ struct RobotVisionLabCLI {
                 .cameraHeightJitterMeters(0.03),
                 .yawJitterDegrees(2.0)
             ],
-            labelSources: [
-                .roomPlanGeometry(URL(fileURLWithPath: "DemoAssets/RoomPlan/demo_room.usdz")),
-                .objectCaptureMesh(URL(fileURLWithPath: "DemoAssets/ObjectCapture/chair.usdz")),
-                .manualAnnotations(URL(fileURLWithPath: "DemoAssets/Labels/demo_room_labels.json"))
-            ]
+            labelSources: []
         )
     }
 

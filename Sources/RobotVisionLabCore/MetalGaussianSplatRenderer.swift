@@ -1740,7 +1740,7 @@ public enum MetalGaussianSplatRenderError: Error, LocalizedError {
         case .commandQueueUnavailable:
             "Unable to create a Metal command queue."
         case .unsupportedSceneSource:
-            "Native Metal splat rendering currently supports imported ASCII PLY scenes."
+            "Native Metal splat rendering requires an imported Gaussian PLY or .splat scene source."
         case .bufferAllocationFailed:
             "Unable to allocate Metal buffers for splat rendering."
         case .textureAllocationFailed:
