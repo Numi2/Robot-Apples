@@ -3,8 +3,10 @@ import Foundation
 public enum ModelAdapterInputKind: String, Codable, CaseIterable, Sendable {
     case image
     case depth
+    case visibility
     case cameraPose
     case intrinsics
+    case renderedFeatures
     case frameIndex
     case timestamp
 }
@@ -120,6 +122,8 @@ public struct NativeModelAdapterSchema: Codable, Equatable, Sendable {
             inputs: [
                 ModelAdapterFeature(name: "rgb", kind: "Float32", shape: [1, 3, 720, 1280], semantic: ModelAdapterInputKind.image.rawValue),
                 ModelAdapterFeature(name: "depth", kind: "Float32", shape: [1, 1, 720, 1280], semantic: ModelAdapterInputKind.depth.rawValue),
+                ModelAdapterFeature(name: "visibility", kind: "Float32", shape: [1, 1, 720, 1280], semantic: ModelAdapterInputKind.visibility.rawValue),
+                ModelAdapterFeature(name: "scene_features", kind: "Float32", shape: [1, 24], semantic: ModelAdapterInputKind.renderedFeatures.rawValue),
                 ModelAdapterFeature(name: "pose", kind: "Float32", shape: [1, 7], semantic: ModelAdapterInputKind.cameraPose.rawValue),
                 ModelAdapterFeature(name: "intrinsics", kind: "Float32", shape: [1, 4], semantic: ModelAdapterInputKind.intrinsics.rawValue)
             ],

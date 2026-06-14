@@ -107,6 +107,9 @@ The required iPhone capture output is a `.robotcapture` package containing:
 - `RenderedFailureLabeler`: derives blocked, missing-view, ambiguity,
   low-texture, and lighting failure labels from rendered RGB/depth/visibility
   products for MLX/Core ML supervision and Vision Pro review markers.
+- `MLXTrainingPackageBuilder`: trains a compact Apple MLX model from fused
+  pose, intrinsics, RGB statistics, depth coverage, visibility coverage, and
+  rendered failure labels, then provides a Core ML export path.
 - `RobotScenePackageExporter` and `SharedProjectFormatTools`: `.robotscene`
   export, validation, migration, checksum, compaction, and reporting.
 

@@ -132,6 +132,10 @@ public final class CoreMLRenderedSampleFeatureProvider: MLFeatureProvider {
             return multiArrayValue(sample.rgbCHW, shape: feature.shape)
         case .depth:
             return multiArrayValue(sample.depthCHW, shape: feature.shape)
+        case .visibility:
+            return multiArrayValue(sample.visibilityCHW, shape: feature.shape)
+        case .renderedFeatures:
+            return multiArrayValue(renderedFeatureVector(sample), shape: feature.shape.isEmpty ? [1, 24] : feature.shape)
         case .cameraPose:
             return multiArrayValue(sample.poseVector, shape: feature.shape.isEmpty ? [1, 7] : feature.shape)
         case .intrinsics:
@@ -146,6 +150,58 @@ public final class CoreMLRenderedSampleFeatureProvider: MLFeatureProvider {
             }
             return nil
         }
+    }
+
+    private func renderedFeatureVector(_ sample: RenderedModelSample) -> [Float] {
+        sample.poseVector
+            + sample.intrinsicsVector
+            + channelMeans(sample.rgbCHW, channels: 3)
+            + channelStandardDeviations(sample.rgbCHW, channels: 3)
+            + scalarImageFeatures(sample.depthCHW, highThreshold: 0.82)
+            + visibilityFeatures(sample.visibilityCHW)
+    }
+
+    private func channelMeans(_ values: [Float], channels: Int) -> [Float] {
+        guard channels > 0, values.count >= channels else {
+            return Array(repeating: 0, count: channels)
+        }
+        let pixelsPerChannel = max(1, values.count / channels)
+        return (0..<channels).map { channel in
+            let start = channel * pixelsPerChannel
+            let end = min(start + pixelsPerChannel, values.count)
+            guard start < end else { return 0 }
+            return values[start..<end].reduce(0, +) / Float(end - start)
+        }
+    }
+
+    private func channelStandardDeviations(_ values: [Float], channels: Int) -> [Float] {
+        let means = channelMeans(values, channels: channels)
+        let pixelsPerChannel = max(1, values.count / max(channels, 1))
+        return (0..<channels).map { channel in
+            let start = channel * pixelsPerChannel
+            let end = min(start + pixelsPerChannel, values.count)
+            guard start < end else { return 0 }
+            let mean = means[channel]
+            let variance = values[start..<end].reduce(Float(0)) { $0 + pow($1 - mean, 2) } / Float(end - start)
+            return sqrt(variance)
+        }
+    }
+
+    private func scalarImageFeatures(_ values: [Float], highThreshold: Float) -> [Float] {
+        guard !values.isEmpty else { return [0, 0, 0] }
+        let mean = values.reduce(0, +) / Float(values.count)
+        let variance = values.reduce(Float(0)) { $0 + pow($1 - mean, 2) } / Float(values.count)
+        let highCoverage = Float(values.filter { $0 > highThreshold }.count) / Float(values.count)
+        return [mean, sqrt(variance), highCoverage]
+    }
+
+    private func visibilityFeatures(_ values: [Float]) -> [Float] {
+        guard !values.isEmpty else { return [0, 0, 0, 0] }
+        let mean = values.reduce(0, +) / Float(values.count)
+        let variance = values.reduce(Float(0)) { $0 + pow($1 - mean, 2) } / Float(values.count)
+        let lowCoverage = Float(values.filter { $0 < 0.18 }.count) / Float(values.count)
+        let highCoverage = Float(values.filter { $0 > 0.65 }.count) / Float(values.count)
+        return [mean, sqrt(variance), lowCoverage, highCoverage]
     }
 
     private func multiArrayValue(_ values: [Float], shape: [Int]) -> MLFeatureValue? {

@@ -62,7 +62,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
             sampleCount: manifest.frames.count,
             notes: [
                 "Runs locally on Apple Silicon with MLX unified memory and automatic differentiation.",
-                "Loads rendered RGB/depth/visibility plus pose/intrinsics from dataset.json through robot_scene_dataset.py.",
+                "Loads rendered RGB/depth/visibility plus pose/intrinsics and fused scene features from dataset.json through robot_scene_dataset.py.",
                 "Exports deployment artifacts through Apple's Core ML Tools conversion path for Core ML app integration."
             ]
         )
@@ -153,6 +153,46 @@ public struct MLXTrainingPackageBuilder: Sendable {
             failure_score = max(blocked, uncertain, degraded)
             return np.array([free_space, blocked, uncertain, failure_score], dtype=np.float32)
 
+        def safe_stats(values, count):
+            if values is None:
+                return np.zeros((count,), dtype=np.float32)
+            return values.astype(np.float32)
+
+        def scene_feature_vector(pose_input, intrinsics, rgb, depth, visibility):
+            if rgb is None:
+                rgb_mean = np.zeros((3,), dtype=np.float32)
+                rgb_std = np.zeros((3,), dtype=np.float32)
+            else:
+                rgb_mean = rgb.reshape(3, -1).mean(axis=1).astype(np.float32)
+                rgb_std = rgb.reshape(3, -1).std(axis=1).astype(np.float32)
+            if depth is None:
+                depth_features = np.zeros((3,), dtype=np.float32)
+            else:
+                flat_depth = depth.reshape(-1).astype(np.float32)
+                depth_features = np.array([
+                    float(flat_depth.mean()),
+                    float(flat_depth.std()),
+                    float((flat_depth > 0.82).mean()),
+                ], dtype=np.float32)
+            if visibility is None:
+                visibility_features = np.zeros((4,), dtype=np.float32)
+            else:
+                flat_visibility = visibility.reshape(-1).astype(np.float32)
+                visibility_features = np.array([
+                    float(flat_visibility.mean()),
+                    float(flat_visibility.std()),
+                    float((flat_visibility < 0.18).mean()),
+                    float((flat_visibility > 0.65).mean()),
+                ], dtype=np.float32)
+            return np.concatenate([
+                pose_input,
+                intrinsics,
+                rgb_mean,
+                rgb_std,
+                depth_features,
+                visibility_features,
+            ]).astype(np.float32)
+
         def load_samples(dataset_path):
             dataset_path = Path(dataset_path)
             dataset = json.loads(dataset_path.read_text())
@@ -167,14 +207,14 @@ public struct MLXTrainingPackageBuilder: Sendable {
                 depth = read_depth_chw(depth_path) if depth_path else None
                 visibility = read_visibility_chw(visibility_path) if visibility_path else None
                 pose_input = pose_vector(frame)
-                model_input = np.concatenate([pose_input, intrinsics]).astype(np.float32)
+                model_input = scene_feature_vector(pose_input, intrinsics, rgb, depth, visibility)
                 target = failure_signal(failure_path)
                 samples.append({
                     "frame_index": int(frame["index"]),
                     "rgb": rgb,
                     "depth": depth,
                     "visibility": visibility,
-                    "pose_intrinsics": model_input,
+                    "scene_features": model_input,
                     "target": target,
                 })
             return samples
@@ -198,16 +238,16 @@ public struct MLXTrainingPackageBuilder: Sendable {
         class RobotSceneNet(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.pose = nn.Sequential(
-                    nn.Linear(11, 128),
+                self.scene = nn.Sequential(
+                    nn.Linear(24, 128),
                     nn.relu,
                     nn.Linear(128, 64),
                     nn.relu,
                     nn.Linear(64, 4),
                 )
 
-            def __call__(self, pose_intrinsics):
-                return mx.sigmoid(self.pose(pose_intrinsics))
+            def __call__(self, scene_features):
+                return mx.sigmoid(self.scene(scene_features))
 
         def main():
             parser = argparse.ArgumentParser()
@@ -217,7 +257,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
             args = parser.parse_args()
 
             samples = [
-                (mx.array(sample["pose_intrinsics"][None, :]), mx.array(sample["target"][None, :]))
+                (mx.array(sample["scene_features"][None, :]), mx.array(sample["target"][None, :]))
                 for sample in load_samples(args.dataset)
             ]
 
@@ -242,9 +282,9 @@ public struct MLXTrainingPackageBuilder: Sendable {
             model.save_weights(str(output / "robot_scene_net.safetensors"))
             (output / "model_config.json").write_text(json.dumps({
                 "model": "RobotSceneNet",
-                "inputs": ["pose_intrinsics"],
+                "inputs": ["scene_features"],
                 "outputs": ["free_space_probability", "obstacle_probability", "localization_uncertainty", "failure_kind_score"],
-                "input_size": 11,
+                "input_size": 24,
                 "output_size": 4,
             }, indent=2))
             (output / "training_summary.json").write_text(json.dumps({"samples": len(samples), "epochs": args.epochs}, indent=2))
@@ -270,16 +310,16 @@ public struct MLXTrainingPackageBuilder: Sendable {
         class RobotSceneNet(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.pose = nn.Sequential(
-                    nn.Linear(11, 128),
+                self.scene = nn.Sequential(
+                    nn.Linear(24, 128),
                     nn.relu,
                     nn.Linear(128, 64),
                     nn.relu,
                     nn.Linear(64, 4),
                 )
 
-            def __call__(self, pose_intrinsics):
-                return mx.sigmoid(self.pose(pose_intrinsics))
+            def __call__(self, scene_features):
+                return mx.sigmoid(self.scene(scene_features))
 
         def main():
             parser = argparse.ArgumentParser()
@@ -292,20 +332,20 @@ public struct MLXTrainingPackageBuilder: Sendable {
 
             model = RobotSceneNet()
             model.load_weights(str(mlx_output / "robot_scene_net.safetensors"))
-            example = mx.zeros((1, 11), dtype=mx.float32)
+            example = mx.zeros((1, 24), dtype=mx.float32)
             mx.eval(model(example))
 
             params = dict(model.parameters())
-            dense0_w = np.array(params["pose.layers.0.weight"])
-            dense0_b = np.array(params["pose.layers.0.bias"])
-            dense1_w = np.array(params["pose.layers.2.weight"])
-            dense1_b = np.array(params["pose.layers.2.bias"])
-            dense2_w = np.array(params["pose.layers.4.weight"])
-            dense2_b = np.array(params["pose.layers.4.bias"])
+            dense0_w = np.array(params["scene.layers.0.weight"])
+            dense0_b = np.array(params["scene.layers.0.bias"])
+            dense1_w = np.array(params["scene.layers.2.weight"])
+            dense1_b = np.array(params["scene.layers.2.bias"])
+            dense2_w = np.array(params["scene.layers.4.weight"])
+            dense2_b = np.array(params["scene.layers.4.bias"])
 
-            @mb.program(input_specs=[mb.TensorSpec(shape=(1, 11), dtype=mb.fp32)])
-            def robot_scene_program(pose_intrinsics):
-                x = mb.linear(x=pose_intrinsics, weight=dense0_w, bias=dense0_b)
+            @mb.program(input_specs=[mb.TensorSpec(shape=(1, 24), dtype=mb.fp32)])
+            def robot_scene_program(scene_features):
+                x = mb.linear(x=scene_features, weight=dense0_w, bias=dense0_b)
                 x = mb.relu(x=x)
                 x = mb.linear(x=x, weight=dense1_w, bias=dense1_b)
                 x = mb.relu(x=x)
@@ -317,13 +357,13 @@ public struct MLXTrainingPackageBuilder: Sendable {
                     robot_scene_program,
                     source="milinternal",
                     convert_to="mlprogram",
-                    inputs=[ct.TensorType(name="pose_intrinsics", shape=(1, 11), dtype=np.float32)],
+                    inputs=[ct.TensorType(name="scene_features", shape=(1, 24), dtype=np.float32)],
                     outputs=[ct.TensorType(name="robot_scene_outputs", dtype=np.float32)],
                     minimum_deployment_target=ct.target.macOS13,
                     compute_units=ct.ComputeUnit.ALL,
                 )
                 mlmodel.short_description = "Robot Scene Studio route evaluation model exported from Apple MLX training."
-                mlmodel.input_description["pose_intrinsics"] = "Camera pose quaternion plus camera intrinsics."
+                mlmodel.input_description["scene_features"] = "Camera pose, intrinsics, and compact rendered RGB/depth/visibility statistics."
                 mlmodel.output_description["robot_scene_outputs"] = "free_space, obstacle, localization_uncertainty, failure_kind_score."
                 mlmodel.save(str(coreml_output))
                 print(f"Wrote Core ML model package to {coreml_output}")
@@ -332,7 +372,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
                     "source_weights": str((mlx_output / "robot_scene_net.safetensors").resolve()),
                     "target": str(coreml_output.resolve()),
                     "runtime": "Core ML",
-                    "input": {"name": "pose_intrinsics", "shape": [1, 11], "dtype": "float32"},
+                    "input": {"name": "scene_features", "shape": [1, 24], "dtype": "float32"},
                     "outputs": ["robot_scene_outputs"],
                     "coremltools_version": getattr(ct, "__version__", "unknown"),
                     "error": str(error),
