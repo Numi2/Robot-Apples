@@ -148,10 +148,10 @@ deployment.
 Production CLI commands require explicit inputs.
 
 ```bash
-swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --path-mode lawnmower --path-rows 20 --path-columns 50 --render-preview
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --path-mode lawnmower --path-rows 20 --path-columns 50 --render-apple-native
 swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --capture-route ./PreparedCapture/capture_route.json --align-capture-route
 swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-aligned-route --expand-capture-route
-swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --render-metal-splats
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --render-apple-native
 swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --evaluate-coreml --evaluate-model ./Model.mlpackage --export-robotscene
 swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --write-mlx-training-package
 swift run robot-vision-lab --output ./RobotSceneWork --splat-training-manifest ./PreparedCapture/prepared_splat_training_manifest.json --plan-splat-training
@@ -162,7 +162,7 @@ swift run robot-vision-lab --validate-package ./RobotSceneWork/Project.robotscen
 Synthetic developer data is isolated behind explicit demo flags:
 
 ```bash
-swift run robot-vision-lab --output ./DemoRobotScene --demo --render-preview
+swift run robot-vision-lab --output ./DemoRobotScene --demo --render-dev-preview
 swift run robot-vision-lab --output ./DemoRobotScene --export-demo-capture
 ```
 

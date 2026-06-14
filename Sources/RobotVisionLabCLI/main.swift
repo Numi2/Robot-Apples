@@ -30,6 +30,9 @@ struct RobotVisionLabCLI {
 
         let outputDirectory = try parseOutputDirectory()
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--render-preview") {
+            throw SplatTrainingCLIError.missingRequiredInput("--render-preview was removed as a product path. Use --render-apple-native for Metal Gaussian splat rendering, or --render-dev-preview for explicit developer fixtures.")
+        }
 
         if CommandLine.arguments.contains("--export-demo-capture") {
             let captureURL = outputDirectory.appendingPathComponent("CaptureBundle", isDirectory: true)
@@ -101,7 +104,7 @@ struct RobotVisionLabCLI {
         )
 
         try DatasetExporter().writeManifestAndLabels(manifest, to: outputDirectory)
-        if CommandLine.arguments.contains("--render-preview") {
+        if CommandLine.arguments.contains("--render-dev-preview") {
             try DatasetExporter().renderFrames(manifest, to: outputDirectory, renderer: PreviewSyntheticRenderer())
             _ = try DatasetExporter().writeRenderedLiDARScans(manifest, to: outputDirectory)
             _ = try DatasetExporter().writeRenderedFailureLabels(manifest, to: outputDirectory)
@@ -110,7 +113,7 @@ struct RobotVisionLabCLI {
             try renderSplatPointFrames(manifest: manifest, outputDirectory: outputDirectory)
             print("Rendered splat point-projection RGB artifacts")
         }
-        if CommandLine.arguments.contains("--render-metal-splats") {
+        if CommandLine.arguments.contains("--render-apple-native") || CommandLine.arguments.contains("--render-metal-splats") {
             try renderMetalSplatFrames(manifest: manifest, outputDirectory: outputDirectory)
             _ = try DatasetExporter().writeRenderedLiDARScans(manifest, to: outputDirectory)
             _ = try DatasetExporter().writeRenderedFailureLabels(manifest, to: outputDirectory)
@@ -163,14 +166,15 @@ struct RobotVisionLabCLI {
         }
         let manifestURL = outputDirectory.appendingPathComponent("dataset.json")
         print("Wrote \(manifest.frames.count) planned frames to \(manifestURL.path)")
-        if CommandLine.arguments.contains("--render-preview") {
-            print("Rendered preview RGB/depth/visibility/segmentation/obstacle artifacts")
+        if CommandLine.arguments.contains("--render-dev-preview") {
+            print("Rendered developer preview RGB/depth/visibility/segmentation/obstacle artifacts")
         }
     }
 
     private static func needsDatasetWorkflow() -> Bool {
         let datasetFlags = [
-            "--render-preview",
+            "--render-dev-preview",
+            "--render-apple-native",
             "--render-splat-points",
             "--render-metal-splats",
             "--augment-dataset",
@@ -822,4 +826,10 @@ struct RobotVisionLabCLI {
     }
 }
 
-try RobotVisionLabCLI.main()
+do {
+    try RobotVisionLabCLI.main()
+} catch {
+    let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+    FileHandle.standardError.write(Data("error: \(message)\n".utf8))
+    Foundation.exit(1)
+}
