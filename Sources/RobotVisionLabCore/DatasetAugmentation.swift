@@ -4,12 +4,14 @@ import simd
 public struct AugmentationRunReport: Codable, Equatable, Sendable {
     public var seed: UInt64
     public var augmentedFrameCount: Int
+    public var augmentedManifestURL: URL
     public var imageOutputs: [URL]
     public var poseOutputs: [URL]
 
-    public init(seed: UInt64, augmentedFrameCount: Int, imageOutputs: [URL], poseOutputs: [URL]) {
+    public init(seed: UInt64, augmentedFrameCount: Int, augmentedManifestURL: URL, imageOutputs: [URL], poseOutputs: [URL]) {
         self.seed = seed
         self.augmentedFrameCount = augmentedFrameCount
+        self.augmentedManifestURL = augmentedManifestURL
         self.imageOutputs = imageOutputs
         self.poseOutputs = poseOutputs
     }
@@ -25,31 +27,54 @@ public struct DatasetAugmentor: Sendable {
     ) throws -> AugmentationRunReport {
         let outputImageDirectory = datasetDirectory.appendingPathComponent("rgb_augmented", isDirectory: true)
         let outputPoseDirectory = datasetDirectory.appendingPathComponent("pose_augmented", isDirectory: true)
+        let augmentedManifestURL = datasetDirectory.appendingPathComponent("dataset_augmented.json")
         try FileManager.default.createDirectory(at: outputImageDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outputPoseDirectory, withIntermediateDirectories: true)
 
         var imageOutputs: [URL] = []
         var poseOutputs: [URL] = []
+        var augmentedFrames: [DatasetFrame] = []
         for frame in manifest.frames {
             let rng = SeededGenerator(seed: seed &+ UInt64(frame.index))
             let sourceURL = existingPPMURL(for: frame, datasetDirectory: datasetDirectory)
+            var products = frame.products
             if let sourceURL, FileManager.default.fileExists(atPath: sourceURL.path) {
                 let image = try PPMImage(data: Data(contentsOf: sourceURL))
                 let augmented = applyImageAugmentations(frame.augmentations, to: image, generator: rng)
                 let outputURL = outputImageDirectory.appendingPathComponent(String(format: "frame_%06d.ppm", frame.index))
                 try augmented.data().write(to: outputURL)
                 imageOutputs.append(outputURL)
+                products = replacingProduct(.rgb, in: products, with: outputURL)
             }
 
             let pose = applyPoseAugmentations(frame.augmentations, to: frame.cameraPose, generator: rng)
             let poseURL = outputPoseDirectory.appendingPathComponent(String(format: "frame_%06d.json", frame.index))
             try JSONEncoder.robotVisionLabEncoder.encode(PoseLabel(frameIndex: frame.index, timestamp: frame.timestamp, cameraPose: pose)).write(to: poseURL)
             poseOutputs.append(poseURL)
+            products = replacingProduct(.pose, in: products, with: poseURL)
+            augmentedFrames.append(DatasetFrame(
+                index: frame.index,
+                timestamp: frame.timestamp,
+                cameraPose: pose,
+                navigationTarget: frame.navigationTarget,
+                products: products,
+                augmentations: frame.augmentations,
+                labelSources: frame.labelSources
+            ))
         }
+        let augmentedManifest = DatasetManifest(
+            recipeID: "\(manifest.recipeID)-augmented",
+            generatedAt: manifest.generatedAt,
+            scene: manifest.scene,
+            cameraRig: manifest.cameraRig,
+            frames: augmentedFrames
+        )
+        try JSONEncoder.robotVisionLabEncoder.encode(augmentedManifest).write(to: augmentedManifestURL)
 
         return AugmentationRunReport(
             seed: seed,
             augmentedFrameCount: manifest.frames.count,
+            augmentedManifestURL: augmentedManifestURL,
             imageOutputs: imageOutputs,
             poseOutputs: poseOutputs
         )
@@ -74,6 +99,12 @@ public struct DatasetAugmentor: Sendable {
             return splatURL
         }
         return nil
+    }
+
+    private func replacingProduct(_ product: RenderProduct, in products: [FrameProduct], with url: URL) -> [FrameProduct] {
+        var updated = products.filter { $0.product != product }
+        updated.append(FrameProduct(product: product, url: url))
+        return updated.sorted { $0.product.rawValue < $1.product.rawValue }
     }
 
     private func applyImageAugmentations(_ augmentations: [FrameAugmentation], to image: PPMImage, generator: SeededGenerator) -> PPMImage {

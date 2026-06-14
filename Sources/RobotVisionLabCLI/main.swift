@@ -144,7 +144,16 @@ struct RobotVisionLabCLI {
             )
             let reportURL = outputDirectory.appendingPathComponent("augmentation_report.json")
             try DatasetAugmentor().writeReport(report, to: reportURL)
+            let augmentedManifest = try JSONDecoder.robotVisionLabDecoder.decode(
+                DatasetManifest.self,
+                from: Data(contentsOf: report.augmentedManifestURL)
+            )
+            let readiness = NativeRenderProductValidator().validate(augmentedManifest)
+            let readinessURL = outputDirectory.appendingPathComponent("native_render_product_readiness_augmented.json")
+            try JSONEncoder.robotVisionLabEncoder.encode(readiness).write(to: readinessURL)
             print("Wrote augmentation report to \(reportURL.path)")
+            print("Wrote augmented dataset manifest to \(report.augmentedManifestURL.path)")
+            print("Wrote augmented product readiness report to \(readinessURL.path)")
         }
         if CommandLine.arguments.contains("--metal-render-plan") {
             let plan = MetalRenderPlanner().makePlan(from: recipe)

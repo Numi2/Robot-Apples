@@ -73,6 +73,8 @@ The required iPhone capture output is a `.robotcapture` package containing:
   compositing, dense depth/visibility products, Float32 metric depth sidecars,
   synthetic LiDAR scan products,
   LOD decimation, streaming chunks, and render timing reports.
+- Training-ready dataset augmentation that writes `dataset_augmented.json` with
+  augmented RGB products and pose labels plus a native product readiness report.
 - Apple Silicon ML package generation for MLX training and Core ML export.
 - Core ML evaluation, failure-map calibration, and model comparison reports.
 - `.robotscene` export for Vision Pro review.
