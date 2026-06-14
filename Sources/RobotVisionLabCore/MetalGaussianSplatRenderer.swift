@@ -44,6 +44,8 @@ public struct MetalSplatRenderProducts: Codable, Equatable, Sendable {
     public var rgbURL: URL
     public var depthURL: URL
     public var visibilityURL: URL
+    public var depthImageURL: URL
+    public var visibilityImageURL: URL
     public var tileBinURL: URL
     public var visibleSplatCount: Int
     public var drawCommandCount: Int
@@ -54,6 +56,8 @@ public struct MetalSplatRenderProducts: Codable, Equatable, Sendable {
         rgbURL: URL,
         depthURL: URL,
         visibilityURL: URL,
+        depthImageURL: URL,
+        visibilityImageURL: URL,
         tileBinURL: URL,
         visibleSplatCount: Int,
         drawCommandCount: Int,
@@ -63,6 +67,8 @@ public struct MetalSplatRenderProducts: Codable, Equatable, Sendable {
         self.rgbURL = rgbURL
         self.depthURL = depthURL
         self.visibilityURL = visibilityURL
+        self.depthImageURL = depthImageURL
+        self.visibilityImageURL = visibilityImageURL
         self.tileBinURL = tileBinURL
         self.visibleSplatCount = visibleSplatCount
         self.drawCommandCount = drawCommandCount
@@ -400,6 +406,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
     private let compactTileRefsPipelineState: MTLComputePipelineState
     private let sortTileRefsPipelineState: MTLComputePipelineState
     private let buildVertexBufferPipelineState: MTLComputePipelineState
+    private let depthVisibilityPipelineState: MTLComputePipelineState
 
     public init(device: MTLDevice? = MTLCreateSystemDefaultDevice()) throws {
         guard let device else {
@@ -419,6 +426,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         self.compactTileRefsPipelineState = try Self.makeComputePipeline(device: device, library: library, functionName: "robot_compact_tile_references")
         self.sortTileRefsPipelineState = try Self.makeComputePipeline(device: device, library: library, functionName: "robot_sort_tile_references")
         self.buildVertexBufferPipelineState = try Self.makeComputePipeline(device: device, library: library, functionName: "robot_build_vertex_buffer")
+        self.depthVisibilityPipelineState = try Self.makeComputePipeline(device: device, library: library, functionName: "robot_write_depth_visibility")
     }
 
     public func render(frame: DatasetFrame, scene: GaussianSplatScene, cameraRig: RobotCameraRig, outputDirectory: URL) async throws {
@@ -538,12 +546,22 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         let rgbURL = outputDirectory.appendingPathComponent("rgb", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_metal.ppm", frame.index))
         let depthURL = outputDirectory.appendingPathComponent("depth", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_depth.json", frame.index))
         let visibilityURL = outputDirectory.appendingPathComponent("visibility", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_visibility.json", frame.index))
+        let depthImageURL = outputDirectory.appendingPathComponent("depth", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_depth.pgm", frame.index))
+        let visibilityImageURL = outputDirectory.appendingPathComponent("visibility", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_visibility.pgm", frame.index))
         let tileBinURL = outputDirectory.appendingPathComponent("tile_bins", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_tile_bins.json", frame.index))
         try FileManager.default.createDirectory(at: rgbURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: depthURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: visibilityURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: tileBinURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try readPPM(texture: colorTexture, width: width, height: height).write(to: rgbURL)
+        try writeDepthVisibilityImages(
+            projectedBuffer: gpuPreparation.projectedBuffer,
+            projectedSplatCount: gpuPreparation.projectedSplatCount,
+            width: width,
+            height: height,
+            depthURL: depthImageURL,
+            visibilityURL: visibilityImageURL
+        )
         try writeDepthAndVisibility(
             frame: frame,
             splats: prepared.projectedSplats,
@@ -560,6 +578,8 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             rgbURL: rgbURL,
             depthURL: depthURL,
             visibilityURL: visibilityURL,
+            depthImageURL: depthImageURL,
+            visibilityImageURL: visibilityImageURL,
             tileBinURL: tileBinURL,
             visibleSplatCount: prepared.projectedSplats.count,
             drawCommandCount: gpuPreparation.drawCommandCount,
@@ -740,7 +760,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         tileSize: Int,
         tileColumns: Int,
         tileRows: Int
-    ) throws -> (projectedSplatCount: Int, coveredTileReferenceCount: Int, drawCommandCount: Int, vertexBuffer: MTLBuffer, tileReport: MetalTileBinReport) {
+    ) throws -> (projectedSplatCount: Int, coveredTileReferenceCount: Int, drawCommandCount: Int, vertexBuffer: MTLBuffer, projectedBuffer: MTLBuffer, tileReport: MetalTileBinReport) {
         guard !splats.isEmpty else {
             throw MetalGaussianSplatRenderError.noVisibleSplats
         }
@@ -936,7 +956,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             tileOffsetsBuffer: tileOffsetsBuffer,
             tileRefsBuffer: tileRefsBuffer
         )
-        return (projectedCount, coveredReferenceCount, coveredReferenceCount, vertexBuffer, tileReport)
+        return (projectedCount, coveredReferenceCount, coveredReferenceCount, vertexBuffer, projectedBuffer, tileReport)
     }
 
     private func dispatchThreads(_ count: Int, encoder: MTLComputeCommandEncoder, pipelineState: MTLComputePipelineState) {
@@ -1020,6 +1040,88 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             ppm.append(bytes[index])
         }
         return Data(ppm)
+    }
+
+    private func writeDepthVisibilityImages(
+        projectedBuffer: MTLBuffer,
+        projectedSplatCount: Int,
+        width: Int,
+        height: Int,
+        depthURL: URL,
+        visibilityURL: URL
+    ) throws {
+        let pixelCount = max(1, width * height)
+        guard let depthBuffer = device.makeBuffer(length: MemoryLayout<Float>.stride * pixelCount, options: [.storageModeShared]),
+              let visibilityBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * pixelCount, options: [.storageModeShared]),
+              let commandBuffer = commandQueue.makeCommandBuffer() else {
+            throw MetalGaussianSplatRenderError.bufferAllocationFailed
+        }
+        let depthPointer = depthBuffer.contents().bindMemory(to: Float.self, capacity: pixelCount)
+        let visibilityPointer = visibilityBuffer.contents().bindMemory(to: UInt32.self, capacity: pixelCount)
+        for index in 0..<pixelCount {
+            depthPointer[index] = Float.greatestFiniteMagnitude
+            visibilityPointer[index] = 0
+        }
+
+        var imageUniforms = SIMD4<UInt32>(UInt32(width), UInt32(height), UInt32(projectedSplatCount), 0)
+        guard let imageUniformBuffer = device.makeBuffer(bytes: &imageUniforms, length: MemoryLayout<SIMD4<UInt32>>.stride, options: [.storageModeShared]) else {
+            throw MetalGaussianSplatRenderError.bufferAllocationFailed
+        }
+
+        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+            encoder.setComputePipelineState(depthVisibilityPipelineState)
+            encoder.setBuffer(projectedBuffer, offset: 0, index: 0)
+            encoder.setBuffer(depthBuffer, offset: 0, index: 1)
+            encoder.setBuffer(visibilityBuffer, offset: 0, index: 2)
+            encoder.setBuffer(imageUniformBuffer, offset: 0, index: 3)
+            dispatchThreads(projectedSplatCount, encoder: encoder, pipelineState: depthVisibilityPipelineState)
+            encoder.endEncoding()
+        }
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        if let error = commandBuffer.error {
+            throw error
+        }
+
+        try FileManager.default.createDirectory(at: depthURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: visibilityURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try makeDepthPGM(depthPointer: depthPointer, pixelCount: pixelCount, width: width, height: height).write(to: depthURL)
+        try makeVisibilityPGM(visibilityPointer: visibilityPointer, pixelCount: pixelCount, width: width, height: height).write(to: visibilityURL)
+    }
+
+    private func makeDepthPGM(depthPointer: UnsafePointer<Float>, pixelCount: Int, width: Int, height: Int) -> Data {
+        var nearest = Float.greatestFiniteMagnitude
+        var farthest: Float = 0
+        for index in 0..<pixelCount {
+            let depth = depthPointer[index]
+            guard depth.isFinite, depth < Float.greatestFiniteMagnitude else { continue }
+            nearest = min(nearest, depth)
+            farthest = max(farthest, depth)
+        }
+        let span = max(farthest - nearest, 0.001)
+        var bytes = Array("P5\n\(width) \(height)\n255\n".utf8)
+        bytes.reserveCapacity(bytes.count + pixelCount)
+        for index in 0..<pixelCount {
+            let depth = depthPointer[index]
+            if depth.isFinite, depth < Float.greatestFiniteMagnitude {
+                let normalized = UInt8(clamping: Int(((depth - nearest) / span * 255).rounded()))
+                bytes.append(255 &- normalized)
+            } else {
+                bytes.append(0)
+            }
+        }
+        return Data(bytes)
+    }
+
+    private func makeVisibilityPGM(visibilityPointer: UnsafePointer<UInt32>, pixelCount: Int, width: Int, height: Int) -> Data {
+        let maxVisibility = max((0..<pixelCount).map { visibilityPointer[$0] }.max() ?? 1, 1)
+        var bytes = Array("P5\n\(width) \(height)\n255\n".utf8)
+        bytes.reserveCapacity(bytes.count + pixelCount)
+        for index in 0..<pixelCount {
+            let normalized = UInt8(clamping: Int((Double(visibilityPointer[index]) / Double(maxVisibility) * 255).rounded()))
+            bytes.append(normalized)
+        }
+        return Data(bytes)
     }
 
     private func writeDepthAndVisibility(
@@ -1358,6 +1460,32 @@ kernel void robot_build_vertex_buffer(
     vertices[id].covarianceRadius = splat.covarianceRadius;
     vertices[id].inverseCovariance = splat.inverseCovariance;
     vertices[id].colorOpacity = splat.colorOpacity;
+}
+
+kernel void robot_write_depth_visibility(
+    const device ProjectedSplat *projectedSplats [[buffer(0)]],
+    device float *depthPixels [[buffer(1)]],
+    device atomic_uint *visibilityPixels [[buffer(2)]],
+    constant uint4 &image [[buffer(3)]],
+    uint id [[thread_position_in_grid]]
+) {
+    if (id >= image.z) {
+        return;
+    }
+    ProjectedSplat splat = projectedSplats[id];
+    if (splat.centerDepth.z <= 0.0) {
+        return;
+    }
+    uint width = max(image.x, 1u);
+    uint height = max(image.y, 1u);
+    int x = int(round(splat.centerDepth.x));
+    int y = int(round(splat.centerDepth.y));
+    if (x < 0 || y < 0 || x >= int(width) || y >= int(height)) {
+        return;
+    }
+    uint pixelIndex = uint(y) * width + uint(x);
+    depthPixels[pixelIndex] = min(depthPixels[pixelIndex], splat.centerDepth.z);
+    atomic_fetch_add_explicit(&visibilityPixels[pixelIndex], 1u, memory_order_relaxed);
 }
 
 vertex VertexOut robot_splat_vertex(

@@ -118,7 +118,8 @@ developer tool for exercising the native contracts.
   shader, projects anisotropic covariance into screen space, runs Metal compute
   passes for tile counts, prefix offsets, compaction, per-tile depth sorting,
   and vertex-buffer construction, composites Gaussian point discs on the GPU,
-  and writes RGB, depth, visibility, and tile-bin products.
+  and writes RGB, GPU-derived depth images, GPU-derived visibility images,
+  diagnostic depth/visibility summaries, and tile-bin products.
 - `SplatTrainingJob`: Apple-native training plan for MLX/Create ML/Metal
   Performance Shaders workflows.
 - `CoreMLDatasetEvaluator`: Core ML evaluation path for deployed on-device
@@ -167,7 +168,7 @@ developer tool for exercising the native contracts.
    - GPU projection, tile-reference counting, prefix offsets, compaction,
      per-tile sort, and vertex-buffer construction are in place.
    - Match compute covariance projection exactly to the CPU camera-Jacobian path.
-   - Add compute-pass depth and visibility textures instead of JSON summaries.
+   - GPU-derived depth and visibility images are in place.
    - Add tile-based memory and large-scene streaming.
 
 6. Build the Vision Pro reviewer.
