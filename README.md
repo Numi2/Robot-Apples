@@ -104,6 +104,9 @@ The required iPhone capture output is a `.robotcapture` package containing:
   `ModelComparisonReporter`: Apple Silicon ML dataset loading, adapter schemas,
   dense RGB/depth/visibility tensor loading, Core ML evaluation, MLX training
   package generation, failure-map calibration, and model comparison.
+- `RenderedFailureLabeler`: derives blocked, missing-view, ambiguity,
+  low-texture, and lighting failure labels from rendered RGB/depth/visibility
+  products for MLX/Core ML supervision and Vision Pro review markers.
 - `RobotScenePackageExporter` and `SharedProjectFormatTools`: `.robotscene`
   export, validation, migration, checksum, compaction, and reporting.
 

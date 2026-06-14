@@ -103,6 +103,7 @@ struct RobotVisionLabCLI {
         try DatasetExporter().writeManifestAndLabels(manifest, to: outputDirectory)
         if CommandLine.arguments.contains("--render-preview") {
             try DatasetExporter().renderFrames(manifest, to: outputDirectory, renderer: PreviewSyntheticRenderer())
+            _ = try DatasetExporter().writeRenderedFailureLabels(manifest, to: outputDirectory)
         }
         if CommandLine.arguments.contains("--render-splat-points") {
             try renderSplatPointFrames(manifest: manifest, outputDirectory: outputDirectory)
@@ -110,6 +111,7 @@ struct RobotVisionLabCLI {
         }
         if CommandLine.arguments.contains("--render-metal-splats") {
             try renderMetalSplatFrames(manifest: manifest, outputDirectory: outputDirectory)
+            _ = try DatasetExporter().writeRenderedFailureLabels(manifest, to: outputDirectory)
             print("Rendered native Metal Gaussian splat artifacts")
         }
         if CommandLine.arguments.contains("--augment-dataset") {
@@ -278,7 +280,7 @@ struct RobotVisionLabCLI {
             scene: scene,
             cameraRig: cameraRig(),
             path: path,
-            requestedProducts: [.rgb, .depth, .visibility, .pose, .segmentation, .obstacleMask, .navigationTarget],
+            requestedProducts: [.rgb, .depth, .visibility, .pose, .segmentation, .obstacleMask, .failureLabels, .navigationTarget],
             augmentations: [
                 .exposureEV(-0.5),
                 .gaussianNoise(sigma: 0.015),
@@ -316,10 +318,10 @@ struct RobotVisionLabCLI {
 
     private static func requestedProducts() -> Set<RenderProduct> {
         guard let raw = stringValue(for: "--products") else {
-            return [.rgb, .depth, .visibility, .pose, .segmentation, .obstacleMask, .navigationTarget]
+            return [.rgb, .depth, .visibility, .pose, .segmentation, .obstacleMask, .failureLabels, .navigationTarget]
         }
         let products = raw.split(separator: ",").compactMap { RenderProduct(rawValue: String($0.trimmingCharacters(in: .whitespaces))) }
-        return products.isEmpty ? [.rgb, .depth, .visibility, .pose] : Set(products)
+        return products.isEmpty ? [.rgb, .depth, .visibility, .pose, .failureLabels] : Set(products)
     }
 
     private static func labelSources() -> [LabelSource] {

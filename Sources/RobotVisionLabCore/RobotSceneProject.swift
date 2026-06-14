@@ -424,6 +424,9 @@ public struct RobotScenePackageExporter: Sendable {
         if hasLightingOrImageDegradation(frame) {
             append(.badLighting, confidence: 0.72, note: "Camera augmentation includes exposure, blur, noise, or compression degradation.")
         }
+        for label in renderedFailureLabels(frame) {
+            append(label.kind, confidence: label.confidence, note: label.note)
+        }
         for marker in calibratedModelMarkers(evaluation) {
             append(marker.kind, confidence: marker.confidence, note: marker.note)
         }
@@ -463,6 +466,15 @@ public struct RobotScenePackageExporter: Sendable {
             if case .gaussianNoise = augmentation { return true }
             return false
         }
+    }
+
+    private func renderedFailureLabels(_ frame: DatasetFrame) -> [RenderedFailureLabel] {
+        guard let url = frame.productURL(for: .failureLabels),
+              let data = try? Data(contentsOf: url),
+              let report = try? JSONDecoder.robotVisionLabDecoder.decode(RenderedFailureLabelReport.self, from: data) else {
+            return []
+        }
+        return report.labels.filter { $0.kind != .confident }
     }
 
     private func isNearSceneBoundary(_ position: SIMD3<Double>, bounds: AxisAlignedBounds) -> Bool {

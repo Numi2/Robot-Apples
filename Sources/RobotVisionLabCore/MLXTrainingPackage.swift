@@ -140,6 +140,19 @@ public struct MLXTrainingPackageBuilder: Sendable {
                     return item["url"].replace("file://", "")
             return None
 
+        def failure_signal(path):
+            if not path:
+                return np.array([0.65, 0.20, 0.35, 0.0], dtype=np.float32)
+            report = json.loads(Path(path).read_text())
+            labels = report.get("labels", [])
+            kinds = {item.get("kind"): float(item.get("confidence", 0.0)) for item in labels}
+            blocked = max(kinds.get("blockedPrediction", 0.0), 0.0)
+            uncertain = max(kinds.get("uncertainLocalization", 0.0), kinds.get("missingTrainingViews", 0.0), kinds.get("visualAmbiguity", 0.0))
+            degraded = max(kinds.get("badLighting", 0.0), kinds.get("lowTexture", 0.0))
+            free_space = max(0.0, 1.0 - max(blocked, uncertain * 0.5))
+            failure_score = max(blocked, uncertain, degraded)
+            return np.array([free_space, blocked, uncertain, failure_score], dtype=np.float32)
+
         def load_samples(dataset_path):
             dataset_path = Path(dataset_path)
             dataset = json.loads(dataset_path.read_text())
@@ -149,15 +162,13 @@ public struct MLXTrainingPackageBuilder: Sendable {
                 rgb_path = product_url(frame, "rgb")
                 depth_path = product_url(frame, "depth")
                 visibility_path = product_url(frame, "visibility")
+                failure_path = product_url(frame, "failureLabels")
                 rgb = read_rgb_chw(rgb_path) if rgb_path else None
                 depth = read_depth_chw(depth_path) if depth_path else None
                 visibility = read_visibility_chw(visibility_path) if visibility_path else None
                 pose_input = pose_vector(frame)
                 model_input = np.concatenate([pose_input, intrinsics]).astype(np.float32)
-                free_space = 1.0 if frame.get("navigationTarget") is not None else 0.65
-                obstacle = 0.0 if free_space >= 0.8 else 0.35
-                uncertainty = 0.15 if frame.get("navigationTarget") is not None else 0.45
-                target = np.array([free_space, obstacle, uncertainty, 0.0], dtype=np.float32)
+                target = failure_signal(failure_path)
                 samples.append({
                     "frame_index": int(frame["index"]),
                     "rgb": rgb,
