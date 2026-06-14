@@ -34,6 +34,7 @@ public struct RenderedLiDARSpecification: Codable, Equatable, Sendable {
     public var nearRangeMeters: Double
     public var farRangeMeters: Double
     public var sourceDepthProduct: URL?
+    public var sourceMetricDepthProduct: URL?
     public var sourceVisibilityProduct: URL?
 
     public init(
@@ -44,6 +45,7 @@ public struct RenderedLiDARSpecification: Codable, Equatable, Sendable {
         nearRangeMeters: Double = 0.15,
         farRangeMeters: Double = 20,
         sourceDepthProduct: URL? = nil,
+        sourceMetricDepthProduct: URL? = nil,
         sourceVisibilityProduct: URL? = nil
     ) {
         self.horizontalSamples = horizontalSamples
@@ -53,6 +55,7 @@ public struct RenderedLiDARSpecification: Codable, Equatable, Sendable {
         self.nearRangeMeters = nearRangeMeters
         self.farRangeMeters = farRangeMeters
         self.sourceDepthProduct = sourceDepthProduct
+        self.sourceMetricDepthProduct = sourceMetricDepthProduct
         self.sourceVisibilityProduct = sourceVisibilityProduct
     }
 }
@@ -158,9 +161,10 @@ public struct RenderedLiDARSimulator: Sendable {
         let depthURL = frame.productURL(for: .depth)
         let visibilityURL = frame.productURL(for: .visibility)
         let depth = depthURL.flatMap { try? PNMImage.read(url: $0, expectedMagic: "P5") }
+        let metricDepth = depthURL.flatMap { MetricDepthProductIO.readIfPresent(forVisualizationURL: $0) }
         let visibility = visibilityURL.flatMap { try? PNMImage.read(url: $0, expectedMagic: "P5") }
 
-        if depthURL != nil, depth == nil {
+        if depthURL != nil, depth == nil, metricDepth == nil {
             warnings.append("Depth product could not be parsed; all LiDAR rays are marked as dropped out.")
         }
         if visibilityURL != nil, visibility == nil {
@@ -172,6 +176,7 @@ public struct RenderedLiDARSimulator: Sendable {
 
         var spec = specification
         spec.sourceDepthProduct = depthURL
+        spec.sourceMetricDepthProduct = metricDepth?.metadata.depthURL
         spec.sourceVisibilityProduct = visibilityURL
 
         let depthValues = depth?.normalizedGrayValues() ?? []
@@ -179,6 +184,7 @@ public struct RenderedLiDARSimulator: Sendable {
         let rays = makeRays(
             frame: frame,
             cameraRig: cameraRig,
+            metricDepth: metricDepth,
             depth: depth,
             depthValues: depthValues,
             visibility: visibility,
@@ -208,6 +214,7 @@ public struct RenderedLiDARSimulator: Sendable {
     private func makeRays(
         frame: DatasetFrame,
         cameraRig: RobotCameraRig?,
+        metricDepth: MetricDepthProduct?,
         depth: PNMImage?,
         depthValues: [Double],
         visibility: PNMImage?,
@@ -227,12 +234,14 @@ public struct RenderedLiDARSimulator: Sendable {
                 let v = Double(row) / Double(verticalLast)
                 let azimuth = (u - 0.5) * specification.horizontalFOVDegrees
                 let elevation = (0.5 - v) * specification.verticalFOVDegrees
-                let x = pixelCoordinate(u, count: depth?.width ?? visibility?.width ?? 1)
-                let y = pixelCoordinate(v, count: depth?.height ?? visibility?.height ?? 1)
+                let x = pixelCoordinate(u, count: metricDepth?.metadata.width ?? depth?.width ?? visibility?.width ?? 1)
+                let y = pixelCoordinate(v, count: metricDepth?.metadata.height ?? depth?.height ?? visibility?.height ?? 1)
                 let support = sampledValue(image: visibility, values: visibilityValues, x: x, y: y) ?? 0.5
                 let cameraDirection = rayDirection(azimuthDegrees: azimuth, elevationDegrees: elevation)
 
-                guard let depthValue = sampledValue(image: depth, values: depthValues, x: x, y: y), depthValue > 0.005 else {
+                let metricRange = metricDepth?.sampleMeters(x: x, y: y)
+                let visualDepthValue = sampledValue(image: depth, values: depthValues, x: x, y: y)
+                guard let range = metricRange ?? visualDepthValue.map(rangeMeters(fromDepthVisualization:)), range > 0.005 else {
                     rays.append(RenderedLiDARRay(
                         index: index,
                         row: row,
@@ -251,7 +260,6 @@ public struct RenderedLiDARSimulator: Sendable {
                     continue
                 }
 
-                let range = rangeMeters(fromDepthVisualization: depthValue)
                 let dropoutProbability = dropoutProbability(rangeMeters: range, visibilitySupport: support)
                 let deterministicSample = deterministicUnitSample(frameIndex: frame.index, rayIndex: index)
                 let dropped = support < 0.05 || deterministicSample < dropoutProbability

@@ -35,6 +35,7 @@ public struct RenderedFailureLabel: Codable, Equatable, Sendable {
 }
 
 public struct RenderedFailureMetrics: Codable, Equatable, Sendable {
+    public var usesMetricDepthMeters: Bool
     public var meanDepth: Double?
     public var nearDepthCoverage: Double?
     public var meanVisibility: Double?
@@ -44,6 +45,7 @@ public struct RenderedFailureMetrics: Codable, Equatable, Sendable {
     public var edgeEnergy: Double?
 
     public init(
+        usesMetricDepthMeters: Bool = false,
         meanDepth: Double? = nil,
         nearDepthCoverage: Double? = nil,
         meanVisibility: Double? = nil,
@@ -52,6 +54,7 @@ public struct RenderedFailureMetrics: Codable, Equatable, Sendable {
         luminanceVariance: Double? = nil,
         edgeEnergy: Double? = nil
     ) {
+        self.usesMetricDepthMeters = usesMetricDepthMeters
         self.meanDepth = meanDepth
         self.nearDepthCoverage = nearDepthCoverage
         self.meanVisibility = meanVisibility
@@ -79,11 +82,13 @@ public struct RenderedFailureLabeler: Sendable {
 
     public func makeReport(for frame: DatasetFrame, generatedAt: Date = Date()) -> RenderedFailureLabelReport {
         var warnings: [String] = []
-        let depth = frame.productURL(for: .depth).flatMap { try? PNMImage.read(url: $0, expectedMagic: "P5") }
+        let depthURL = frame.productURL(for: .depth)
+        let metricDepth = depthURL.flatMap { MetricDepthProductIO.readIfPresent(forVisualizationURL: $0) }
+        let depth = depthURL.flatMap { try? PNMImage.read(url: $0, expectedMagic: "P5") }
         let visibility = frame.productURL(for: .visibility).flatMap { try? PNMImage.read(url: $0, expectedMagic: "P5") }
         let rgb = frame.productURL(for: .rgb).flatMap { try? PNMImage.read(url: $0, expectedMagic: "P6") }
 
-        if frame.productURL(for: .depth) != nil, depth == nil {
+        if depthURL != nil, depth == nil, metricDepth == nil {
             warnings.append("Depth product could not be parsed.")
         }
         if frame.productURL(for: .visibility) != nil, visibility == nil {
@@ -93,12 +98,18 @@ public struct RenderedFailureLabeler: Sendable {
             warnings.append("RGB product could not be parsed.")
         }
 
+        let metricDepthValues = metricDepth?.valuesMeters.compactMap { value -> Double? in
+            guard value.isFinite, value > 0 else { return nil }
+            return Double(value)
+        }
         let depthValues = depth?.normalizedGrayValues()
         let visibilityValues = visibility?.normalizedGrayValues()
         let luminanceValues = rgb?.luminanceValues()
         let metrics = RenderedFailureMetrics(
-            meanDepth: depthValues.map(mean),
-            nearDepthCoverage: depthValues.map { coverage(values: $0, where: { $0 > 0.82 }) },
+            usesMetricDepthMeters: metricDepthValues != nil,
+            meanDepth: metricDepthValues.map(mean) ?? depthValues.map(mean),
+            nearDepthCoverage: metricDepthValues.map { coverage(values: $0, where: { $0 <= 1.25 }) }
+                ?? depthValues.map { coverage(values: $0, where: { $0 > 0.82 }) },
             meanVisibility: visibilityValues.map(mean),
             lowVisibilityCoverage: visibilityValues.map { coverage(values: $0, where: { $0 < 0.18 }) },
             luminanceMean: luminanceValues.map(mean),

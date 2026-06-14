@@ -45,6 +45,8 @@ public struct MetalSplatRenderProducts: Codable, Equatable, Sendable {
     public var depthURL: URL
     public var visibilityURL: URL
     public var depthImageURL: URL
+    public var metricDepthURL: URL
+    public var metricDepthMetadataURL: URL
     public var visibilityImageURL: URL
     public var tileBinURL: URL
     public var visibleSplatCount: Int
@@ -58,6 +60,8 @@ public struct MetalSplatRenderProducts: Codable, Equatable, Sendable {
         depthURL: URL,
         visibilityURL: URL,
         depthImageURL: URL,
+        metricDepthURL: URL,
+        metricDepthMetadataURL: URL,
         visibilityImageURL: URL,
         tileBinURL: URL,
         visibleSplatCount: Int,
@@ -70,6 +74,8 @@ public struct MetalSplatRenderProducts: Codable, Equatable, Sendable {
         self.depthURL = depthURL
         self.visibilityURL = visibilityURL
         self.depthImageURL = depthImageURL
+        self.metricDepthURL = metricDepthURL
+        self.metricDepthMetadataURL = metricDepthMetadataURL
         self.visibilityImageURL = visibilityImageURL
         self.tileBinURL = tileBinURL
         self.visibleSplatCount = visibleSplatCount
@@ -1029,7 +1035,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         let outputWriteStart = Date()
         try readPPM(texture: colorTexture, width: width, height: height).write(to: rgbURL)
         let depthVisibilityStart = Date()
-        try writeDepthVisibilityImages(
+        let metricDepth = try writeDepthVisibilityImages(
             projectedBuffers: projectedBuffers,
             projectedSplatCount: projectedSplatCount,
             width: width,
@@ -1064,6 +1070,8 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             depthURL: depthURL,
             visibilityURL: visibilityURL,
             depthImageURL: depthImageURL,
+            metricDepthURL: metricDepth.depthURL,
+            metricDepthMetadataURL: MetricDepthProductIO.metadataURL(forVisualizationURL: depthImageURL),
             visibilityImageURL: visibilityImageURL,
             tileBinURL: tileBinURL,
             visibleSplatCount: prepared.projectedSplats.count,
@@ -1582,7 +1590,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         height: Int,
         depthURL: URL,
         visibilityURL: URL
-    ) throws {
+    ) throws -> MetricDepthProductMetadata {
         let pixelCount = max(1, width * height)
         guard let depthBuffer = device.makeBuffer(length: MemoryLayout<Float>.stride * pixelCount, options: [.storageModeShared]),
               let visibilityBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * pixelCount, options: [.storageModeShared]),
@@ -1623,7 +1631,15 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         try FileManager.default.createDirectory(at: depthURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: visibilityURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try makeDepthPGM(depthPointer: depthPointer, pixelCount: pixelCount, width: width, height: height).write(to: depthURL)
+        let metricDepth = try MetricDepthProductIO.write(
+            depthPointer: depthPointer,
+            pixelCount: pixelCount,
+            width: width,
+            height: height,
+            visualizationURL: depthURL
+        )
         try makeVisibilityPGM(visibilityPointer: visibilityPointer, pixelCount: pixelCount, width: width, height: height).write(to: visibilityURL)
+        return metricDepth
     }
 
     private func makeDepthPGM(depthPointer: UnsafePointer<Float>, pixelCount: Int, width: Int, height: Int) -> Data {

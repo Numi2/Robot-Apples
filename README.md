@@ -70,7 +70,8 @@ The required iPhone capture output is a `.robotcapture` package containing:
   coverage analysis.
 - Native Metal Gaussian splat renderer with GPU projection, covariance
   projection, tile counting, prefix offsets, compaction, per-tile sort,
-  compositing, dense depth/visibility products, synthetic LiDAR scan products,
+  compositing, dense depth/visibility products, Float32 metric depth sidecars,
+  synthetic LiDAR scan products,
   LOD decimation, streaming chunks, and render timing reports.
 - Apple Silicon ML package generation for MLX training and Core ML export.
 - Core ML evaluation, failure-map calibration, and model comparison reports.
@@ -118,11 +119,13 @@ The required iPhone capture output is a `.robotcapture` package containing:
   comparison.
 - `RenderedFailureLabeler`: derives blocked, missing-view, ambiguity,
   low-texture, and lighting failure labels from rendered RGB/depth/visibility
-  products for MLX/Core ML supervision and Vision Pro review markers.
+  products, preferring Float32 meter depth sidecars over visualization images
+  for near-field geometry, for MLX/Core ML supervision and Vision Pro review
+  markers.
 - `RenderedLiDARSimulator`: derives fixed-ring LiDAR-style ray scans from
-  rendered depth and visibility products, including deterministic dropout,
-  intensity, range, support metrics, 3D camera/world returns, and JSON reports
-  for robot datasets.
+  rendered Float32 camera-space depth and visibility products, including
+  deterministic dropout, intensity, range, support metrics, 3D camera/world
+  returns, and JSON reports for robot datasets.
 - `FailureMapCalibrationReporter`: fuses Core ML/MLX model outputs with native
   rendered failure labels and synthetic LiDAR geometry, reporting model/native
   agreement plus blocked, uncertain, and missing-view rates for Mac and Vision
