@@ -767,11 +767,13 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         }
         let tileCount = max(1, tileColumns * tileRows)
         guard let tileCountsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * tileCount, options: [.storageModeShared]),
+              let scratchTileCountsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * tileCount, options: [.storageModeShared]),
               let tileOffsetsBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * (tileCount + 1), options: [.storageModeShared]),
               let tileCursorBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * tileCount, options: [.storageModeShared]) else {
             throw MetalGaussianSplatRenderError.bufferAllocationFailed
         }
         memset(tileCountsBuffer.contents(), 0, MemoryLayout<UInt32>.stride * tileCount)
+        memset(scratchTileCountsBuffer.contents(), 0, MemoryLayout<UInt32>.stride * tileCount)
         memset(tileOffsetsBuffer.contents(), 0, MemoryLayout<UInt32>.stride * (tileCount + 1))
         memset(tileCursorBuffer.contents(), 0, MemoryLayout<UInt32>.stride * tileCount)
         guard let countersBuffer = device.makeBuffer(
@@ -826,7 +828,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             countEncoder.setBuffer(projectedBuffer, offset: 0, index: 0)
             countEncoder.setBuffer(tileUniformBuffer, offset: 0, index: 1)
             countEncoder.setBuffer(countersBuffer, offset: 0, index: 2)
-            countEncoder.setBuffer(tileCountsBuffer, offset: 0, index: 3)
+            countEncoder.setBuffer(scratchTileCountsBuffer, offset: 0, index: 3)
             dispatchThreads(rawSplats.count, encoder: countEncoder, pipelineState: tileCountPipelineState)
             countEncoder.endEncoding()
         }
