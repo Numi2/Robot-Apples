@@ -187,7 +187,12 @@ public struct RobotCapturePreparer: Sendable {
                     position: frame.cameraTransform.translation,
                     orientation: frame.cameraTransform.rotation.value
                 ),
-                timestamp: frame.timestamp
+                timestamp: frame.timestamp,
+                calibration: SplatFrameCalibration(
+                    intrinsics: frame.intrinsics,
+                    resolution: frame.intrinsics.map { Resolution(width: $0.width, height: $0.height) },
+                    trackingQuality: frame.trackingQuality
+                )
             )
         }
 

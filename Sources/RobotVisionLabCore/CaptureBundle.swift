@@ -141,11 +141,34 @@ public struct SplatTrainingFrame: Codable, Equatable, Sendable {
     public var imageURL: URL
     public var pose: Pose3D
     public var timestamp: TimeInterval
+    public var calibration: SplatFrameCalibration?
 
-    public init(imageURL: URL, pose: Pose3D, timestamp: TimeInterval) {
+    public init(
+        imageURL: URL,
+        pose: Pose3D,
+        timestamp: TimeInterval,
+        calibration: SplatFrameCalibration? = nil
+    ) {
         self.imageURL = imageURL
         self.pose = pose
         self.timestamp = timestamp
+        self.calibration = calibration
+    }
+}
+
+public struct SplatFrameCalibration: Codable, Equatable, Sendable {
+    public var intrinsics: CameraIntrinsics?
+    public var resolution: Resolution?
+    public var trackingQuality: TrackingQuality
+
+    public init(
+        intrinsics: CameraIntrinsics? = nil,
+        resolution: Resolution? = nil,
+        trackingQuality: TrackingQuality = .normal
+    ) {
+        self.intrinsics = intrinsics
+        self.resolution = resolution
+        self.trackingQuality = trackingQuality
     }
 }
 
@@ -185,10 +208,34 @@ public struct CaptureBundleExporter: Sendable {
         try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("splats", isDirectory: true), withIntermediateDirectories: true)
         let packagedScanSession = rebase(scanSession, into: outputDirectory)
 
+        let intrinsics = capturePlan?.rgbVideo.map {
+            CameraIntrinsics(
+                width: $0.targetResolution.width,
+                height: $0.targetResolution.height,
+                focalLengthPixels: SIMD2(
+                    Double($0.targetResolution.width),
+                    Double($0.targetResolution.width)
+                ),
+                principalPointPixels: SIMD2(
+                    Double($0.targetResolution.width) / 2.0,
+                    Double($0.targetResolution.height) / 2.0
+                )
+            )
+        }
+        let resolution = capturePlan?.rgbVideo?.targetResolution
         let trainingManifest = SplatTrainingManifest(
             id: "\(packagedScanSession.id)-splat-training",
             imageFrames: packagedScanSession.rgbFrames.map {
-                SplatTrainingFrame(imageURL: $0.imageURL, pose: $0.pose, timestamp: $0.timestamp)
+                SplatTrainingFrame(
+                    imageURL: $0.imageURL,
+                    pose: $0.pose,
+                    timestamp: $0.timestamp,
+                    calibration: SplatFrameCalibration(
+                        intrinsics: intrinsics,
+                        resolution: resolution,
+                        trackingQuality: .normal
+                    )
+                )
             },
             roomPlanGeometryURL: packagedScanSession.roomPlanModelURL,
             objectGeometryURLs: packagedScanSession.objectCaptureAssetURLs,
@@ -215,20 +262,6 @@ public struct CaptureBundleExporter: Sendable {
         let framesJSONLURL = outputDirectory.appendingPathComponent("frames.jsonl")
         let motionJSONLURL = outputDirectory.appendingPathComponent("motion.jsonl")
         let sessionJSONURL = outputDirectory.appendingPathComponent("session.json")
-        let intrinsics = capturePlan?.rgbVideo.map {
-            CameraIntrinsics(
-                width: $0.targetResolution.width,
-                height: $0.targetResolution.height,
-                focalLengthPixels: SIMD2(
-                    Double($0.targetResolution.width),
-                    Double($0.targetResolution.width)
-                ),
-                principalPointPixels: SIMD2(
-                    Double($0.targetResolution.width) / 2.0,
-                    Double($0.targetResolution.height) / 2.0
-                )
-            )
-        }
         let frameRecords = packagedScanSession.rgbFrames.enumerated().map { index, frame in
             RobotCaptureFrameRecord(
                 index: index,

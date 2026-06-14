@@ -424,7 +424,29 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         let splatTrainingManifest = SplatTrainingManifest(
             id: "\(scanSession.id)-splat-training",
             imageFrames: rgbFrames.map {
-                SplatTrainingFrame(imageURL: $0.imageURL, pose: $0.pose, timestamp: $0.timestamp)
+                SplatTrainingFrame(
+                    imageURL: $0.imageURL,
+                    pose: $0.pose,
+                    timestamp: $0.timestamp,
+                    calibration: SplatFrameCalibration(
+                        intrinsics: plan?.rgbVideo.map {
+                            CameraIntrinsics(
+                                width: $0.targetResolution.width,
+                                height: $0.targetResolution.height,
+                                focalLengthPixels: SIMD2(
+                                    Double($0.targetResolution.width),
+                                    Double($0.targetResolution.width)
+                                ),
+                                principalPointPixels: SIMD2(
+                                    Double($0.targetResolution.width) / 2.0,
+                                    Double($0.targetResolution.height) / 2.0
+                                )
+                            )
+                        },
+                        resolution: plan?.rgbVideo?.targetResolution,
+                        trackingQuality: .normal
+                    )
+                )
             },
             roomPlanGeometryURL: roomPlanModelURL,
             objectGeometryURLs: objectCaptureAssetURLs,

@@ -89,7 +89,8 @@ The required iPhone capture output is a `.robotcapture` package containing:
 - `RobotCaptureImporter` and `RobotCapturePreparer`: Mac ingest, validation,
   route creation, train/eval split, and `prepared_splat_training_manifest.json`.
 - `SplatTrainingPackageBuilder`: writes Apple MLX training assets for building
-  a Gaussian splat PLY from captured RGB views and ARKit/RoomPlan-aligned poses.
+  a Gaussian splat PLY from captured RGB views, ARKit/RoomPlan-aligned poses,
+  camera intrinsics, tracking quality, and deterministic train/validation splits.
 - `GaussianSplatImporter`: `.ply` and binary `.splat` inspection.
 - `RouteDerivedSplatSeedWriter`: valid route-derived Gaussian splat seed PLY
   generation from captured camera poses.

@@ -8,6 +8,9 @@ public struct SplatTrainingPackageManifest: Codable, Equatable, Sendable {
     public var trainScriptURL: URL
     public var outputURL: URL
     public var frameCount: Int
+    public var trainingFrameCount: Int
+    public var validationFrameCount: Int
+    public var calibratedFrameCount: Int
     public var notes: [String]
 
     public init(
@@ -17,6 +20,9 @@ public struct SplatTrainingPackageManifest: Codable, Equatable, Sendable {
         trainScriptURL: URL,
         outputURL: URL,
         frameCount: Int,
+        trainingFrameCount: Int,
+        validationFrameCount: Int,
+        calibratedFrameCount: Int,
         notes: [String]
     ) {
         self.id = id
@@ -25,6 +31,9 @@ public struct SplatTrainingPackageManifest: Codable, Equatable, Sendable {
         self.trainScriptURL = trainScriptURL
         self.outputURL = outputURL
         self.frameCount = frameCount
+        self.trainingFrameCount = trainingFrameCount
+        self.validationFrameCount = validationFrameCount
+        self.calibratedFrameCount = calibratedFrameCount
         self.notes = notes
     }
 }
@@ -44,6 +53,8 @@ public struct SplatTrainingPackageBuilder: Sendable {
 
         try writeFrameIndex(job.manifest, to: frameIndexURL)
         try trainingScript().write(to: trainScriptURL, atomically: true, encoding: .utf8)
+        let split = SplatTrainingFrameSplit(frameCount: job.manifest.imageFrames.count)
+        let calibratedFrameCount = job.manifest.imageFrames.filter { $0.calibration?.intrinsics != nil }.count
 
         let package = SplatTrainingPackageManifest(
             id: "\(job.manifest.id)-apple-splat-training-package",
@@ -52,9 +63,13 @@ public struct SplatTrainingPackageBuilder: Sendable {
             trainScriptURL: trainScriptURL,
             outputURL: job.manifest.expectedOutput.targetURL,
             frameCount: job.manifest.imageFrames.count,
+            trainingFrameCount: split.trainingCount,
+            validationFrameCount: split.validationCount,
+            calibratedFrameCount: calibratedFrameCount,
             notes: [
                 "Uses Apple MLX on Apple Silicon for local differentiable Gaussian parameter optimization.",
-                "Consumes captured RGB frame URLs and ARKit/RoomPlan-aligned camera poses from prepared_splat_training_manifest.json.",
+                "Consumes captured RGB frame URLs, camera intrinsics, tracking quality, and ARKit/RoomPlan-aligned camera poses.",
+                "Seeds Gaussians along quaternion-rotated camera rays from captured viewpoints before MLX optimization.",
                 "Exports a Gaussian PLY asset for the native Metal renderer and .robotscene packaging."
             ]
         )
@@ -67,13 +82,18 @@ public struct SplatTrainingPackageBuilder: Sendable {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys]
+        let split = SplatTrainingFrameSplit(frameCount: manifest.imageFrames.count)
         let lines = try manifest.imageFrames.enumerated().map { index, frame in
             let record = SplatTrainingFrameRecord(
                 index: index,
+                split: split.role(for: index),
                 imageURL: frame.imageURL,
                 timestamp: frame.timestamp,
                 position: frame.pose.position,
-                orientation: frame.pose.orientation.vector
+                orientation: frame.pose.orientation.vector,
+                intrinsics: frame.calibration?.intrinsics,
+                resolution: frame.calibration?.resolution,
+                trackingQuality: frame.calibration?.trackingQuality ?? .normal
             )
             return String(data: try encoder.encode(record), encoding: .utf8) ?? "{}"
         }
@@ -112,17 +132,63 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 return np.array([value["x"], value["y"], value["z"]], dtype=np.float32)
             return np.array(value[:3], dtype=np.float32)
 
+        def quaternion(value):
+            if isinstance(value, dict):
+                return np.array([value["x"], value["y"], value["z"], value["w"]], dtype=np.float32)
+            return np.array(value[:4], dtype=np.float32)
+
+        def rotate_vector(q, v):
+            q_xyz = q[:3]
+            q_w = q[3]
+            t = 2.0 * np.cross(q_xyz, v)
+            return v + q_w * t + np.cross(q_xyz, t)
+
+        def frame_intrinsics(frame):
+            intrinsics = frame.get("intrinsics") or {}
+            resolution = frame.get("resolution") or {}
+            width = int(intrinsics.get("width") or resolution.get("width") or 1920)
+            height = int(intrinsics.get("height") or resolution.get("height") or 1080)
+            focal = intrinsics.get("focalLengthPixels") or [float(width), float(width)]
+            principal = intrinsics.get("principalPointPixels") or [float(width) / 2.0, float(height) / 2.0]
+            return width, height, vector2(focal), vector2(principal)
+
+        def vector2(value):
+            if isinstance(value, dict):
+                return np.array([value["x"], value["y"]], dtype=np.float32)
+            return np.array(value[:2], dtype=np.float32)
+
+        def camera_ray(frame, offset, splats_per_frame):
+            width, height, focal, principal = frame_intrinsics(frame)
+            columns = max(int(np.ceil(np.sqrt(splats_per_frame))), 1)
+            row = offset // columns
+            column = offset % columns
+            u = (column + 0.5) / float(columns) * width
+            v = (row + 0.5) / float(columns) * height
+            camera_direction = np.array(
+                [
+                    (u - principal[0]) / max(focal[0], 1.0),
+                    -(v - principal[1]) / max(focal[1], 1.0),
+                    -1.0,
+                ],
+                dtype=np.float32,
+            )
+            camera_direction /= max(np.linalg.norm(camera_direction), 1e-6)
+            return rotate_vector(quaternion(frame["orientation"]), camera_direction)
+
         def seed_gaussians(frames, splats_per_frame):
             positions = []
             colors = []
             for frame in frames:
+                if frame.get("split") != "train":
+                    continue
+                if frame.get("trackingQuality") == "notAvailable":
+                    continue
                 origin = vector3(frame["position"])
                 color = average_rgb(frame["imageURL"])
                 for offset in range(splats_per_frame):
                     t = (offset + 1) / float(splats_per_frame + 1)
-                    lateral = ((offset % 5) - 2) * 0.035
-                    height = ((offset // 5) % 3 - 1) * 0.035
-                    positions.append(origin + np.array([lateral, height, -0.4 - t * 2.0], dtype=np.float32))
+                    ray = camera_ray(frame, offset, splats_per_frame)
+                    positions.append(origin + ray * (0.4 + t * 2.0))
                     colors.append(color)
             return np.asarray(positions, dtype=np.float32), np.asarray(colors, dtype=np.float32)
 
@@ -161,6 +227,8 @@ public struct SplatTrainingPackageBuilder: Sendable {
             if not frames:
                 raise ValueError("No training frames were provided.")
             seed_positions, seed_colors = seed_gaussians(frames, max(args.splats_per_frame, 1))
+            if len(seed_positions) == 0:
+                raise ValueError("No trainable frames were available after split and tracking-quality filtering.")
             positions = mx.array(seed_positions)
             colors = mx.array(seed_colors)
             opacity_logits = mx.zeros((seed_positions.shape[0],), dtype=mx.float32)
@@ -195,6 +263,9 @@ public struct SplatTrainingPackageBuilder: Sendable {
             )
             summary = {
                 "frames": len(frames),
+                "train_frames": len([frame for frame in frames if frame.get("split") == "train"]),
+                "validation_frames": len([frame for frame in frames if frame.get("split") == "validation"]),
+                "calibrated_frames": len([frame for frame in frames if frame.get("intrinsics") is not None]),
                 "splats": int(seed_positions.shape[0]),
                 "output": str(Path(args.output).resolve()),
                 "runtime": "Apple MLX",
@@ -210,8 +281,34 @@ public struct SplatTrainingPackageBuilder: Sendable {
 
 private struct SplatTrainingFrameRecord: Codable {
     var index: Int
+    var split: SplatTrainingFrameSplit.Role
     var imageURL: URL
     var timestamp: TimeInterval
     var position: SIMD3<Double>
     var orientation: SIMD4<Double>
+    var intrinsics: CameraIntrinsics?
+    var resolution: Resolution?
+    var trackingQuality: TrackingQuality
+}
+
+private struct SplatTrainingFrameSplit {
+    enum Role: String, Codable {
+        case train
+        case validation
+    }
+
+    let frameCount: Int
+
+    var trainingCount: Int {
+        (0..<frameCount).filter { role(for: $0) == .train }.count
+    }
+
+    var validationCount: Int {
+        (0..<frameCount).filter { role(for: $0) == .validation }.count
+    }
+
+    func role(for index: Int) -> Role {
+        guard frameCount > 1 else { return .train }
+        return (index + 1).isMultiple(of: 5) || index == frameCount - 1 ? .validation : .train
+    }
 }

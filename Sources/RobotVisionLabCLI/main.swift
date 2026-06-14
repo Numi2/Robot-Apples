@@ -735,10 +735,22 @@ struct RobotVisionLabCLI {
     }
 
     private static func writeDemoSplatTrainingManifest(outputDirectory: URL) throws -> URL {
+        let capturePlan = demoCapturePlan()
+        let calibration = capturePlan.rgbVideo.map {
+            SplatFrameCalibration(
+                intrinsics: CameraIntrinsics.fromHorizontalFOV(
+                    width: $0.targetResolution.width,
+                    height: $0.targetResolution.height,
+                    horizontalFOVDegrees: 70
+                ),
+                resolution: $0.targetResolution,
+                trackingQuality: .normal
+            )
+        }
         let manifest = SplatTrainingManifest(
             id: "demo-room-scan-splat-training",
             imageFrames: demoScanSession().rgbFrames.map {
-                SplatTrainingFrame(imageURL: $0.imageURL, pose: $0.pose, timestamp: $0.timestamp)
+                SplatTrainingFrame(imageURL: $0.imageURL, pose: $0.pose, timestamp: $0.timestamp, calibration: calibration)
             },
             roomPlanGeometryURL: URL(fileURLWithPath: "CaptureBundle/roomplan/room.usdz"),
             objectGeometryURLs: [

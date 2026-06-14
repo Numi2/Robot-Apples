@@ -544,6 +544,11 @@ private struct AppleSiliconDetailPanel: View {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
                     GridRow {
                         MetricCell(title: "Frames", value: "\(package.frameCount)")
+                        MetricCell(title: "Train", value: "\(package.trainingFrameCount)")
+                        MetricCell(title: "Validation", value: "\(package.validationFrameCount)")
+                    }
+                    GridRow {
+                        MetricCell(title: "Calibrated", value: "\(package.calibratedFrameCount)")
                         MetricCell(title: "Index", value: package.frameIndexURL.lastPathComponent)
                         MetricCell(title: "Output", value: package.outputURL.lastPathComponent)
                     }
