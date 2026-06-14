@@ -77,6 +77,7 @@ swift run robot-vision-lab --output ./GeneratedDataset --use-expanded-route --re
 swift run robot-vision-lab --output ./GeneratedDataset --evaluate-coreml --evaluate-model ./Model.mlpackage
 swift run robot-vision-lab --output ./GeneratedDataset --plan-mlx-evaluation --evaluate-model ./mlx-model
 swift run robot-vision-lab --output ./GeneratedDataset --write-model-adapter-schemas
+swift run robot-vision-lab --output ./GeneratedDataset --write-mlx-training-package
 swift run robot-vision-lab --output ./GeneratedDataset --plan-splat-training
 swift run robot-vision-lab --output ./GeneratedDataset --metal-render-plan
 ```
@@ -131,11 +132,14 @@ developer tool for exercising the native contracts.
 - `SplatTrainingJob`: Apple-native training plan for MLX/Create ML/Metal
   Performance Shaders workflows.
 - `CoreMLDatasetEvaluator`: Core ML evaluation path for deployed on-device
-  models.
+  models using rendered RGB/depth/pose/intrinsics sample adapters.
 - `MLXEvaluationPlan`: Apple Silicon MLX research/evaluation plan metadata.
-- `NativeModelAdapterSchema`: Core ML and MLX input/output schema contract for
-  image, depth, pose, intrinsics, confidence, obstacle/free-space probability,
-  localization uncertainty, and failure-kind outputs.
+- `RenderedDatasetLoader` and `NativeModelAdapterSchema`: Core ML and MLX
+  input/output adapters for rendered RGB/depth, pose, intrinsics, confidence,
+  obstacle/free-space probability, localization uncertainty, and failure-kind
+  outputs.
+- `MLXTrainingPackageBuilder`: writes a local Apple Silicon MLX training package
+  with rendered-dataset loader code and Core ML export/conversion artifacts.
 - `RobotScenePackageExporter`: writes `.robotscene` packages for Vision Pro
   spatial review.
 - `FailureMapMarker`: spatial markers for confident, blocked, uncertain,

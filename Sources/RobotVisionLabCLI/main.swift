@@ -102,6 +102,9 @@ struct RobotVisionLabCLI {
         if CommandLine.arguments.contains("--write-model-adapter-schemas") {
             try writeModelAdapterSchemas(outputDirectory: outputDirectory)
         }
+        if CommandLine.arguments.contains("--write-mlx-training-package") {
+            try writeMLXTrainingPackage(manifest: manifest, outputDirectory: outputDirectory)
+        }
         if CommandLine.arguments.contains("--evaluate-baseline") || CommandLine.arguments.contains("--evaluate-coreml") || CommandLine.arguments.contains("--plan-mlx-evaluation") {
             try runModelEvaluation(manifest: manifest, outputDirectory: outputDirectory)
         }
@@ -460,6 +463,19 @@ struct RobotVisionLabCLI {
             try writer.write(inspected, to: schemaDirectory.appendingPathComponent("inspected_coreml_schema.json"))
         }
         print("Wrote native model adapter schemas to \(schemaDirectory.path)")
+    }
+
+    private static func writeMLXTrainingPackage(manifest: DatasetManifest, outputDirectory: URL) throws {
+        let datasetManifestURL = outputDirectory.appendingPathComponent("dataset.json")
+        let packageDirectory = outputDirectory.appendingPathComponent("MLXTrainingPackage", isDirectory: true)
+        let package = try MLXTrainingPackageBuilder().writePackage(
+            manifest: manifest,
+            datasetManifestURL: datasetManifestURL,
+            outputDirectory: packageDirectory
+        )
+        print("Wrote Apple Silicon MLX training package to \(packageDirectory.path)")
+        print("Training script: \(package.trainScriptURL.path)")
+        print("Core ML export script: \(package.exportScriptURL.path)")
     }
 
     private static func renderSplatPointFrames(manifest: DatasetManifest, outputDirectory: URL) throws {
