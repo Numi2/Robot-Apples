@@ -41,6 +41,7 @@ public struct SpatialReviewSceneSummary: Codable, Equatable, Sendable {
     public var navigationNodeCount: Int
     public var navigationEdgeCount: Int
     public var failureMarkerCount: Int
+    public var failureMarkerCountsBySource: [FailureEvidenceSource: Int]
     public var evaluationFrameCount: Int
     public var availableLayers: Set<SpatialReviewLayer>
 
@@ -52,6 +53,7 @@ public struct SpatialReviewSceneSummary: Codable, Equatable, Sendable {
         navigationNodeCount: Int,
         navigationEdgeCount: Int,
         failureMarkerCount: Int,
+        failureMarkerCountsBySource: [FailureEvidenceSource: Int] = [:],
         evaluationFrameCount: Int,
         availableLayers: Set<SpatialReviewLayer>
     ) {
@@ -62,6 +64,7 @@ public struct SpatialReviewSceneSummary: Codable, Equatable, Sendable {
         self.navigationNodeCount = navigationNodeCount
         self.navigationEdgeCount = navigationEdgeCount
         self.failureMarkerCount = failureMarkerCount
+        self.failureMarkerCountsBySource = failureMarkerCountsBySource
         self.evaluationFrameCount = evaluationFrameCount
         self.availableLayers = availableLayers
     }
@@ -108,6 +111,7 @@ public final class SpatialReviewModel {
             navigationNodeCount: graph?.nodes.count ?? 0,
             navigationEdgeCount: graph?.edges.count ?? 0,
             failureMarkerCount: failureMap.count,
+            failureMarkerCountsBySource: failureMarkerCountsBySource(failureMap),
             evaluationFrameCount: evaluation?.summary.frameCount ?? 0,
             availableLayers: layers
         )
@@ -143,5 +147,15 @@ public final class SpatialReviewModel {
             return nil
         }
         return try JSONDecoder.robotVisionLabDecoder.decode(T.self, from: Data(contentsOf: resolved))
+    }
+
+    private func failureMarkerCountsBySource(_ markers: [FailureMapMarker]) -> [FailureEvidenceSource: Int] {
+        var counts: [FailureEvidenceSource: Int] = [:]
+        for marker in markers {
+            for source in marker.evidenceSources {
+                counts[source, default: 0] += 1
+            }
+        }
+        return counts
     }
 }

@@ -766,9 +766,14 @@ private struct FailureMapViewer: View {
                                 Text(marker.note)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                Text("Frame \(marker.frameIndex.map(String.init) ?? "-") · \(String(format: "%.2f", marker.confidence))")
+                                Text("Frame \(marker.frameIndex.map(String.init) ?? "-") · \(String(format: "%.2f", marker.confidence)) · \(marker.evidenceSources.reviewLabel)")
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
+                                if let lidar = marker.lidarEvidence {
+                                    Text("LiDAR valid \(String(format: "%.0f%%", lidar.validRayFraction * 100)) · near \(String(format: "%.0f%%", lidar.nearFieldOccupancyRate * 100)) · dropout \(String(format: "%.0f%%", lidar.dropoutRate * 100))")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
                             }
                         }
                     }
@@ -1046,6 +1051,39 @@ private extension FailureMarkerKind {
         case .visualAmbiguity: .purple
         case .badLighting: .orange
         case .lowTexture: .gray
+        }
+    }
+}
+
+private extension Set where Element == FailureEvidenceSource {
+    var reviewLabel: String {
+        if isEmpty { return "baseline" }
+        let priority: [FailureEvidenceSource] = [
+            .modelPrediction,
+            .syntheticLiDARGeometry,
+            .nativeRenderedLabel,
+            .routeCoverage,
+            .sceneBoundary,
+            .imageQuality,
+            .geometryPrior
+        ]
+        return priority
+            .filter { contains($0) }
+            .map(\.reviewTitle)
+            .joined(separator: " + ")
+    }
+}
+
+private extension FailureEvidenceSource {
+    var reviewTitle: String {
+        switch self {
+        case .modelPrediction: "model"
+        case .nativeRenderedLabel: "render"
+        case .syntheticLiDARGeometry: "LiDAR"
+        case .routeCoverage: "route"
+        case .sceneBoundary: "bounds"
+        case .imageQuality: "image"
+        case .geometryPrior: "geometry"
         }
     }
 }

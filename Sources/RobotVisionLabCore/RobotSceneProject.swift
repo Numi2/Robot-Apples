@@ -171,6 +171,38 @@ public enum FailureMarkerKind: String, Codable, CaseIterable, Sendable {
     case lowTexture
 }
 
+public enum FailureEvidenceSource: String, Codable, CaseIterable, Sendable {
+    case modelPrediction
+    case nativeRenderedLabel
+    case syntheticLiDARGeometry
+    case routeCoverage
+    case sceneBoundary
+    case imageQuality
+    case geometryPrior
+}
+
+public struct FailureMapLiDAREvidence: Codable, Equatable, Sendable {
+    public var validRayFraction: Double
+    public var dropoutRate: Double
+    public var lowSupportRate: Double
+    public var nearFieldOccupancyRate: Double
+    public var meanRangeMeters: Double?
+
+    public init(
+        validRayFraction: Double,
+        dropoutRate: Double,
+        lowSupportRate: Double,
+        nearFieldOccupancyRate: Double,
+        meanRangeMeters: Double?
+    ) {
+        self.validRayFraction = validRayFraction
+        self.dropoutRate = dropoutRate
+        self.lowSupportRate = lowSupportRate
+        self.nearFieldOccupancyRate = nearFieldOccupancyRate
+        self.meanRangeMeters = meanRangeMeters
+    }
+}
+
 public struct FailureMapMarker: Codable, Equatable, Sendable {
     public var id: String
     public var frameIndex: Int?
@@ -178,6 +210,10 @@ public struct FailureMapMarker: Codable, Equatable, Sendable {
     public var kind: FailureMarkerKind
     public var confidence: Double
     public var note: String
+    public var evidenceSources: Set<FailureEvidenceSource>
+    public var modelLabel: String?
+    public var modelSource: String?
+    public var lidarEvidence: FailureMapLiDAREvidence?
 
     public init(
         id: String,
@@ -185,7 +221,11 @@ public struct FailureMapMarker: Codable, Equatable, Sendable {
         position: SIMD3<Double>,
         kind: FailureMarkerKind,
         confidence: Double,
-        note: String
+        note: String,
+        evidenceSources: Set<FailureEvidenceSource> = [],
+        modelLabel: String? = nil,
+        modelSource: String? = nil,
+        lidarEvidence: FailureMapLiDAREvidence? = nil
     ) {
         self.id = id
         self.frameIndex = frameIndex
@@ -193,6 +233,10 @@ public struct FailureMapMarker: Codable, Equatable, Sendable {
         self.kind = kind
         self.confidence = confidence
         self.note = note
+        self.evidenceSources = evidenceSources
+        self.modelLabel = modelLabel
+        self.modelSource = modelSource
+        self.lidarEvidence = lidarEvidence
     }
 }
 
@@ -409,7 +453,15 @@ public struct RobotScenePackageExporter: Sendable {
         var markers: [FailureMapMarker] = []
         var markerOrdinal = 0
 
-        func append(_ kind: FailureMarkerKind, confidence: Double, note: String) {
+        func append(
+            _ kind: FailureMarkerKind,
+            confidence: Double,
+            note: String,
+            evidenceSources: Set<FailureEvidenceSource>,
+            modelLabel: String? = nil,
+            modelSource: String? = nil,
+            lidarEvidence: FailureMapLiDAREvidence? = nil
+        ) {
             markerOrdinal += 1
             markers.append(FailureMapMarker(
                 id: "frame_\(frame.index)_\(kind.rawValue)_\(markerOrdinal)",
@@ -417,43 +469,86 @@ public struct RobotScenePackageExporter: Sendable {
                 position: frame.cameraPose.position,
                 kind: kind,
                 confidence: confidence,
-                note: note
+                note: note,
+                evidenceSources: evidenceSources,
+                modelLabel: modelLabel,
+                modelSource: modelSource,
+                lidarEvidence: lidarEvidence
             ))
         }
 
         if hasLightingOrImageDegradation(frame) {
-            append(.badLighting, confidence: 0.72, note: "Camera augmentation includes exposure, blur, noise, or compression degradation.")
-        }
-        for label in renderedFailureLabels(frame) {
-            append(label.kind, confidence: label.confidence, note: label.note)
-        }
-        for marker in calibratedModelMarkers(evaluation) {
-            append(marker.kind, confidence: marker.confidence, note: marker.note)
-        }
-        for prediction in failurePredictions(evaluation) {
             append(
-                prediction.kind,
-                confidence: prediction.confidence,
-                note: "Model prediction \(prediction.label) from \(prediction.source)."
+                .badLighting,
+                confidence: 0.72,
+                note: "Camera augmentation includes exposure, blur, noise, or compression degradation.",
+                evidenceSources: [.imageQuality]
             )
         }
-        if isNearSceneBoundary(frame.cameraPose.position, bounds: manifest.scene.bounds) || predictsBlocked(evaluation) {
-            append(.blockedPrediction, confidence: predictsBlocked(evaluation) ? 0.82 : 0.62, note: "Frame is near scene boundary or model/evaluator indicates blocked traversal.")
+        for label in renderedFailureLabels(frame) {
+            append(label.kind, confidence: label.confidence, note: label.note, evidenceSources: [.nativeRenderedLabel])
+        }
+        for marker in calibratedModelMarkers(evaluation) {
+            append(
+                marker.kind,
+                confidence: marker.confidence,
+                note: marker.note,
+                evidenceSources: [.modelPrediction],
+                modelLabel: marker.label,
+                modelSource: marker.source
+            )
+        }
+        for marker in lidarFailureMarkers(frame) {
+            append(
+                marker.kind,
+                confidence: marker.confidence,
+                note: marker.note,
+                evidenceSources: [.syntheticLiDARGeometry],
+                lidarEvidence: marker.evidence
+            )
+        }
+        if isNearSceneBoundary(frame.cameraPose.position, bounds: manifest.scene.bounds) {
+            append(
+                .blockedPrediction,
+                confidence: 0.62,
+                note: "Frame is near the splat scene boundary; inspect for incomplete capture or invalid robot traversal.",
+                evidenceSources: [.sceneBoundary]
+            )
         }
         if hasLowConfidencePrediction(evaluation) {
-            append(.uncertainLocalization, confidence: 0.68, note: "Evaluation report contains low-confidence predictions or frame warnings.")
+            append(
+                .uncertainLocalization,
+                confidence: 0.68,
+                note: "Evaluation report contains low-confidence predictions or frame warnings.",
+                evidenceSources: [.modelPrediction]
+            )
         }
         if hasMissingTrainingView(frame, allPositions: allPositions) {
-            append(.missingTrainingViews, confidence: 0.7, note: "Pose is isolated from nearby route samples; additional capture views may improve coverage.")
+            append(
+                .missingTrainingViews,
+                confidence: 0.7,
+                note: "Pose is isolated from nearby route samples; additional capture views may improve coverage.",
+                evidenceSources: [.routeCoverage]
+            )
         }
         if hasVisualAmbiguity(frame, allPositions: allPositions) {
-            append(.visualAmbiguity, confidence: 0.58, note: "Nearby route samples have very similar positions, which may indicate repeated or ambiguous viewpoints.")
+            append(
+                .visualAmbiguity,
+                confidence: 0.58,
+                note: "Nearby route samples have very similar positions, which may indicate repeated or ambiguous viewpoints.",
+                evidenceSources: [.routeCoverage]
+            )
         }
         if hasLowTextureSignals(frame) {
-            append(.lowTexture, confidence: 0.6, note: "Frame lacks segmentation/manual/object label sources that would help disambiguate low-texture geometry.")
+            append(
+                .lowTexture,
+                confidence: 0.6,
+                note: "Frame lacks segmentation/manual/object label sources that would help disambiguate low-texture geometry.",
+                evidenceSources: [.geometryPrior]
+            )
         }
         if markers.isEmpty {
-            append(.confident, confidence: 0.95, note: "No baseline failure marker.")
+            append(.confident, confidence: 0.95, note: "No baseline failure marker.", evidenceSources: [])
         }
         return markers
     }
@@ -502,9 +597,9 @@ public struct RobotScenePackageExporter: Sendable {
         return !evaluation.warnings.isEmpty || evaluation.predictions.contains { $0.confidence < 0.55 }
     }
 
-    private func calibratedModelMarkers(_ evaluation: FrameEvaluationResult?) -> [(kind: FailureMarkerKind, confidence: Double, note: String)] {
+    private func calibratedModelMarkers(_ evaluation: FrameEvaluationResult?) -> [(kind: FailureMarkerKind, confidence: Double, note: String, label: String, source: String)] {
         guard let evaluation else { return [] }
-        var markers: [(kind: FailureMarkerKind, confidence: Double, note: String)] = []
+        var markers: [(kind: FailureMarkerKind, confidence: Double, note: String, label: String, source: String)] = []
         for prediction in evaluation.predictions {
             let label = prediction.label.lowercased()
             switch prediction.task {
@@ -513,14 +608,18 @@ public struct RobotScenePackageExporter: Sendable {
                     markers.append((
                         .blockedPrediction,
                         min(max(prediction.confidence, 0), 1),
-                        "Calibrated obstacle output \(prediction.label) from \(prediction.source)."
+                        "Calibrated obstacle output \(prediction.label) from \(prediction.source).",
+                        prediction.label,
+                        prediction.source
                     ))
                 }
                 if label.contains("free_path") && prediction.confidence >= 0.8 {
                     markers.append((
                         .confident,
                         min(max(prediction.confidence, 0), 1),
-                        "Calibrated free-space output from \(prediction.source)."
+                        "Calibrated free-space output from \(prediction.source).",
+                        prediction.label,
+                        prediction.source
                     ))
                 }
             case .failureCaseDetection:
@@ -528,14 +627,18 @@ public struct RobotScenePackageExporter: Sendable {
                     markers.append((
                         .uncertainLocalization,
                         min(max(prediction.confidence, 0), 1),
-                        "Calibrated localization uncertainty from \(prediction.source)."
+                        "Calibrated localization uncertainty from \(prediction.source).",
+                        prediction.label,
+                        prediction.source
                     ))
                 }
                 if let kind = prediction.failureKind, kind != .confident, prediction.confidence >= 0.45 {
                     markers.append((
                         kind,
                         min(max(prediction.confidence, 0), 1),
-                        "Calibrated failure-kind output \(prediction.label) from \(prediction.source)."
+                        "Calibrated failure-kind output \(prediction.label) from \(prediction.source).",
+                        prediction.label,
+                        prediction.source
                     ))
                 }
             case .segmentation:
@@ -543,7 +646,9 @@ public struct RobotScenePackageExporter: Sendable {
                     markers.append((
                         .missingTrainingViews,
                         min(max(prediction.confidence, 0), 1),
-                        "Calibrated segmentation gap from \(prediction.source)."
+                        "Calibrated segmentation gap from \(prediction.source).",
+                        prediction.label,
+                        prediction.source
                     ))
                 }
             case .navigationTargetDetection:
@@ -553,12 +658,56 @@ public struct RobotScenePackageExporter: Sendable {
         return markers
     }
 
-    private func failurePredictions(_ evaluation: FrameEvaluationResult?) -> [(kind: FailureMarkerKind, confidence: Double, label: String, source: String)] {
-        evaluation?.predictions.compactMap { prediction in
-            let kind = prediction.failureKind ?? failureKind(from: prediction.label)
-            guard let kind, kind != .confident else { return nil }
-            return (kind, prediction.confidence, prediction.label, prediction.source)
-        } ?? []
+    private func lidarFailureMarkers(_ frame: DatasetFrame) -> [(kind: FailureMarkerKind, confidence: Double, note: String, evidence: FailureMapLiDAREvidence)] {
+        guard let report = renderedLiDARReport(frame) else { return [] }
+        let rayCount = max(report.metrics.rayCount, 1)
+        let validRayCount = max(report.metrics.validRayCount, 1)
+        let validFraction = Double(report.metrics.validRayCount) / Double(rayCount)
+        let nearFieldOccupancy = Double(report.rays.filter { ray in
+            guard !ray.droppedOut, let point = ray.cameraPointMeters else { return false }
+            return abs(point.z) < 1.0
+        }.count) / Double(validRayCount)
+        let evidence = FailureMapLiDAREvidence(
+            validRayFraction: validFraction,
+            dropoutRate: report.metrics.dropoutRate,
+            lowSupportRate: report.metrics.lowSupportRate,
+            nearFieldOccupancyRate: nearFieldOccupancy,
+            meanRangeMeters: report.metrics.meanRangeMeters
+        )
+        var markers: [(kind: FailureMarkerKind, confidence: Double, note: String, evidence: FailureMapLiDAREvidence)] = []
+        if nearFieldOccupancy > 0.42 || (report.metrics.meanRangeMeters ?? .greatestFiniteMagnitude) < 1.2 {
+            markers.append((
+                .blockedPrediction,
+                min(0.94, 0.55 + nearFieldOccupancy * 0.55),
+                "Synthetic LiDAR returns show dense near-field occupancy in the robot camera frustum.",
+                evidence
+            ))
+        }
+        if report.metrics.dropoutRate > 0.45 || report.metrics.lowSupportRate > 0.38 {
+            markers.append((
+                .uncertainLocalization,
+                min(0.9, 0.45 + max(report.metrics.dropoutRate, report.metrics.lowSupportRate) * 0.5),
+                "Synthetic LiDAR geometry has high dropout or weak visibility support.",
+                evidence
+            ))
+        }
+        if validFraction < 0.35 || report.metrics.lowSupportRate > 0.52 {
+            markers.append((
+                .missingTrainingViews,
+                min(0.88, 0.5 + max(1 - validFraction, report.metrics.lowSupportRate) * 0.38),
+                "Synthetic LiDAR scan has low valid return coverage; capture additional views around this pose.",
+                evidence
+            ))
+        }
+        return markers
+    }
+
+    private func renderedLiDARReport(_ frame: DatasetFrame) -> RenderedLiDARScanReport? {
+        guard let url = frame.productURL(for: .lidarScan),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        return try? JSONDecoder.robotVisionLabDecoder.decode(RenderedLiDARScanReport.self, from: data)
     }
 
     private func failureKind(from label: String) -> FailureMarkerKind? {

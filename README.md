@@ -123,6 +123,9 @@ The required iPhone capture output is a `.robotcapture` package containing:
   rendered failure labels and synthetic LiDAR geometry, reporting model/native
   agreement plus blocked, uncertain, and missing-view rates for Mac and Vision
   Pro review.
+- `FailureMapMarker`: stores review-ready marker provenance, including model
+  prediction source, native render evidence, synthetic LiDAR geometry metrics,
+  route coverage, image quality, scene-boundary, and geometry-prior sources.
 - `MLXTrainingPackageBuilder`: trains a compact Apple MLX model from fused
   pose, intrinsics, RGB statistics, depth coverage, visibility coverage, and
   synthetic LiDAR geometry/occupancy metrics plus rendered failure labels, then
