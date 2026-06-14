@@ -106,6 +106,7 @@ struct RobotVisionLabCLI {
         try DatasetExporter().writeManifestAndLabels(manifest, to: outputDirectory)
         if CommandLine.arguments.contains("--render-apple-native") || CommandLine.arguments.contains("--render-metal-splats") {
             try renderMetalSplatFrames(manifest: manifest, outputDirectory: outputDirectory)
+            _ = try DatasetExporter().writeStructuredGeometryProducts(manifest, to: outputDirectory)
             _ = try DatasetExporter().writeRenderedLiDARScans(manifest, to: outputDirectory)
             _ = try DatasetExporter().writeRenderedFailureLabels(manifest, to: outputDirectory)
             print("Rendered native Metal Gaussian splat artifacts")
@@ -277,7 +278,7 @@ struct RobotVisionLabCLI {
                 .cameraHeightJitterMeters(0.03),
                 .yawJitterDegrees(2.0)
             ],
-            labelSources: []
+            labelSources: labelSources()
         )
     }
 

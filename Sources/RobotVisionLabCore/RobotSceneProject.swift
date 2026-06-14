@@ -507,6 +507,14 @@ public struct RobotScenePackageExporter: Sendable {
                 lidarEvidence: marker.evidence
             )
         }
+        for marker in structuredGeometryFailureMarkers(frame) {
+            append(
+                marker.kind,
+                confidence: marker.confidence,
+                note: marker.note,
+                evidenceSources: [.geometryPrior]
+            )
+        }
         if isNearSceneBoundary(frame.cameraPose.position, bounds: manifest.scene.bounds) {
             append(
                 .blockedPrediction,
@@ -710,6 +718,34 @@ public struct RobotScenePackageExporter: Sendable {
         return try? JSONDecoder.robotVisionLabDecoder.decode(RenderedLiDARScanReport.self, from: data)
     }
 
+    private func structuredGeometryFailureMarkers(_ frame: DatasetFrame) -> [(kind: FailureMarkerKind, confidence: Double, note: String)] {
+        guard let report = structuredGeometryReport(frame) else { return [] }
+        var markers: [(kind: FailureMarkerKind, confidence: Double, note: String)] = []
+        if report.obstacleProbability >= 0.5 {
+            markers.append((
+                .blockedPrediction,
+                min(0.9, 0.45 + report.obstacleProbability * 0.45),
+                "RoomPlan/Object Capture geometry indicates obstacle-prior overlap in the robot camera view."
+            ))
+        }
+        if hasStructuredGeometrySources(frame), report.segmentationHints.isEmpty {
+            markers.append((
+                .missingTrainingViews,
+                0.62,
+                "Structured geometry is linked, but no RoomPlan/Object Capture layer projects into this frame."
+            ))
+        }
+        return markers
+    }
+
+    private func structuredGeometryReport(_ frame: DatasetFrame) -> StructuredGeometryFrameProductReport? {
+        guard let url = frame.productURL(for: .obstacleMask) ?? frame.productURL(for: .segmentation),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        return try? JSONDecoder.robotVisionLabDecoder.decode(StructuredGeometryFrameProductReport.self, from: data)
+    }
+
     private func failureKind(from label: String) -> FailureMarkerKind? {
         let normalized = label.lowercased()
         if normalized.contains("blocked") || normalized.contains("collision") || normalized.contains("obstacle") {
@@ -747,13 +783,25 @@ public struct RobotScenePackageExporter: Sendable {
     }
 
     private func hasLowTextureSignals(_ frame: DatasetFrame) -> Bool {
-        let hasGeometryLabels = frame.labelSources.contains {
+        return !hasStructuredGeometrySources(frame) || !hasSegmentationHints(frame)
+    }
+
+    private func hasStructuredGeometrySources(_ frame: DatasetFrame) -> Bool {
+        frame.labelSources.contains {
             if case .roomPlanGeometry = $0 { return true }
             if case .objectCaptureMesh = $0 { return true }
             if case .manualAnnotations = $0 { return true }
             return false
         }
-        return !hasGeometryLabels || frame.productURL(for: .segmentation) == nil
+    }
+
+    private func hasSegmentationHints(_ frame: DatasetFrame) -> Bool {
+        guard let url = frame.productURL(for: .segmentation),
+              let data = try? Data(contentsOf: url),
+              let report = try? JSONDecoder.robotVisionLabDecoder.decode(StructuredGeometryFrameProductReport.self, from: data) else {
+            return false
+        }
+        return !report.segmentationHints.isEmpty
     }
 }
 

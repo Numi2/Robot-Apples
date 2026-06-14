@@ -393,6 +393,10 @@ public struct DatasetExporter: Sendable {
         try RenderedLiDARSimulator().writeReports(for: manifest, to: outputDirectory)
     }
 
+    public func writeStructuredGeometryProducts(_ manifest: DatasetManifest, to outputDirectory: URL) throws -> [StructuredGeometryFrameProductReport] {
+        try StructuredGeometryProductWriter().writeProducts(for: manifest, to: outputDirectory)
+    }
+
     private func writePose(_ frame: DatasetFrame, encoder: JSONEncoder, outputDirectory: URL) throws {
         let poseURL = outputDirectory
             .appendingPathComponent(RenderProduct.pose.rawValue, isDirectory: true)

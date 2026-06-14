@@ -47,6 +47,9 @@ Fixture paths must not be wired into Mac workstation product actions.
 - `.robotscene` failure maps carry structured evidence provenance for model
   predictions, native rendered labels, synthetic LiDAR geometry, route coverage,
   image quality, scene boundaries, and geometry priors.
+- RoomPlan/Object Capture label sources produce queryable geometry layers plus
+  per-frame segmentation and obstacle-prior JSON products before MLX/Core ML
+  training package generation.
 
 ## Apple Documentation Anchors
 
@@ -63,7 +66,7 @@ Fixture paths must not be wired into Mac workstation product actions.
 
 - Replace any generated fixture dataset dependencies in product docs with
   `.robotcapture` and imported splat workflows.
-- Promote structured geometry from metadata priors to spatial masks by parsing
-  RoomPlan/Object Capture geometry into renderable, queryable scene layers.
+- Replace conservative RoomPlan/Object Capture layer inference with richer USD
+  semantic extraction where CapturedRoom element metadata is available.
 - Add CI-quality command coverage for strict package validation, native Metal
   render planning, MLX package generation, and Core ML evaluation plumbing.
