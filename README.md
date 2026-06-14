@@ -121,8 +121,8 @@ developer tool for exercising the native contracts.
   splats in the vertex shader, projects anisotropic covariance into screen
   space, runs Metal compute passes for tile counts, prefix offsets, compaction,
   per-tile depth sorting, and vertex-buffer construction, composites Gaussian
-  point discs on the GPU, and writes RGB, GPU-derived depth images, GPU-derived
-  visibility images, diagnostic depth/visibility summaries, and tile-bin
+  point discs on the GPU, and writes RGB plus dense Gaussian-footprint
+  depth/visibility images, diagnostic depth/visibility summaries, and tile-bin
   products.
 - `MetalGaussianSplatRenderConfiguration`: controls tile size and per-frame
   splat budget for larger Apple Silicon render jobs.
@@ -175,7 +175,7 @@ developer tool for exercising the native contracts.
      per-tile sort, and vertex-buffer construction are in place.
    - Compute covariance projection now follows the same scale/rotation plus
      camera-Jacobian path as the CPU diagnostic projection.
-   - GPU-derived depth and visibility images are in place.
+   - GPU-derived dense depth and visibility images are in place.
    - Tile size and per-frame splat budgets are configurable.
    - Add tiled streaming for scenes larger than local Metal working-set budgets.
 

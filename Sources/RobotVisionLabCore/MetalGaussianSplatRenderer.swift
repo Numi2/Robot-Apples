@@ -1849,14 +1849,31 @@ kernel void robot_write_depth_visibility(
     }
     uint width = max(image.x, 1u);
     uint height = max(image.y, 1u);
-    int x = int(round(splat.centerDepth.x));
-    int y = int(round(splat.centerDepth.y));
-    if (x < 0 || y < 0 || x >= int(width) || y >= int(height)) {
-        return;
+    float radius = clamp(splat.covarianceRadius.w, 1.0, 128.0);
+    int minX = max(0, int(floor(splat.centerDepth.x - radius)));
+    int minY = max(0, int(floor(splat.centerDepth.y - radius)));
+    int maxX = min(int(width) - 1, int(ceil(splat.centerDepth.x + radius)));
+    int maxY = min(int(height) - 1, int(ceil(splat.centerDepth.y + radius)));
+    float invA = splat.inverseCovariance.x;
+    float invB = splat.inverseCovariance.y;
+    float invD = splat.inverseCovariance.z;
+    for (int y = minY; y <= maxY; y += 1) {
+        for (int x = minX; x <= maxX; x += 1) {
+            float2 offset = float2(float(x) + 0.5 - splat.centerDepth.x, float(y) + 0.5 - splat.centerDepth.y);
+            float mahalanobis = offset.x * offset.x * invA
+                + 2.0 * offset.x * offset.y * invB
+                + offset.y * offset.y * invD;
+            if (mahalanobis > 9.0) {
+                continue;
+            }
+            uint pixelIndex = uint(y) * width + uint(x);
+            float weight = exp(-0.5 * mahalanobis);
+            if (weight > 0.03) {
+                depthPixels[pixelIndex] = min(depthPixels[pixelIndex], splat.centerDepth.z);
+                atomic_fetch_add_explicit(&visibilityPixels[pixelIndex], max(1u, uint(round(weight * 255.0))), memory_order_relaxed);
+            }
+        }
     }
-    uint pixelIndex = uint(y) * width + uint(x);
-    depthPixels[pixelIndex] = min(depthPixels[pixelIndex], splat.centerDepth.z);
-    atomic_fetch_add_explicit(&visibilityPixels[pixelIndex], 1u, memory_order_relaxed);
 }
 
 vertex VertexOut robot_splat_vertex(
