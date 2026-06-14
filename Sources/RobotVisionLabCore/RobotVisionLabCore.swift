@@ -69,7 +69,7 @@ public struct CapturedLiDARDepthMetadata: Codable, Equatable, Sendable {
     public var confidenceFormat: String?
     public var unit: WorldUnit
     public var cameraPose: Pose3D
-    public var intrinsics: CameraIntrinsics?
+    public var intrinsics: CameraIntrinsics
     public var depthURL: URL
     public var confidenceURL: URL?
     public var notes: String
@@ -82,7 +82,7 @@ public struct CapturedLiDARDepthMetadata: Codable, Equatable, Sendable {
         confidenceFormat: String? = nil,
         unit: WorldUnit = .meters,
         cameraPose: Pose3D,
-        intrinsics: CameraIntrinsics? = nil,
+        intrinsics: CameraIntrinsics,
         depthURL: URL,
         confidenceURL: URL? = nil,
         notes: String = ""

@@ -5,9 +5,11 @@ public struct SplatTrainingPackageManifest: Codable, Equatable, Sendable {
     public var id: String
     public var sourceManifestURL: URL
     public var frameIndexURL: URL
+    public var depthPriorIndexURL: URL?
     public var trainScriptURL: URL
     public var outputURL: URL
     public var frameCount: Int
+    public var lidarFrameCount: Int
     public var trainingFrameCount: Int
     public var validationFrameCount: Int
     public var calibratedFrameCount: Int
@@ -17,9 +19,11 @@ public struct SplatTrainingPackageManifest: Codable, Equatable, Sendable {
         id: String,
         sourceManifestURL: URL,
         frameIndexURL: URL,
+        depthPriorIndexURL: URL? = nil,
         trainScriptURL: URL,
         outputURL: URL,
         frameCount: Int,
+        lidarFrameCount: Int,
         trainingFrameCount: Int,
         validationFrameCount: Int,
         calibratedFrameCount: Int,
@@ -28,9 +32,11 @@ public struct SplatTrainingPackageManifest: Codable, Equatable, Sendable {
         self.id = id
         self.sourceManifestURL = sourceManifestURL
         self.frameIndexURL = frameIndexURL
+        self.depthPriorIndexURL = depthPriorIndexURL
         self.trainScriptURL = trainScriptURL
         self.outputURL = outputURL
         self.frameCount = frameCount
+        self.lidarFrameCount = lidarFrameCount
         self.trainingFrameCount = trainingFrameCount
         self.validationFrameCount = validationFrameCount
         self.calibratedFrameCount = calibratedFrameCount
@@ -48,10 +54,12 @@ public struct SplatTrainingPackageBuilder: Sendable {
     ) throws -> SplatTrainingPackageManifest {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         let frameIndexURL = outputDirectory.appendingPathComponent("capture_splat_frames.jsonl")
+        let depthPriorIndexURL = outputDirectory.appendingPathComponent("capture_lidar_depth_priors.jsonl")
         let trainScriptURL = outputDirectory.appendingPathComponent("train_capture_splat_mlx.py")
         let packageURL = outputDirectory.appendingPathComponent("splat_training_package.json")
 
         try writeFrameIndex(job.manifest, to: frameIndexURL)
+        try writeDepthPriorIndex(job.manifest, to: depthPriorIndexURL)
         try trainingScript().write(to: trainScriptURL, atomically: true, encoding: .utf8)
         let split = SplatTrainingFrameSplit(frameCount: job.manifest.imageFrames.count)
         let calibratedFrameCount = job.manifest.imageFrames.filter { $0.calibration?.intrinsics != nil }.count
@@ -60,16 +68,19 @@ public struct SplatTrainingPackageBuilder: Sendable {
             id: "\(job.manifest.id)-apple-splat-training-package",
             sourceManifestURL: manifestURL,
             frameIndexURL: frameIndexURL,
+            depthPriorIndexURL: job.manifest.lidarFrames.isEmpty ? nil : depthPriorIndexURL,
             trainScriptURL: trainScriptURL,
             outputURL: job.manifest.expectedOutput.targetURL,
             frameCount: job.manifest.imageFrames.count,
+            lidarFrameCount: job.manifest.lidarFrames.count,
             trainingFrameCount: split.trainingCount,
             validationFrameCount: split.validationCount,
             calibratedFrameCount: calibratedFrameCount,
             notes: [
                 "Uses Apple MLX on Apple Silicon for local differentiable Gaussian parameter optimization.",
                 "Consumes captured RGB frame URLs, camera intrinsics, tracking quality, and ARKit/RoomPlan-aligned camera poses.",
-                "Seeds Gaussians along quaternion-rotated camera rays and optimizes against per-splat RGB/ray supervision from captured views.",
+                "Consumes strict ARKit LiDAR Float32 meter depth priors when present and indexes them separately from RGB frame records.",
+                "Seeds Gaussians along quaternion-rotated camera rays and optimizes against per-splat RGB/ray/depth supervision from captured views.",
                 "Exports a Gaussian PLY asset for the native Metal renderer and .robotscene packaging."
             ]
         )
@@ -94,6 +105,26 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 intrinsics: frame.calibration?.intrinsics,
                 resolution: frame.calibration?.resolution,
                 trackingQuality: frame.calibration?.trackingQuality ?? .normal
+            )
+            return String(data: try encoder.encode(record), encoding: .utf8) ?? "{}"
+        }
+        try (lines.joined(separator: "\n") + "\n").write(to: outputURL, atomically: true, encoding: .utf8)
+    }
+
+    private func writeDepthPriorIndex(_ manifest: SplatTrainingManifest, to outputURL: URL) throws {
+        try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        let lines = try manifest.lidarFrames.enumerated().map { index, frame in
+            let record = SplatTrainingDepthPriorRecord(
+                index: index,
+                depthURL: frame.depthURL,
+                confidenceURL: frame.confidenceURL,
+                metadataURL: frame.metadataURL,
+                timestamp: frame.timestamp,
+                position: frame.pose.position,
+                orientation: frame.pose.orientation.vector
             )
             return String(data: try encoder.encode(record), encoding: .utf8) ?? "{}"
         }
@@ -134,6 +165,70 @@ public struct SplatTrainingPackageBuilder: Sendable {
             if not image_path.exists():
                 return None
             return np.asarray(Image.open(image_path).convert("RGB"), dtype=np.float32) / 255.0
+
+        def file_path(path):
+            return Path(str(path).replace("file://", ""))
+
+        def load_depth_priors(path):
+            if not path:
+                return []
+            index_path = Path(path)
+            if not index_path.exists():
+                return []
+            priors = []
+            for record in load_jsonl(index_path):
+                metadata_path = file_path(record["metadataURL"])
+                depth_path = file_path(record["depthURL"])
+                confidence_path = file_path(record["confidenceURL"]) if record.get("confidenceURL") else None
+                if not metadata_path.exists() or not depth_path.exists():
+                    continue
+                metadata = json.loads(metadata_path.read_text())
+                width = int(metadata["width"])
+                height = int(metadata["height"])
+                depth = np.fromfile(depth_path, dtype="<f4")
+                if depth.size != width * height:
+                    raise ValueError(f"Depth prior byte count does not match metadata dimensions for {depth_path}")
+                depth = depth.reshape(height, width)
+                confidence = None
+                if confidence_path is not None and confidence_path.exists():
+                    confidence = np.fromfile(confidence_path, dtype=np.uint8)
+                    if confidence.size == width * height:
+                        confidence = confidence.reshape(height, width).astype(np.float32) / 2.0
+                    else:
+                        confidence = None
+                priors.append({
+                    "timestamp": float(record["timestamp"]),
+                    "position": vector3(record["position"]),
+                    "orientation": quaternion(record["orientation"]),
+                    "depth": depth,
+                    "confidence": confidence,
+                    "metadata": metadata,
+                })
+            return priors
+
+        def nearest_depth_prior(frame, priors, max_delta_seconds=0.075):
+            if not priors:
+                return None
+            timestamp = float(frame["timestamp"])
+            nearest = min(priors, key=lambda prior: abs(prior["timestamp"] - timestamp))
+            if abs(nearest["timestamp"] - timestamp) > max_delta_seconds:
+                return None
+            return nearest
+
+        def sample_depth_prior(prior, u, v, fallback):
+            if prior is None:
+                return fallback, 0.0
+            depth = prior["depth"]
+            height, width = depth.shape
+            x = int(np.clip(round(u / max(prior["metadata"].get("intrinsics", {}).get("width", width), 1) * width), 0, width - 1))
+            y = int(np.clip(round(v / max(prior["metadata"].get("intrinsics", {}).get("height", height), 1) * height), 0, height - 1))
+            value = float(depth[y, x])
+            if not np.isfinite(value) or value <= 0.02:
+                return fallback, 0.0
+            confidence = 1.0
+            if prior["confidence"] is not None:
+                confidence = float(np.clip(prior["confidence"][y, x], 0.0, 1.0))
+            return value, confidence
 
         def sample_rgb(frame, u, v):
             image = load_rgb_image(frame["imageURL"])
@@ -192,12 +287,14 @@ public struct SplatTrainingPackageBuilder: Sendable {
             camera_direction /= max(np.linalg.norm(camera_direction), 1e-6)
             return rotate_vector(quaternion(frame["orientation"]), camera_direction), u, v
 
-        def seed_gaussians(frames, splats_per_frame):
+        def seed_gaussians(frames, depth_priors, splats_per_frame):
             positions = []
             colors = []
             source_origins = []
             source_rays = []
             target_colors = []
+            target_depths = []
+            depth_weights = []
             for frame in frames:
                 if frame.get("split") != "train":
                     continue
@@ -205,21 +302,29 @@ public struct SplatTrainingPackageBuilder: Sendable {
                     continue
                 origin = vector3(frame["position"])
                 color = average_rgb(frame["imageURL"])
+                depth_prior = nearest_depth_prior(frame, depth_priors)
                 for offset in range(splats_per_frame):
                     t = (offset + 1) / float(splats_per_frame + 1)
                     ray, u, v = camera_ray(frame, offset, splats_per_frame)
-                    positions.append(origin + ray * (0.4 + t * 2.0))
+                    fallback_depth = 0.4 + t * 2.0
+                    depth_meters, depth_weight = sample_depth_prior(depth_prior, u, v, fallback_depth)
+                    seed_depth = 0.35 * fallback_depth + 0.65 * depth_meters if depth_weight > 0 else fallback_depth
+                    positions.append(origin + ray * seed_depth)
                     sampled_color = sample_rgb(frame, u, v)
                     colors.append(0.5 * color + 0.5 * sampled_color)
                     source_origins.append(origin)
                     source_rays.append(ray)
                     target_colors.append(sampled_color)
+                    target_depths.append(depth_meters)
+                    depth_weights.append(depth_weight)
             return (
                 np.asarray(positions, dtype=np.float32),
                 np.asarray(colors, dtype=np.float32),
                 np.asarray(source_origins, dtype=np.float32),
                 np.asarray(source_rays, dtype=np.float32),
                 np.asarray(target_colors, dtype=np.float32),
+                np.asarray(target_depths, dtype=np.float32).reshape(-1, 1),
+                np.asarray(depth_weights, dtype=np.float32).reshape(-1, 1),
             )
 
         def write_ply(path, positions, colors, opacity, scale):
@@ -248,16 +353,19 @@ public struct SplatTrainingPackageBuilder: Sendable {
         def main():
             parser = argparse.ArgumentParser()
             parser.add_argument("--frames", required=True)
+            parser.add_argument("--depth-priors")
             parser.add_argument("--output", required=True)
             parser.add_argument("--splats-per-frame", type=int, default=24)
             parser.add_argument("--epochs", type=int, default=25)
             args = parser.parse_args()
 
             frames = load_jsonl(args.frames)
+            depth_priors = load_depth_priors(args.depth_priors)
             if not frames:
                 raise ValueError("No training frames were provided.")
-            seed_positions, seed_colors, source_origins, source_rays, target_colors = seed_gaussians(
+            seed_positions, seed_colors, source_origins, source_rays, target_colors, target_depths, depth_weights = seed_gaussians(
                 frames,
+                depth_priors,
                 max(args.splats_per_frame, 1),
             )
             if len(seed_positions) == 0:
@@ -267,6 +375,8 @@ public struct SplatTrainingPackageBuilder: Sendable {
             camera_origins = mx.array(source_origins)
             camera_rays = mx.array(source_rays)
             observed_colors = mx.array(target_colors)
+            observed_depths = mx.array(target_depths)
+            observed_depth_weights = mx.array(depth_weights)
             opacity_logits = mx.zeros((seed_positions.shape[0],), dtype=mx.float32)
             log_scale = mx.full((seed_positions.shape[0], 3), -3.0, dtype=mx.float32)
             learning_rate = 1e-3
@@ -278,12 +388,13 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 closest_on_ray = camera_origins + camera_rays * projected_distance
                 ray_alignment = mx.mean((position_values - closest_on_ray) ** 2)
                 forward_depth = mx.mean(mx.maximum(0.05 - projected_distance, 0.0) ** 2)
+                depth_prior = mx.mean(observed_depth_weights * (projected_distance - observed_depths) ** 2)
                 photometric = mx.mean((mx.clip(color_values, 0.0, 1.0) - observed_colors) ** 2)
                 spatial_reg = mx.mean((position_values - centroid) ** 2) * 0.0005
                 color_reg = mx.mean((color_values - mx.clip(color_values, 0.0, 1.0)) ** 2)
                 opacity_reg = mx.mean((mx.sigmoid(opacity_values) - 0.75) ** 2) * 0.01
                 scale_reg = mx.mean((mx.exp(scale_values) - 0.05) ** 2) * 0.01
-                return photometric + ray_alignment * 0.05 + forward_depth * 0.05 + spatial_reg + color_reg + opacity_reg + scale_reg
+                return photometric + ray_alignment * 0.05 + forward_depth * 0.05 + depth_prior * 0.15 + spatial_reg + color_reg + opacity_reg + scale_reg
 
             grad_fn = mx.grad(loss_fn, argnums=[0, 1, 2, 3])
             for epoch in range(args.epochs):
@@ -308,10 +419,12 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 "train_frames": len([frame for frame in frames if frame.get("split") == "train"]),
                 "validation_frames": len([frame for frame in frames if frame.get("split") == "validation"]),
                 "calibrated_frames": len([frame for frame in frames if frame.get("intrinsics") is not None]),
+                "lidar_depth_priors": len(depth_priors),
+                "depth_supervised_splats": int(np.count_nonzero(depth_weights)),
                 "splats": int(seed_positions.shape[0]),
                 "output": str(Path(args.output).resolve()),
                 "runtime": "Apple MLX",
-                "loss_terms": ["photometric_rgb", "camera_ray_alignment", "positive_depth", "scale_opacity_regularization"],
+                "loss_terms": ["photometric_rgb", "camera_ray_alignment", "arkit_lidar_depth_prior", "positive_depth", "scale_opacity_regularization"],
             }
             Path(args.output).with_suffix(".training_summary.json").write_text(json.dumps(summary, indent=2))
             print(json.dumps(summary, indent=2))
@@ -332,6 +445,16 @@ private struct SplatTrainingFrameRecord: Codable {
     var intrinsics: CameraIntrinsics?
     var resolution: Resolution?
     var trackingQuality: TrackingQuality
+}
+
+private struct SplatTrainingDepthPriorRecord: Codable {
+    var index: Int
+    var depthURL: URL
+    var confidenceURL: URL?
+    var metadataURL: URL
+    var timestamp: TimeInterval
+    var position: SIMD3<Double>
+    var orientation: SIMD4<Double>
 }
 
 private struct SplatTrainingFrameSplit {

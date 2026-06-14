@@ -112,6 +112,7 @@ public struct SplatTrainingReportBuilder: Sendable {
             finishedAt: generatedAt,
             standardOutput: [
                 "Prepared \(job.manifest.imageFrames.count) RGB frames for Apple-native Gaussian Splat training on \(job.backend.framework.rawValue).",
+                "Prepared \(job.manifest.lidarFrames.count) strict ARKit LiDAR depth priors for meter-scale splat supervision.",
                 "Output target: \(outputURL.path).",
                 "Calibration: \(roomPlanState).",
                 "Deployment target after training: \(job.backend.deploymentTarget.rawValue)."
