@@ -134,6 +134,17 @@ public struct SpatialReviewFailureMarker: Codable, Equatable, Sendable {
     public var label: String
     public var note: String
     public var evidenceSources: Set<FailureEvidenceSource>
+    public var modelLabel: String?
+    public var modelSource: String?
+    public var lidarEvidence: SpatialReviewLiDAREvidence?
+}
+
+public struct SpatialReviewLiDAREvidence: Codable, Equatable, Sendable {
+    public var validRayFraction: Double
+    public var dropoutRate: Double
+    public var lowSupportRate: Double
+    public var nearFieldOccupancyRate: Double
+    public var meanRangeMeters: Double?
 }
 
 @Observable
@@ -298,7 +309,18 @@ public final class SpatialReviewModel {
             displayColor: marker.kind.spatialReviewColor,
             label: marker.kind.spatialReviewLabel,
             note: marker.note,
-            evidenceSources: marker.evidenceSources
+            evidenceSources: marker.evidenceSources,
+            modelLabel: marker.modelLabel,
+            modelSource: marker.modelSource,
+            lidarEvidence: marker.lidarEvidence.map {
+                SpatialReviewLiDAREvidence(
+                    validRayFraction: $0.validRayFraction,
+                    dropoutRate: $0.dropoutRate,
+                    lowSupportRate: $0.lowSupportRate,
+                    nearFieldOccupancyRate: $0.nearFieldOccupancyRate,
+                    meanRangeMeters: $0.meanRangeMeters
+                )
+            }
         )
     }
 

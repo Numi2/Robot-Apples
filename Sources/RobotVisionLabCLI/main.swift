@@ -417,6 +417,9 @@ struct RobotVisionLabCLI {
         print("Layers: \(summary.availableLayers.map(\.rawValue).sorted().joined(separator: ", "))")
         if let overlay = model.state.overlay {
             print("Overlay route \(overlay.route.count), frustums \(overlay.cameraFrustums.count), graph nodes \(overlay.navigationNodes.count), graph edges \(overlay.navigationEdges.count), markers \(overlay.failureMarkers.count)")
+            let modelEvidenceCount = overlay.failureMarkers.filter { $0.modelLabel != nil || $0.modelSource != nil }.count
+            let lidarEvidenceCount = overlay.failureMarkers.filter { $0.lidarEvidence != nil }.count
+            print("Overlay evidence model \(modelEvidenceCount), lidar \(lidarEvidenceCount)")
         }
     }
 
