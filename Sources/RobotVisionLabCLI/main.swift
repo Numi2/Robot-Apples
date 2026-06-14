@@ -1,4 +1,5 @@
 import Foundation
+import RobotSceneStudioVision
 import RobotVisionLabCore
 import simd
 
@@ -7,6 +8,7 @@ enum SplatTrainingCLIError: Error {
     case missingOutputDirectory
     case missingRequiredInput(String)
     case splatTrainingFailed(URL)
+    case spatialReviewFailed(String)
 }
 
 extension SplatTrainingCLIError: LocalizedError {
@@ -20,6 +22,8 @@ extension SplatTrainingCLIError: LocalizedError {
             message
         case .splatTrainingFailed(let url):
             "Apple MLX splat training failed. Inspect \(url.path)."
+        case .spatialReviewFailed(let message):
+            message
         }
     }
 }
@@ -28,6 +32,10 @@ struct RobotVisionLabCLI {
     static func main() throws {
         if let packageURL = parseValidationPackageURL() {
             try validatePackage(at: packageURL)
+            return
+        }
+        if let packageURL = parseSpatialReviewValidationURL() {
+            try validateSpatialReview(at: packageURL)
             return
         }
 
@@ -367,6 +375,14 @@ struct RobotVisionLabCLI {
         return URL(fileURLWithPath: args[index + 1])
     }
 
+    private static func parseSpatialReviewValidationURL() -> URL? {
+        let args = CommandLine.arguments
+        guard let index = args.firstIndex(of: "--validate-spatial-review"), args.indices.contains(index + 1) else {
+            return nil
+        }
+        return URL(fileURLWithPath: args[index + 1])
+    }
+
     private static func validatePackage(at packageURL: URL) throws {
         let migrator = SharedProjectPackageMigrator()
         let report: PackageValidationReport
@@ -381,6 +397,24 @@ struct RobotVisionLabCLI {
         if report.hasErrors {
             print("Validation completed with errors")
         }
+    }
+
+    private static func validateSpatialReview(at packageURL: URL) throws {
+        let model = SpatialReviewModel()
+        try model.openRobotScene(at: packageURL)
+        guard let summary = model.state.summary else {
+            throw SplatTrainingCLIError.spatialReviewFailed("Spatial review validation did not produce a scene summary.")
+        }
+        if !model.state.diagnostics.isEmpty {
+            throw SplatTrainingCLIError.spatialReviewFailed(model.state.diagnostics.joined(separator: "\n"))
+        }
+        guard summary.availableLayers.contains(.gaussianSplat), let splatURL = summary.splatURL else {
+            throw SplatTrainingCLIError.spatialReviewFailed("Spatial review package has no resolvable Gaussian splat layer.")
+        }
+        print("Validated spatial review package \(summary.sceneID)")
+        print("Resolved splat: \(splatURL.path)")
+        print("Frames \(summary.frameCount), route poses \(summary.routePoseCount), failures \(summary.failureMarkerCount)")
+        print("Layers: \(summary.availableLayers.map(\.rawValue).sorted().joined(separator: ", "))")
     }
 
     private static func captureRouteIfRequested(target: NavigationTarget) throws -> RobotPath? {

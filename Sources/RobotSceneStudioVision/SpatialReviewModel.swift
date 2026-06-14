@@ -96,16 +96,20 @@ public final class SpatialReviewModel {
         let evaluation = try manifest.visionProReviewAsset.evaluationReportURL.flatMap {
             try decodeIfPresent(ModelEvaluationReport.self, $0, relativeTo: packageRoot)
         }
+        let splatURL = resolvedSplatURL(from: manifest, relativeTo: packageRoot)
         var layers: Set<SpatialReviewLayer> = [.robotRoutes, .cameraFrustums, .navigationGraph, .failureMap]
-        if manifest.splatScene.sourceURL != nil {
+        var diagnostics: [String] = []
+        if splatURL != nil {
             layers.insert(.gaussianSplat)
+        } else if manifest.visionProReviewAsset.splatSceneURL != nil || manifest.splatScene.sourceURL != nil {
+            diagnostics.append("Gaussian splat asset is referenced by the .robotscene package but was not found.")
         }
         if evaluation != nil {
             layers.insert(.predictions)
         }
         state.summary = SpatialReviewSceneSummary(
             sceneID: manifest.id,
-            splatURL: manifest.splatScene.sourceURL,
+            splatURL: splatURL,
             frameCount: dataset?.frames.count ?? 0,
             routePoseCount: routeLabels.count,
             navigationNodeCount: graph?.nodes.count ?? 0,
@@ -117,7 +121,7 @@ public final class SpatialReviewModel {
         )
         state.enabledLayers = layers
         state.robotSceneURL = packageURL
-        state.diagnostics = []
+        state.diagnostics = diagnostics
     }
 
     public func openRobotSceneReportingErrors(at packageURL: URL) {
@@ -142,11 +146,32 @@ public final class SpatialReviewModel {
     }
 
     private func decodeIfPresent<T: Decodable>(_ type: T.Type, _ url: URL, relativeTo root: URL) throws -> T? {
-        let resolved = url.isFileURL && url.path.hasPrefix("/") ? url : root.appendingPathComponent(url.path)
+        let resolved = resolve(url, relativeTo: root)
         guard FileManager.default.fileExists(atPath: resolved.path) else {
             return nil
         }
         return try JSONDecoder.robotVisionLabDecoder.decode(T.self, from: Data(contentsOf: resolved))
+    }
+
+    private func resolvedSplatURL(from manifest: RobotScenePackageManifest, relativeTo packageRoot: URL) -> URL? {
+        let candidates = [
+            manifest.visionProReviewAsset.splatSceneURL,
+            manifest.splatScene.sourceURL
+        ].compactMap { $0 }
+        for candidate in candidates {
+            let resolved = resolve(candidate, relativeTo: packageRoot)
+            if FileManager.default.fileExists(atPath: resolved.path) {
+                return resolved
+            }
+        }
+        return nil
+    }
+
+    private func resolve(_ url: URL, relativeTo root: URL) -> URL {
+        if url.isFileURL && url.path.hasPrefix("/") {
+            return url
+        }
+        return root.appendingPathComponent(url.relativePath)
     }
 
     private func failureMarkerCountsBySource(_ markers: [FailureMapMarker]) -> [FailureEvidenceSource: Int] {

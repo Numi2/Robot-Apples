@@ -57,7 +57,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "RobotVisionLabCLI",
-            dependencies: ["RobotVisionLabCore"]
+            dependencies: ["RobotVisionLabCore", "RobotSceneStudioVision"]
         )
     ]
 )

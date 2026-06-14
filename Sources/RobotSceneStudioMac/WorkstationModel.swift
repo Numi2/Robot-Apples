@@ -274,7 +274,15 @@ public final class WorkstationModel {
             failureMarkers = markers
             state.activeRobotSceneURL = packageRoot
             state.activeRobotSceneID = manifest.id
-            state.activeSplatURL = manifest.splatScene.sourceURL
+            state.activeSplatURL = manifest.splatScene.sourceURL.map { resolve($0, relativeTo: packageRoot) }
+            if let activeSplatURL = state.activeSplatURL,
+               FileManager.default.fileExists(atPath: activeSplatURL.path) {
+                splatAsset = try? GaussianSplatImporter().inspect(url: activeSplatURL)
+            } else {
+                splatAsset = nil
+            }
+            datasetManifest = nil
+            metalRenderProfile = nil
             state.failureMarkerCount = markers.count
             appendArtifact(title: "Opened Robot Scene", url: packageRoot, kind: "robotscene")
             appendArtifact(title: "Failure Map", url: failureMapURL, kind: "failure-map")
