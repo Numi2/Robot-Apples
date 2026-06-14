@@ -65,32 +65,30 @@ Apple app stack.
 ```bash
 swift build
 swift run robot-scene-studio-mac
-swift run robot-vision-lab --output ./GeneratedDataset
-swift run robot-vision-lab --output ./GeneratedDataset --render-preview
-swift run robot-vision-lab --output ./GeneratedDataset --path-mode lawnmower --path-rows 20 --path-columns 50 --render-preview
-swift run robot-vision-lab --output ./GeneratedDataset --path-mode random --frame-count 1000 --path-seed 7 --render-preview
-swift run robot-vision-lab --output ./GeneratedDataset --render-preview --augment-dataset --augmentation-seed 42
-swift run robot-vision-lab --output ./GeneratedDataset --splat ./room.ply --render-splat-points
-swift run robot-vision-lab --output ./GeneratedDataset --splat ./Fixtures/sample_gaussian_splats.ply --render-metal-splats --metal-tile-size 16 --metal-max-splats 1000000 --metal-streaming-chunk-splats 250000
-swift run robot-vision-lab --output ./GeneratedDatasetBinaryPLY --splat ./Fixtures/sample_gaussian_splats_binary.ply --render-metal-splats
-swift run robot-vision-lab --output ./GeneratedDatasetSplat --splat ./Fixtures/sample_gaussian_splats.splat --render-metal-splats
-swift run robot-vision-lab --output ./GeneratedDataset --export-sample-capture
-swift run robot-vision-lab --validate-package ./GeneratedDataset/CaptureBundle
-swift run robot-vision-lab --output ./GeneratedDataset --import-robotcapture ./GeneratedDataset/CaptureBundle --capture-holdout-every 5
-swift run robot-vision-lab --output ./GeneratedDataset --capture-route ./GeneratedDataset/PreparedCapture/capture_route.json --align-capture-route
-swift run robot-vision-lab --output ./GeneratedDataset --use-aligned-route --expand-capture-route --route-lateral-offsets=-0.2,0,0.2 --route-height-offsets=0 --route-yaw-offsets=-5,0,5
-swift run robot-vision-lab --output ./GeneratedDataset --use-expanded-route --render-preview --evaluate-baseline --export-robotscene
-swift run robot-vision-lab --output ./GeneratedDataset --evaluate-coreml --evaluate-model ./Model.mlpackage
-swift run robot-vision-lab --output ./GeneratedDataset --plan-mlx-evaluation --evaluate-model ./mlx-model
-swift run robot-vision-lab --output ./GeneratedDataset --write-model-adapter-schemas
-swift run robot-vision-lab --output ./GeneratedDataset --write-mlx-training-package
-swift run robot-vision-lab --output ./GeneratedDataset --plan-splat-training
-swift run robot-vision-lab --output ./GeneratedDataset --metal-render-plan
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --path-mode lawnmower --path-rows 20 --path-columns 50 --render-preview
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --capture-route ./PreparedCapture/capture_route.json --align-capture-route
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-aligned-route --expand-capture-route --route-lateral-offsets=-0.2,0,0.2 --route-height-offsets=0 --route-yaw-offsets=-5,0,5
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --render-metal-splats --metal-tile-size 16 --metal-max-splats 1000000 --metal-streaming-chunk-splats 250000
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --evaluate-coreml --evaluate-model ./Model.mlpackage --export-robotscene
+swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --write-mlx-training-package
+swift run robot-vision-lab --output ./RobotSceneWork --splat-training-manifest ./PreparedCapture/prepared_splat_training_manifest.json --plan-splat-training
+swift run robot-vision-lab --output ./RobotSceneWork --write-model-adapter-schemas
+swift run robot-vision-lab --validate-package ./RobotSceneWork/Project.robotscene
 ```
 
-The CLI writes `GeneratedDataset/dataset.json`, route files, import reports,
-training plans, evaluation reports, and `.robotscene` packages. It remains a
-developer tool for exercising the native contracts.
+The CLI requires explicit production inputs: `--output`, a real `--splat` for
+dataset/render/evaluation work, and either a captured/aligned route or a
+requested generated path. Demo capture and synthetic room generation are
+available only through explicit `--demo` commands:
+
+```bash
+swift run robot-vision-lab --output ./DemoRobotScene --demo --render-preview
+swift run robot-vision-lab --output ./DemoRobotScene --export-demo-capture
+```
+
+The CLI writes `dataset.json`, route files, import reports, training plans,
+evaluation reports, and `.robotscene` packages. It remains a developer tool for
+exercising the native contracts.
 
 ## Xcode Apps
 

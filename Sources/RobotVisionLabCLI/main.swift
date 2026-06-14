@@ -4,18 +4,83 @@ import simd
 
 enum SplatTrainingCLIError: Error {
     case missingPreparedManifest(URL)
+    case missingOutputDirectory
+    case missingRequiredInput(String)
+}
+
+extension SplatTrainingCLIError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .missingPreparedManifest(let url):
+            "Missing prepared splat training manifest at \(url.path). Provide --splat-training-manifest or import/prepare a .robotcapture package first."
+        case .missingOutputDirectory:
+            "Missing --output <directory>. Production commands require an explicit workspace output directory."
+        case .missingRequiredInput(let message):
+            message
+        }
+    }
 }
 
 struct RobotVisionLabCLI {
     static func main() throws {
-        let outputDirectory = parseOutputDirectory()
-        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         if let packageURL = parseValidationPackageURL() {
             try validatePackage(at: packageURL)
             return
         }
 
-        let recipe = try sampleRecipe()
+        let outputDirectory = try parseOutputDirectory()
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+
+        if CommandLine.arguments.contains("--export-demo-capture") {
+            let captureURL = outputDirectory.appendingPathComponent("CaptureBundle", isDirectory: true)
+            _ = try CaptureBundleExporter().writeBundle(
+                scanSession: demoScanSession(),
+                capturePlan: demoCapturePlan(),
+                to: captureURL
+            )
+            print("Wrote demo capture bundle to \(captureURL.path)")
+        }
+        if let robotCaptureURL = parseRobotCaptureImportURL() {
+            let importer = RobotCaptureImporter()
+            let imported = try importer.importPackage(at: robotCaptureURL)
+            let report = importer.makeReport(
+                for: imported,
+                packageURL: robotCaptureURL,
+                importedAt: Date(timeIntervalSince1970: 1_800_000_000)
+            )
+            let reportURL = outputDirectory.appendingPathComponent("robotcapture_import_report.json")
+            try importer.writeReport(report, to: reportURL)
+            let preparation = try RobotCapturePreparer().prepare(
+                importedCapture: imported,
+                outputDirectory: outputDirectory.appendingPathComponent("PreparedCapture", isDirectory: true),
+                holdoutEveryNthFrame: intValue(for: "--capture-holdout-every", default: 5),
+                preparedAt: Date(timeIntervalSince1970: 1_800_000_000)
+            )
+            print("Imported robot capture package \(report.manifestID) with \(report.frameCount) frame records")
+            print("Wrote robot capture import report to \(reportURL.path)")
+            print("Prepared capture route with \(preparation.report.routeKeyframeCount) keyframes")
+        }
+        if CommandLine.arguments.contains("--plan-splat-training") {
+            let reportURL = outputDirectory.appendingPathComponent("splat_training_report.json")
+            let manifestURL = try parseSplatTrainingManifestURL(outputDirectory: outputDirectory)
+            let job = try splatTrainingJob(outputDirectory: outputDirectory, manifestURL: manifestURL)
+            let report = SplatTrainingReportBuilder().preparationReport(
+                job: job,
+                generatedAt: Date(timeIntervalSince1970: 1_800_000_000)
+            )
+            try SplatTrainingReportWriter().write(report, to: reportURL)
+            print("Using splat training manifest \(manifestURL.path)")
+            print("Wrote Apple-native splat training plan to \(reportURL.path)")
+        }
+        if CommandLine.arguments.contains("--write-model-adapter-schemas") {
+            try writeModelAdapterSchemas(outputDirectory: outputDirectory)
+        }
+
+        guard needsDatasetWorkflow() else {
+            return
+        }
+
+        let recipe = try datasetRecipe()
         let manifest = DatasetGenerator().makeManifest(
             recipe: recipe,
             outputDirectory: outputDirectory,
@@ -54,35 +119,6 @@ struct RobotVisionLabCLI {
             try MetalRenderPlanReportWriter().write(report, to: reportURL)
             print("Wrote Metal render plan report to \(reportURL.path)")
         }
-        if CommandLine.arguments.contains("--export-sample-capture") {
-            let captureURL = outputDirectory.appendingPathComponent("CaptureBundle", isDirectory: true)
-            _ = try CaptureBundleExporter().writeBundle(
-                scanSession: sampleScanSession(),
-                capturePlan: sampleCapturePlan(),
-                to: captureURL
-            )
-            print("Wrote sample capture bundle to \(captureURL.path)")
-        }
-        if let robotCaptureURL = parseRobotCaptureImportURL() {
-            let importer = RobotCaptureImporter()
-            let imported = try importer.importPackage(at: robotCaptureURL)
-            let report = importer.makeReport(
-                for: imported,
-                packageURL: robotCaptureURL,
-                importedAt: Date(timeIntervalSince1970: 1_800_000_000)
-            )
-            let reportURL = outputDirectory.appendingPathComponent("robotcapture_import_report.json")
-            try importer.writeReport(report, to: reportURL)
-            let preparation = try RobotCapturePreparer().prepare(
-                importedCapture: imported,
-                outputDirectory: outputDirectory.appendingPathComponent("PreparedCapture", isDirectory: true),
-                holdoutEveryNthFrame: intValue(for: "--capture-holdout-every", default: 5),
-                preparedAt: Date(timeIntervalSince1970: 1_800_000_000)
-            )
-            print("Imported robot capture package \(report.manifestID) with \(report.frameCount) frame records")
-            print("Wrote robot capture import report to \(reportURL.path)")
-            print("Prepared capture route with \(preparation.report.routeKeyframeCount) keyframes")
-        }
         if CommandLine.arguments.contains("--expand-capture-route") {
             let expanded = try expandCaptureRouteIfRequested(recipe: recipe, outputDirectory: outputDirectory)
             print("Expanded capture route to \(expanded.report.expandedKeyframeCount) keyframes")
@@ -90,21 +126,6 @@ struct RobotVisionLabCLI {
         if CommandLine.arguments.contains("--align-capture-route") {
             let aligned = try alignCaptureRouteIfRequested(recipe: recipe, outputDirectory: outputDirectory)
             print("Aligned capture route to scene coordinates with \(aligned.report.alignedKeyframeCount) keyframes")
-        }
-        if CommandLine.arguments.contains("--plan-splat-training") {
-            let reportURL = outputDirectory.appendingPathComponent("splat_training_report.json")
-            let manifestURL = try parseSplatTrainingManifestURL(outputDirectory: outputDirectory)
-            let job = try splatTrainingJob(outputDirectory: outputDirectory, manifestURL: manifestURL)
-            let report = SplatTrainingReportBuilder().preparationReport(
-                job: job,
-                generatedAt: Date(timeIntervalSince1970: 1_800_000_000)
-            )
-            try SplatTrainingReportWriter().write(report, to: reportURL)
-            print("Using splat training manifest \(manifestURL.path)")
-            print("Wrote Apple-native splat training plan to \(reportURL.path)")
-        }
-        if CommandLine.arguments.contains("--write-model-adapter-schemas") {
-            try writeModelAdapterSchemas(outputDirectory: outputDirectory)
         }
         if CommandLine.arguments.contains("--write-mlx-training-package") {
             try writeMLXTrainingPackage(manifest: manifest, outputDirectory: outputDirectory)
@@ -130,41 +151,103 @@ struct RobotVisionLabCLI {
         }
     }
 
-    private static func parseOutputDirectory() -> URL {
+    private static func needsDatasetWorkflow() -> Bool {
+        let datasetFlags = [
+            "--render-preview",
+            "--render-splat-points",
+            "--render-metal-splats",
+            "--augment-dataset",
+            "--metal-render-plan",
+            "--expand-capture-route",
+            "--align-capture-route",
+            "--write-mlx-training-package",
+            "--evaluate-baseline",
+            "--evaluate-coreml",
+            "--plan-mlx-evaluation",
+            "--export-robotscene"
+        ]
+        return CommandLine.arguments.contains("--demo")
+            || parseSplatURL() != nil
+            || routeURLArgumentIsPresent()
+            || datasetFlags.contains { CommandLine.arguments.contains($0) }
+    }
+
+    private static func routeURLArgumentIsPresent() -> Bool {
+        CommandLine.arguments.contains("--capture-route")
+            || CommandLine.arguments.contains("--use-aligned-route")
+            || CommandLine.arguments.contains("--use-expanded-route")
+            || CommandLine.arguments.contains("--path-mode")
+    }
+
+    private static func parseOutputDirectory() throws -> URL {
         let args = CommandLine.arguments
         guard let outputIndex = args.firstIndex(of: "--output"), args.indices.contains(outputIndex + 1) else {
-            return URL(fileURLWithPath: "GeneratedDataset", isDirectory: true)
+            throw SplatTrainingCLIError.missingOutputDirectory
         }
         return URL(fileURLWithPath: args[outputIndex + 1], isDirectory: true)
     }
 
-    private static func sampleRecipe() throws -> DatasetRecipe {
+    private static func datasetRecipe() throws -> DatasetRecipe {
+        if CommandLine.arguments.contains("--demo") {
+            return try demoRecipe()
+        }
+        return try productionRecipe()
+    }
+
+    private static func productionRecipe() throws -> DatasetRecipe {
+        guard let splatURL = parseSplatURL() else {
+            throw SplatTrainingCLIError.missingRequiredInput("Production dataset generation requires --splat <scene.ply|scene.splat>.")
+        }
+        let asset = try GaussianSplatImporter().inspect(url: splatURL)
+        let scene = asset.makeScene(
+            id: stringValue(for: "--scene-id") ?? splatURL.deletingPathExtension().lastPathComponent,
+            roomPlanModelURL: stringValue(for: "--roomplan").map { URL(fileURLWithPath: $0) }
+        )
+        print("Imported \(asset.format.rawValue) splat with \(asset.vertexCount) vertices from \(splatURL.path)")
+
+        let target = NavigationTarget(
+            label: stringValue(for: "--target-label") ?? "navigation_target",
+            position: SIMD3<Double>(
+                doubleValue(for: "--target-x", default: scene.bounds.maximum.x),
+                doubleValue(for: "--target-y", default: scene.bounds.minimum.y),
+                doubleValue(for: "--target-z", default: scene.bounds.maximum.z)
+            )
+        )
+        guard let path = try captureRouteIfRequested(target: target) ?? generatedPathIfRequested(scene: scene, target: target) else {
+            throw SplatTrainingCLIError.missingRequiredInput("Production dataset generation requires --capture-route, --use-aligned-route, --use-expanded-route, or --path-mode.")
+        }
+
+        return DatasetRecipe(
+            id: stringValue(for: "--recipe-id") ?? "\(scene.id)-robot-camera-dataset",
+            scene: scene,
+            cameraRig: cameraRig(),
+            path: path,
+            requestedProducts: requestedProducts(),
+            augmentations: [],
+            labelSources: labelSources()
+        )
+    }
+
+    private static func demoRecipe() throws -> DatasetRecipe {
         let scene: GaussianSplatScene
         if let splatURL = parseSplatURL() {
             let asset = try GaussianSplatImporter().inspect(url: splatURL)
             scene = asset.makeScene(
                 id: splatURL.deletingPathExtension().lastPathComponent,
-                roomPlanModelURL: URL(fileURLWithPath: "Assets/RoomPlan/sample_room.usdz")
+                roomPlanModelURL: URL(fileURLWithPath: "DemoAssets/RoomPlan/demo_room.usdz")
             )
             print("Imported \(asset.format.rawValue) splat with \(asset.vertexCount) vertices from \(splatURL.path)")
         } else {
             scene = GaussianSplatScene(
-                id: "sample-room-splat",
-                source: .importedPLY(URL(fileURLWithPath: "Assets/Splats/sample_room.ply")),
+                id: "demo-room-splat",
+                source: .importedPLY(URL(fileURLWithPath: "DemoAssets/Splats/demo_room.ply")),
                 bounds: AxisAlignedBounds(
                     minimum: SIMD3<Double>(-3.0, 0.0, -3.0),
                     maximum: SIMD3<Double>(3.0, 2.8, 3.0)
                 ),
-                roomPlanModelURL: URL(fileURLWithPath: "Assets/RoomPlan/sample_room.usdz")
+                roomPlanModelURL: URL(fileURLWithPath: "DemoAssets/RoomPlan/demo_room.usdz")
             )
         }
-
-        let camera = RobotCameraRig(
-            name: "mobile-base-front-camera",
-            mountHeightMeters: 0.62,
-            intrinsics: .fromHorizontalFOV(width: 1280, height: 720, horizontalFOVDegrees: 82),
-            bodyToCamera: Transform3D(translation: SIMD3<Double>(0, 0.62, 0.08))
-        )
 
         let target = NavigationTarget(label: "charging_dock", position: SIMD3<Double>(2.4, 0.0, -1.8))
         let path = try captureRouteIfRequested(target: target)
@@ -178,9 +261,9 @@ struct RobotVisionLabCLI {
         ])
 
         return DatasetRecipe(
-            id: "sample-robot-camera-dataset",
+            id: "demo-robot-camera-dataset",
             scene: scene,
-            cameraRig: camera,
+            cameraRig: cameraRig(),
             path: path,
             requestedProducts: [.rgb, .depth, .pose, .segmentation, .obstacleMask, .navigationTarget],
             augmentations: [
@@ -192,10 +275,50 @@ struct RobotVisionLabCLI {
                 .yawJitterDegrees(2.0)
             ],
             labelSources: [
-                .roomPlanGeometry(URL(fileURLWithPath: "Assets/RoomPlan/sample_room.usdz")),
-                .manualAnnotations(URL(fileURLWithPath: "Assets/Labels/sample_room_labels.json"))
+                .roomPlanGeometry(URL(fileURLWithPath: "DemoAssets/RoomPlan/demo_room.usdz")),
+                .manualAnnotations(URL(fileURLWithPath: "DemoAssets/Labels/demo_room_labels.json"))
             ]
         )
+    }
+
+    private static func cameraRig() -> RobotCameraRig {
+        let width = intValue(for: "--camera-width", default: 1280)
+        let height = intValue(for: "--camera-height", default: 720)
+        let mountHeight = doubleValue(for: "--camera-mount-height", default: 0.62)
+        return RobotCameraRig(
+            name: stringValue(for: "--camera-name") ?? "robot-front-camera",
+            mountHeightMeters: mountHeight,
+            intrinsics: .fromHorizontalFOV(
+                width: width,
+                height: height,
+                horizontalFOVDegrees: doubleValue(for: "--camera-hfov", default: 82)
+            ),
+            bodyToCamera: Transform3D(translation: SIMD3<Double>(
+                doubleValue(for: "--camera-offset-x", default: 0),
+                mountHeight,
+                doubleValue(for: "--camera-offset-z", default: 0.08)
+            ))
+        )
+    }
+
+    private static func requestedProducts() -> Set<RenderProduct> {
+        guard let raw = stringValue(for: "--products") else {
+            return [.rgb, .depth, .pose, .segmentation, .obstacleMask, .navigationTarget]
+        }
+        let products = raw.split(separator: ",").compactMap { RenderProduct(rawValue: String($0.trimmingCharacters(in: .whitespaces))) }
+        return products.isEmpty ? [.rgb, .depth, .pose] : Set(products)
+    }
+
+    private static func labelSources() -> [LabelSource] {
+        var sources: [LabelSource] = []
+        if let roomPlan = stringValue(for: "--roomplan") {
+            sources.append(.roomPlanGeometry(URL(fileURLWithPath: roomPlan)))
+        }
+        if let manual = stringValue(for: "--manual-labels") {
+            sources.append(.manualAnnotations(URL(fileURLWithPath: manual)))
+        }
+        sources.append(contentsOf: urlListValue(for: "--object-meshes").map { .objectCaptureMesh($0) })
+        return sources
     }
 
     private static func parseSplatURL() -> URL? {
@@ -239,7 +362,7 @@ struct RobotVisionLabCLI {
     }
 
     private static func captureRouteIfRequested(target: NavigationTarget) throws -> RobotPath? {
-        guard let routeURL = routeURLForDataset() else {
+        guard let routeURL = try routeURLForDataset() else {
             return nil
         }
         let route = try JSONDecoder.robotVisionLabDecoder.decode(RobotPath.self, from: Data(contentsOf: routeURL))
@@ -249,9 +372,9 @@ struct RobotVisionLabCLI {
         })
     }
 
-    private static func routeURLForDataset() -> URL? {
+    private static func routeURLForDataset() throws -> URL? {
         if CommandLine.arguments.contains("--use-expanded-route") {
-            let expandedURL = parseOutputDirectory()
+            let expandedURL = try parseOutputDirectory()
                 .appendingPathComponent("ExpandedRoutes", isDirectory: true)
                 .appendingPathComponent("expanded_robot_route.json")
             if FileManager.default.fileExists(atPath: expandedURL.path) {
@@ -259,7 +382,7 @@ struct RobotVisionLabCLI {
             }
         }
         if CommandLine.arguments.contains("--use-aligned-route") {
-            let alignedURL = parseOutputDirectory()
+            let alignedURL = try parseOutputDirectory()
                 .appendingPathComponent("AlignedCapture", isDirectory: true)
                 .appendingPathComponent("aligned_capture_route.json")
             if FileManager.default.fileExists(atPath: alignedURL.path) {
@@ -412,6 +535,13 @@ struct RobotVisionLabCLI {
         }
         let values = value.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
         return values.isEmpty ? defaultValue : values
+    }
+
+    private static func urlListValue(for flag: String) -> [URL] {
+        guard let value = stringValue(for: flag) else { return [] }
+        return value
+            .split(separator: ",")
+            .map { URL(fileURLWithPath: String($0.trimmingCharacters(in: .whitespaces))) }
     }
 
     private static func runModelEvaluation(manifest: DatasetManifest, outputDirectory: URL) throws {
@@ -568,7 +698,10 @@ struct RobotVisionLabCLI {
         if explicitURL != nil {
             throw SplatTrainingCLIError.missingPreparedManifest(url)
         }
-        return try writeSampleSplatTrainingManifest(outputDirectory: outputDirectory)
+        if CommandLine.arguments.contains("--demo") {
+            return try writeDemoSplatTrainingManifest(outputDirectory: outputDirectory)
+        }
+        throw SplatTrainingCLIError.missingPreparedManifest(url)
     }
 
     private static func splatTrainingJob(outputDirectory: URL, manifestURL: URL) throws -> SplatTrainingJob {
@@ -584,10 +717,10 @@ struct RobotVisionLabCLI {
         )
     }
 
-    private static func writeSampleSplatTrainingManifest(outputDirectory: URL) throws -> URL {
+    private static func writeDemoSplatTrainingManifest(outputDirectory: URL) throws -> URL {
         let manifest = SplatTrainingManifest(
-            id: "sample-room-scan-splat-training",
-            imageFrames: sampleScanSession().rgbFrames.map {
+            id: "demo-room-scan-splat-training",
+            imageFrames: demoScanSession().rgbFrames.map {
                 SplatTrainingFrame(imageURL: $0.imageURL, pose: $0.pose, timestamp: $0.timestamp)
             },
             roomPlanGeometryURL: URL(fileURLWithPath: "CaptureBundle/roomplan/room.usdz"),
@@ -596,17 +729,17 @@ struct RobotVisionLabCLI {
                 URL(fileURLWithPath: "CaptureBundle/object-capture/table.usdz")
             ],
             expectedOutput: SplatTrainingOutput(
-                targetURL: outputDirectory.appendingPathComponent("splats/sample-room-scan.ply")
+                targetURL: outputDirectory.appendingPathComponent("splats/demo-room-scan.ply")
             )
         )
-        let manifestURL = outputDirectory.appendingPathComponent("sample_splat_training_manifest.json")
+        let manifestURL = outputDirectory.appendingPathComponent("demo_splat_training_manifest.json")
         try JSONEncoder.robotVisionLabEncoder.encode(manifest).write(to: manifestURL)
         return manifestURL
     }
 
-    private static func sampleCapturePlan() -> CapturePlan {
+    private static func demoCapturePlan() -> CapturePlan {
         CapturePlan(
-            id: "sample-iphone-lidar-room-capture",
+            id: "demo-iphone-lidar-room-capture",
             captureModes: [.roomPlan, .rgbVideo, .lidarDepth, .objectCapture],
             roomPlan: RoomPlanOptions(),
             objectCapture: ObjectCaptureOptions(objectLabels: ["chair", "table", "charging_dock"]),
@@ -615,9 +748,9 @@ struct RobotVisionLabCLI {
         )
     }
 
-    private static func sampleScanSession() -> ScanSession {
+    private static func demoScanSession() -> ScanSession {
         ScanSession(
-            id: "sample-room-scan",
+            id: "demo-room-scan",
             createdAt: Date(timeIntervalSince1970: 1_800_000_000),
             rgbFrames: [
                 CapturedRGBFrame(
