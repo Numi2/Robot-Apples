@@ -232,12 +232,12 @@ public struct RenderedLiDARSimulator: Sendable {
                 let index = row * horizontalSamples + column
                 let u = Double(column) / Double(horizontalLast)
                 let v = Double(row) / Double(verticalLast)
-                let azimuth = (u - 0.5) * specification.horizontalFOVDegrees
-                let elevation = (0.5 - v) * specification.verticalFOVDegrees
                 let x = pixelCoordinate(u, count: metricDepth?.metadata.width ?? depth?.width ?? visibility?.width ?? 1)
                 let y = pixelCoordinate(v, count: metricDepth?.metadata.height ?? depth?.height ?? visibility?.height ?? 1)
                 let support = sampledValue(image: visibility, values: visibilityValues, x: x, y: y) ?? 0.5
-                let cameraDirection = rayDirection(azimuthDegrees: azimuth, elevationDegrees: elevation)
+                let cameraDirection = rayDirection(pixelX: x, pixelY: y, cameraRig: cameraRig)
+                let azimuth = atan2(cameraDirection.x, -cameraDirection.z) * 180.0 / .pi
+                let elevation = atan2(cameraDirection.y, -cameraDirection.z) * 180.0 / .pi
 
                 let metricRange = metricDepth?.sampleMeters(x: x, y: y).map {
                     rangeMeters(fromCameraSpaceZDepth: $0, cameraDirection: cameraDirection)
@@ -300,12 +300,21 @@ public struct RenderedLiDARSimulator: Sendable {
         return rays
     }
 
-    private func rayDirection(azimuthDegrees: Double, elevationDegrees: Double) -> SIMD3<Double> {
-        let azimuth = azimuthDegrees * .pi / 180
-        let elevation = elevationDegrees * .pi / 180
-        let x = tan(azimuth)
-        let y = tan(elevation)
-        return simd_normalize(SIMD3<Double>(x, y, -1))
+    private func rayDirection(pixelX: Int, pixelY: Int, cameraRig: RobotCameraRig?) -> SIMD3<Double> {
+        guard let intrinsics = cameraRig?.intrinsics else {
+            let width = max(1, specification.horizontalSamples)
+            let height = max(1, specification.verticalSamples)
+            let u = Double(pixelX) / Double(max(1, width - 1))
+            let v = Double(pixelY) / Double(max(1, height - 1))
+            let azimuth = (u - 0.5) * specification.horizontalFOVDegrees * .pi / 180
+            let elevation = (0.5 - v) * specification.verticalFOVDegrees * .pi / 180
+            return simd_normalize(SIMD3<Double>(tan(azimuth), tan(elevation), -1))
+        }
+        let fx = max(0.001, intrinsics.focalLengthPixels.x)
+        let fy = max(0.001, intrinsics.focalLengthPixels.y)
+        let cameraX = (Double(pixelX) + 0.5 - intrinsics.principalPointPixels.x) / fx
+        let cameraY = -(Double(pixelY) + 0.5 - intrinsics.principalPointPixels.y) / fy
+        return simd_normalize(SIMD3<Double>(cameraX, cameraY, -1))
     }
 
     private func worldReturnPoint(cameraPoint: SIMD3<Double>, frame: DatasetFrame, cameraRig: RobotCameraRig?) -> SIMD3<Double> {

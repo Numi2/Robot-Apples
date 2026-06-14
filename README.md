@@ -129,9 +129,9 @@ The required iPhone capture output is a `.robotcapture` package containing:
   markers.
 - `RenderedLiDARSimulator`: derives fixed-ring LiDAR-style ray scans from
   rendered Float32 camera-space depth and visibility products, including
-  camera z-depth to ray-range conversion, deterministic dropout, intensity,
-  range, support metrics, 3D camera/world returns, and JSON reports for robot
-  datasets.
+  robot-camera intrinsics ray reconstruction, camera z-depth to ray-range
+  conversion, deterministic dropout, intensity, range, support metrics, 3D
+  camera/world returns, and JSON reports for robot datasets.
 - `FailureMapCalibrationReporter`: fuses Core ML/MLX model outputs with native
   rendered failure labels and synthetic LiDAR geometry, reporting model/native
   agreement plus blocked, uncertain, and missing-view rates for Mac and Vision
