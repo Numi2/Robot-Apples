@@ -167,7 +167,8 @@ developer tool for exercising the native contracts.
 5. Deepen the native Metal Gaussian splat renderer.
    - GPU projection, tile-reference counting, prefix offsets, compaction,
      per-tile sort, and vertex-buffer construction are in place.
-   - Match compute covariance projection exactly to the CPU camera-Jacobian path.
+   - Compute covariance projection now follows the same scale/rotation plus
+     camera-Jacobian path as the CPU diagnostic projection.
    - GPU-derived depth and visibility images are in place.
    - Add tile-based memory and large-scene streaming.
 

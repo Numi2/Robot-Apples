@@ -1266,10 +1266,44 @@ struct VertexOut {
     float4 color;
 };
 
-float4 covariance_payload(float3 scale) {
-    float sx = max(scale.x, 0.001);
-    float sy = max(scale.y, 0.001);
-    return float4(sx * sx, 0.0, sy * sy, max(sx, sy) * 3.0);
+float3x3 rotation_matrix_from_quaternion(float4 q) {
+    q = normalize(q);
+    float x = q.x;
+    float y = q.y;
+    float z = q.z;
+    float w = q.w;
+    return float3x3(
+        float3(1.0 - 2.0 * y * y - 2.0 * z * z, 2.0 * x * y + 2.0 * z * w, 2.0 * x * z - 2.0 * y * w),
+        float3(2.0 * x * y - 2.0 * z * w, 1.0 - 2.0 * x * x - 2.0 * z * z, 2.0 * y * z + 2.0 * x * w),
+        float3(2.0 * x * z + 2.0 * y * w, 2.0 * y * z - 2.0 * x * w, 1.0 - 2.0 * x * x - 2.0 * y * y)
+    );
+}
+
+float3x3 covariance3d_from_scale_rotation(float3 scale, float4 rotation) {
+    float3 safeScale = max(scale, float3(0.001));
+    float3 variance = safeScale * safeScale;
+    float3x3 r = rotation_matrix_from_quaternion(rotation);
+    float3x3 diagonal = float3x3(
+        float3(variance.x, 0.0, 0.0),
+        float3(0.0, variance.y, 0.0),
+        float3(0.0, 0.0, variance.z)
+    );
+    return r * diagonal * transpose(r);
+}
+
+float4 covariance_payload(float3 scale, float4 rotation, float3 cameraSpace, float fx, float fy) {
+    float z = max(-cameraSpace.z, 0.001);
+    float3 rowU = float3(fx / z, 0.0, fx * cameraSpace.x / (z * z));
+    float3 rowV = float3(0.0, -fy / z, -fy * cameraSpace.y / (z * z));
+    float3x3 covariance3D = covariance3d_from_scale_rotation(scale, rotation);
+    float a = max(dot(rowU, covariance3D * rowU), 0.25);
+    float b = dot(rowU, covariance3D * rowV);
+    float d = max(dot(rowV, covariance3D * rowV), 0.25);
+    float trace = a + d;
+    float determinantTerm = sqrt(max((a - d) * (a - d) + 4.0 * b * b, 0.0));
+    float lambdaMax = max((trace + determinantTerm) * 0.5, 0.25);
+    float majorRadius = clamp(sqrt(lambdaMax) * 3.0, 1.0, 512.0);
+    return float4(a, b, d, majorRadius);
 }
 
 float4 inverse_covariance(float4 covariance) {
@@ -1299,8 +1333,9 @@ kernel void robot_project_splats(
     float u = (cameraSpace.x * camera.focalPrincipal.x / depth) + camera.focalPrincipal.z;
     float v = (-cameraSpace.y * camera.focalPrincipal.y / depth) + camera.focalPrincipal.w;
     float3 scale = splat.scaleRotation.xyz;
-    float4 covariance = covariance_payload(scale);
-    float majorRadius = clamp(covariance.w * camera.focalPrincipal.x / depth, 1.0, 512.0);
+    float4 rotation = float4(splat.scaleRotation.w, splat.rotationW.x, splat.rotationW.y, splat.rotationW.z);
+    float4 covariance = covariance_payload(scale, rotation, cameraSpace, camera.focalPrincipal.x, camera.focalPrincipal.y);
+    float majorRadius = covariance.w;
 
     uint tileSize = max(tiles.tileLayout.x, 1u);
     uint columns = max(tiles.tileLayout.y, 1u);
