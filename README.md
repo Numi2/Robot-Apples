@@ -123,7 +123,8 @@ developer tool for exercising the native contracts.
   per-tile depth sorting, and vertex-buffer construction, composites Gaussian
   point discs on the GPU, and writes RGB plus dense Gaussian-footprint
   depth/visibility images, diagnostic depth/visibility summaries, and tile-bin
-  products.
+  products. Render-budget LOD uses deterministic uniform splat decimation across
+  the full cloud instead of file-prefix truncation.
 - `MetalGaussianSplatRenderConfiguration`: controls tile size and per-frame
   splat budget for larger Apple Silicon render jobs.
 - `SplatTrainingJob`: Apple-native training plan for MLX/Create ML/Metal
@@ -177,6 +178,7 @@ developer tool for exercising the native contracts.
      camera-Jacobian path as the CPU diagnostic projection.
    - GPU-derived dense depth and visibility images are in place.
    - Tile size and per-frame splat budgets are configurable.
+   - Per-frame splat budgets now use deterministic LOD decimation.
    - Add tiled streaming for scenes larger than local Metal working-set budgets.
 
 6. Build the Vision Pro reviewer.

@@ -138,7 +138,7 @@ public struct MetalGaussianSplatRenderConfiguration: Codable, Equatable, Sendabl
 
     public init(tileSize: Int = 16, maxSplatsPerFrame: Int? = nil) {
         self.tileSize = max(4, tileSize)
-        self.maxSplatsPerFrame = maxSplatsPerFrame
+        self.maxSplatsPerFrame = maxSplatsPerFrame.map { max(1, $0) }
     }
 }
 
@@ -766,16 +766,21 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             throw MetalGaussianSplatRenderError.unsupportedSceneSource
         }
         let cloud = try GaussianSplatCloudLoader().load(url: url)
+        let frameSplats = splatsForRenderBudget(cloud.splats)
         let products = try manifest.frames.map {
             try render(
                 frame: $0,
                 scene: manifest.scene,
                 cameraRig: manifest.cameraRig,
-                cloud: cloud,
+                splats: frameSplats,
                 outputDirectory: outputDirectory
             )
         }
-        return MetalSplatRenderReport(sceneID: manifest.scene.id, frameProducts: products)
+        var diagnostics: [String] = []
+        if frameSplats.count < cloud.splats.count {
+            diagnostics.append("LOD decimation selected \(frameSplats.count) of \(cloud.splats.count) splats using deterministic uniform sampling.")
+        }
+        return MetalSplatRenderReport(sceneID: manifest.scene.id, frameProducts: products, diagnostics: diagnostics)
     }
 
     private func render(
@@ -785,13 +790,28 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         cloud: RenderableGaussianSplatCloud,
         outputDirectory: URL
     ) throws -> MetalSplatRenderProducts {
+        try render(
+            frame: frame,
+            scene: scene,
+            cameraRig: cameraRig,
+            splats: splatsForRenderBudget(cloud.splats),
+            outputDirectory: outputDirectory
+        )
+    }
+
+    private func render(
+        frame: DatasetFrame,
+        scene: GaussianSplatScene,
+        cameraRig: RobotCameraRig,
+        splats: [RenderableGaussianSplat],
+        outputDirectory: URL
+    ) throws -> MetalSplatRenderProducts {
         let totalStart = Date()
         let width = cameraRig.intrinsics.width
         let height = cameraRig.intrinsics.height
-        let frameSplats = Array(cloud.splats.prefix(configuration.maxSplatsPerFrame ?? cloud.splats.count))
         let cpuProjectionStart = Date()
         let prepared = prepareTileSortedSplats(
-            frameSplats,
+            splats,
             frame: frame,
             cameraRig: cameraRig,
             width: width,
@@ -801,7 +821,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         let cpuProjectionSeconds = Date().timeIntervalSince(cpuProjectionStart)
         let gpuPreparationStart = Date()
         let gpuPreparation = try prepareTileBinsOnGPU(
-            frameSplats,
+            splats,
             frame: frame,
             cameraRig: cameraRig,
             width: width,
@@ -918,9 +938,26 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             tileBinURL: tileBinURL,
             visibleSplatCount: prepared.projectedSplats.count,
             drawCommandCount: gpuPreparation.drawCommandCount,
-            totalSplatCount: frameSplats.count,
+            totalSplatCount: splats.count,
             timing: timing
         )
+    }
+
+    private func splatsForRenderBudget(_ splats: [RenderableGaussianSplat]) -> [RenderableGaussianSplat] {
+        guard let maxSplatsPerFrame = configuration.maxSplatsPerFrame,
+              maxSplatsPerFrame < splats.count else {
+            return splats
+        }
+        guard maxSplatsPerFrame > 1 else {
+            return [splats[splats.count / 2]]
+        }
+
+        let lastIndex = splats.count - 1
+        let denominator = maxSplatsPerFrame - 1
+        return (0..<maxSplatsPerFrame).map { sampleIndex in
+            let sourceIndex = Int((Double(sampleIndex) * Double(lastIndex) / Double(denominator)).rounded())
+            return splats[min(lastIndex, sourceIndex)]
+        }
     }
 
     private func prepareTileSortedSplats(
