@@ -50,6 +50,7 @@ public struct MetalSplatRenderProducts: Codable, Equatable, Sendable {
     public var visibleSplatCount: Int
     public var drawCommandCount: Int
     public var totalSplatCount: Int
+    public var timing: MetalSplatFrameTiming
 
     public init(
         frameIndex: Int,
@@ -61,7 +62,8 @@ public struct MetalSplatRenderProducts: Codable, Equatable, Sendable {
         tileBinURL: URL,
         visibleSplatCount: Int,
         drawCommandCount: Int,
-        totalSplatCount: Int
+        totalSplatCount: Int,
+        timing: MetalSplatFrameTiming = MetalSplatFrameTiming()
     ) {
         self.frameIndex = frameIndex
         self.rgbURL = rgbURL
@@ -73,6 +75,32 @@ public struct MetalSplatRenderProducts: Codable, Equatable, Sendable {
         self.visibleSplatCount = visibleSplatCount
         self.drawCommandCount = drawCommandCount
         self.totalSplatCount = totalSplatCount
+        self.timing = timing
+    }
+}
+
+public struct MetalSplatFrameTiming: Codable, Equatable, Sendable {
+    public var cpuProjectionSeconds: Double
+    public var gpuPreparationSeconds: Double
+    public var renderPassSeconds: Double
+    public var depthVisibilitySeconds: Double
+    public var outputWriteSeconds: Double
+    public var totalSeconds: Double
+
+    public init(
+        cpuProjectionSeconds: Double = 0,
+        gpuPreparationSeconds: Double = 0,
+        renderPassSeconds: Double = 0,
+        depthVisibilitySeconds: Double = 0,
+        outputWriteSeconds: Double = 0,
+        totalSeconds: Double = 0
+    ) {
+        self.cpuProjectionSeconds = cpuProjectionSeconds
+        self.gpuPreparationSeconds = gpuPreparationSeconds
+        self.renderPassSeconds = renderPassSeconds
+        self.depthVisibilitySeconds = depthVisibilitySeconds
+        self.outputWriteSeconds = outputWriteSeconds
+        self.totalSeconds = totalSeconds
     }
 }
 
@@ -234,7 +262,10 @@ public struct GaussianSplatCloudLoader: Sendable {
         }
         let format = lines.first { $0.hasPrefix("format ") } ?? ""
         if format == "format ascii 1.0" {
-            return try loadASCIIPLY(url: url, lines: lines, endHeaderByteOffset: headerEndRange.upperBound)
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw GaussianSplatImportError.invalidPLY("ASCII PLY body is not valid UTF-8.")
+            }
+            return try loadASCIIPLY(url: url, lines: text.split(whereSeparator: \.isNewline).map(String.init))
         }
         if format == "format binary_little_endian 1.0" {
             return try loadBinaryLittleEndianPLY(url: url, data: data, lines: lines, vertexStartOffset: headerEndRange.upperBound)
@@ -242,7 +273,7 @@ public struct GaussianSplatCloudLoader: Sendable {
         throw GaussianSplatImportError.invalidPLY("Unsupported PLY format: \(format).")
     }
 
-    private func loadASCIIPLY(url: URL, lines: [String], endHeaderByteOffset: Data.Index) throws -> RenderableGaussianSplatCloud {
+    private func loadASCIIPLY(url: URL, lines: [String]) throws -> RenderableGaussianSplatCloud {
         guard let endHeaderIndex = lines.firstIndex(of: "end_header") else {
             throw GaussianSplatImportError.invalidPLY("Missing end_header.")
         }
@@ -754,9 +785,11 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         cloud: RenderableGaussianSplatCloud,
         outputDirectory: URL
     ) throws -> MetalSplatRenderProducts {
+        let totalStart = Date()
         let width = cameraRig.intrinsics.width
         let height = cameraRig.intrinsics.height
         let frameSplats = Array(cloud.splats.prefix(configuration.maxSplatsPerFrame ?? cloud.splats.count))
+        let cpuProjectionStart = Date()
         let prepared = prepareTileSortedSplats(
             frameSplats,
             frame: frame,
@@ -765,6 +798,8 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             height: height,
             tileSize: configuration.tileSize
         )
+        let cpuProjectionSeconds = Date().timeIntervalSince(cpuProjectionStart)
+        let gpuPreparationStart = Date()
         let gpuPreparation = try prepareTileBinsOnGPU(
             frameSplats,
             frame: frame,
@@ -775,6 +810,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             tileColumns: prepared.tileReport.tileColumns,
             tileRows: prepared.tileReport.tileRows
         )
+        let gpuPreparationSeconds = Date().timeIntervalSince(gpuPreparationStart)
         let tileReport = gpuPreparation.tileReport
 
         guard gpuPreparation.drawCommandCount > 0 else {
@@ -822,11 +858,13 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
         encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: gpuPreparation.drawCommandCount)
         encoder.endEncoding()
+        let renderPassStart = Date()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         if let error = commandBuffer.error {
             throw error
         }
+        let renderPassSeconds = Date().timeIntervalSince(renderPassStart)
 
         let rgbURL = outputDirectory.appendingPathComponent("rgb", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_metal.ppm", frame.index))
         let depthURL = outputDirectory.appendingPathComponent("depth", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_depth.json", frame.index))
@@ -838,7 +876,9 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         try FileManager.default.createDirectory(at: depthURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: visibilityURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: tileBinURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let outputWriteStart = Date()
         try readPPM(texture: colorTexture, width: width, height: height).write(to: rgbURL)
+        let depthVisibilityStart = Date()
         try writeDepthVisibilityImages(
             projectedBuffer: gpuPreparation.projectedBuffer,
             projectedSplatCount: gpuPreparation.projectedSplatCount,
@@ -847,6 +887,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             depthURL: depthImageURL,
             visibilityURL: visibilityImageURL
         )
+        let depthVisibilitySeconds = Date().timeIntervalSince(depthVisibilityStart)
         try writeDepthAndVisibility(
             frame: frame,
             splats: prepared.projectedSplats,
@@ -854,6 +895,15 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             visibilityURL: visibilityURL
         )
         try JSONEncoder.robotVisionLabEncoder.encode(tileReport).write(to: tileBinURL)
+        let outputWriteSeconds = Date().timeIntervalSince(outputWriteStart) - depthVisibilitySeconds
+        let timing = MetalSplatFrameTiming(
+            cpuProjectionSeconds: cpuProjectionSeconds,
+            gpuPreparationSeconds: gpuPreparationSeconds,
+            renderPassSeconds: renderPassSeconds,
+            depthVisibilitySeconds: depthVisibilitySeconds,
+            outputWriteSeconds: max(0, outputWriteSeconds),
+            totalSeconds: Date().timeIntervalSince(totalStart)
+        )
 
         _ = depthTexture
         _ = visibilityTexture
@@ -868,7 +918,8 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             tileBinURL: tileBinURL,
             visibleSplatCount: prepared.projectedSplats.count,
             drawCommandCount: gpuPreparation.drawCommandCount,
-            totalSplatCount: frameSplats.count
+            totalSplatCount: frameSplats.count,
+            timing: timing
         )
     }
 
