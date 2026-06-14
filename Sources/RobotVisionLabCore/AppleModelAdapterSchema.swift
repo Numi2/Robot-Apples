@@ -74,7 +74,9 @@ public struct NativeModelAdapterSchema: Codable, Equatable, Sendable {
             "missing_view": .missingTrainingViews,
             "ambiguous": .visualAmbiguity,
             "low_texture": .lowTexture,
-            "bad_lighting": .badLighting
+            "bad_lighting": .badLighting,
+            "failure_detected": .uncertainLocalization,
+            "confident": .confident
         ]
     ) {
         self.id = id
@@ -176,7 +178,8 @@ public struct CoreMLModelSchemaInspector: Sendable {
                 semantic: semanticForOutput(name)
             )
         }.sorted { $0.name < $1.name }
-        let mappings = outputs.map {
+        let expandedOutputs = expandedOutputFeatures(outputs)
+        let mappings = expandedOutputs.map {
             ModelAdapterPredictionMapping(
                 outputName: $0.name,
                 outputKind: outputKind(for: $0.semantic),
@@ -187,15 +190,31 @@ public struct CoreMLModelSchemaInspector: Sendable {
             id: id ?? modelURL.deletingPathExtension().lastPathComponent,
             runtime: .coreML,
             inputs: inputs,
-            outputs: outputs,
+            outputs: expandedOutputs,
             predictionMappings: mappings.isEmpty ? NativeModelAdapterSchema.defaultCoreMLVisionSchema().predictionMappings : mappings
         )
     }
 
+    private func expandedOutputFeatures(_ outputs: [ModelAdapterFeature]) -> [ModelAdapterFeature] {
+        guard outputs.contains(where: { $0.name == "robot_scene_outputs" }) else {
+            return outputs
+        }
+        return outputs + [
+            ModelAdapterFeature(name: "free_space_probability", kind: "Double", shape: [1], semantic: ModelAdapterOutputKind.freeSpaceProbability.rawValue),
+            ModelAdapterFeature(name: "obstacle_probability", kind: "Double", shape: [1], semantic: ModelAdapterOutputKind.obstacleProbability.rawValue),
+            ModelAdapterFeature(name: "localization_uncertainty", kind: "Double", shape: [1], semantic: ModelAdapterOutputKind.localizationUncertainty.rawValue),
+            ModelAdapterFeature(name: "failure_kind_score", kind: "Double", shape: [1], semantic: ModelAdapterOutputKind.failureKind.rawValue)
+        ]
+    }
+
     private func semanticForInput(_ name: String) -> String {
         let lower = name.lowercased()
+        if lower.contains("scene_features") || lower.contains("scenefeatures") {
+            return ModelAdapterInputKind.renderedFeatures.rawValue
+        }
         if lower.contains("image") || lower.contains("rgb") { return ModelAdapterInputKind.image.rawValue }
         if lower.contains("depth") { return ModelAdapterInputKind.depth.rawValue }
+        if lower.contains("visibility") { return ModelAdapterInputKind.visibility.rawValue }
         if lower.contains("pose") { return ModelAdapterInputKind.cameraPose.rawValue }
         if lower.contains("intrinsic") { return ModelAdapterInputKind.intrinsics.rawValue }
         if lower.contains("time") { return ModelAdapterInputKind.timestamp.rawValue }

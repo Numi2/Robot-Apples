@@ -110,6 +110,10 @@ The required iPhone capture output is a `.robotcapture` package containing:
 - `MLXTrainingPackageBuilder`: trains a compact Apple MLX model from fused
   pose, intrinsics, RGB statistics, depth coverage, visibility coverage, and
   rendered failure labels, then provides a Core ML export path.
+- `CoreMLDatasetEvaluator`: inspects Core ML models, supplies fused
+  `scene_features` inputs when exported from MLX, and maps vector outputs back
+  to free-space, obstacle, localization uncertainty, and failure-score
+  predictions.
 - `RobotScenePackageExporter` and `SharedProjectFormatTools`: `.robotscene`
   export, validation, migration, checksum, compaction, and reporting.
 

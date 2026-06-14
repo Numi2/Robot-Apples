@@ -41,6 +41,9 @@ public struct NativeModelPredictionAdapter: Sendable {
     private func label(for value: NativeModelOutputValue, mapping: ModelAdapterPredictionMapping) -> String {
         switch mapping.outputKind {
         case .classLabel, .failureKind:
+            if mapping.outputKind == .failureKind, let score = value.doubleValue {
+                return score >= 0.5 ? "failure_detected" : "confident"
+            }
             let rawLabel = value.stringValue ?? value.bestLabel ?? "prediction"
             return mapping.labelMap[rawLabel] ?? rawLabel
         case .obstacleProbability:
@@ -227,26 +230,36 @@ public struct CoreMLModelOutputAdapter: Sendable {
     }
 
     public func outputValues(from provider: MLFeatureProvider) -> [String: NativeModelOutputValue] {
-        Dictionary(uniqueKeysWithValues: provider.featureNames.compactMap { name in
-            guard let value = provider.featureValue(for: name) else { return nil }
+        var values: [String: NativeModelOutputValue] = [:]
+        for name in provider.featureNames {
+            guard let value = provider.featureValue(for: name) else { continue }
             if value.type == .string {
-                let stringValue = value.stringValue
-                return (name, .string(stringValue))
+                values[name] = .string(value.stringValue)
+                continue
             }
             if value.type == .double {
-                return (name, .double(value.doubleValue))
+                values[name] = .double(value.doubleValue)
+                continue
             }
             if value.type == .int64 {
-                return (name, .double(Double(value.int64Value)))
+                values[name] = .double(Double(value.int64Value))
+                continue
             }
             if let dictionary = value.dictionaryValue as? [String: Double] {
-                return (name, .dictionary(dictionary))
+                values[name] = .dictionary(dictionary)
+                continue
             }
             if let multiArray = value.multiArrayValue, multiArray.count > 0 {
-                return (name, .double(multiArray[0].doubleValue))
+                values[name] = .double(multiArray[0].doubleValue)
+                if name == "robot_scene_outputs", multiArray.count >= 4 {
+                    values["free_space_probability"] = .double(multiArray[0].doubleValue)
+                    values["obstacle_probability"] = .double(multiArray[1].doubleValue)
+                    values["localization_uncertainty"] = .double(multiArray[2].doubleValue)
+                    values["failure_kind_score"] = .double(multiArray[3].doubleValue)
+                }
             }
-            return nil
-        })
+        }
+        return values
     }
 }
 #endif
