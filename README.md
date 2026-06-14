@@ -88,6 +88,8 @@ The required iPhone capture output is a `.robotcapture` package containing:
   pairing, progress, retry/cancel, and receipts.
 - `RobotCaptureImporter` and `RobotCapturePreparer`: Mac ingest, validation,
   route creation, train/eval split, and `prepared_splat_training_manifest.json`.
+- `SplatTrainingPackageBuilder`: writes Apple MLX training assets for building
+  a Gaussian splat PLY from captured RGB views and ARKit/RoomPlan-aligned poses.
 - `GaussianSplatImporter`: `.ply` and binary `.splat` inspection.
 - `RouteDerivedSplatSeedWriter`: valid route-derived Gaussian splat seed PLY
   generation from captured camera poses.
@@ -131,6 +133,7 @@ swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-ex
 swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --evaluate-coreml --evaluate-model ./Model.mlpackage --export-robotscene
 swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --write-mlx-training-package
 swift run robot-vision-lab --output ./RobotSceneWork --splat-training-manifest ./PreparedCapture/prepared_splat_training_manifest.json --plan-splat-training
+swift run robot-vision-lab --output ./RobotSceneWork --splat-training-manifest ./PreparedCapture/prepared_splat_training_manifest.json --write-splat-training-package
 swift run robot-vision-lab --validate-package ./RobotSceneWork/Project.robotscene
 ```
 

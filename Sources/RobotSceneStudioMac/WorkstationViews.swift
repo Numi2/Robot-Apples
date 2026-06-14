@@ -416,6 +416,13 @@ private struct AppleSiliconControlPanel: View {
                 .disabled(model.state.frameCount == 0)
 
                 Button {
+                    model.writeSplatTrainingPackage()
+                } label: {
+                    Label("Write Splat Training Package", systemImage: "camera.aperture")
+                }
+                .disabled(model.state.activeCaptureURL == nil)
+
+                Button {
                     model.writeMLXTrainingPackage()
                 } label: {
                     Label("Write MLX Package", systemImage: "shippingbox")
@@ -526,6 +533,19 @@ private struct AppleSiliconDetailPanel: View {
                         MetricCell(title: "Samples", value: "\(package.sampleCount)")
                         MetricCell(title: "Loader", value: package.datasetLoaderURL.lastPathComponent)
                         MetricCell(title: "Export", value: package.exportScriptURL.lastPathComponent)
+                    }
+                }
+                DiagnosticsList(messages: package.notes)
+            }
+
+            if let package = model.splatTrainingPackage {
+                Text("Splat Training Package")
+                    .font(.headline)
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                    GridRow {
+                        MetricCell(title: "Frames", value: "\(package.frameCount)")
+                        MetricCell(title: "Index", value: package.frameIndexURL.lastPathComponent)
+                        MetricCell(title: "Output", value: package.outputURL.lastPathComponent)
                     }
                 }
                 DiagnosticsList(messages: package.notes)

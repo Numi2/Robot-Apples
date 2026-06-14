@@ -72,6 +72,19 @@ struct RobotVisionLabCLI {
             print("Using splat training manifest \(manifestURL.path)")
             print("Wrote Apple-native splat training plan to \(reportURL.path)")
         }
+        if CommandLine.arguments.contains("--write-splat-training-package") {
+            let manifestURL = try parseSplatTrainingManifestURL(outputDirectory: outputDirectory)
+            let job = try splatTrainingJob(outputDirectory: outputDirectory, manifestURL: manifestURL)
+            let package = try SplatTrainingPackageBuilder().writePackage(
+                job: job,
+                manifestURL: manifestURL,
+                outputDirectory: outputDirectory.appendingPathComponent("SplatTrainingPackage", isDirectory: true)
+            )
+            print("Wrote Apple-native splat training package to \(package.trainScriptURL.deletingLastPathComponent().path)")
+            print("Frame index: \(package.frameIndexURL.path)")
+            print("Training script: \(package.trainScriptURL.path)")
+            print("Expected output: \(package.outputURL.path)")
+        }
         if CommandLine.arguments.contains("--write-model-adapter-schemas") {
             try writeModelAdapterSchemas(outputDirectory: outputDirectory)
         }

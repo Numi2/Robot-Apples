@@ -175,6 +175,7 @@ public final class WorkstationModel {
     public private(set) var navigationGraph: NavigationGraph?
     public private(set) var metalRenderProfile: MetalSplatRenderProfile?
     public private(set) var mlxTrainingPackage: MLXTrainingPackageManifest?
+    public private(set) var splatTrainingPackage: SplatTrainingPackageManifest?
     public private(set) var failureMapCalibrationReport: FailureMapCalibrationReport?
     public private(set) var isMultipeerReceiverRunning = false
     public private(set) var transferEvents: [WorkstationTransferEvent] = []
@@ -592,6 +593,29 @@ public final class WorkstationModel {
             let reportURL = state.workspaceURL.appendingPathComponent("splat_training_report.json")
             try SplatTrainingReportWriter().write(report, to: reportURL)
             appendArtifact(title: "Apple Native Training Plan", url: reportURL, kind: "training")
+        }
+    }
+
+    public func writeSplatTrainingPackage() {
+        perform(stage: .planningTraining) {
+            guard let preparation else {
+                throw WorkstationError.missingPreparedCapture
+            }
+            let job = SplatTrainingJob(
+                id: "\(preparation.splatTrainingManifest.id)-apple-native-splat-package",
+                manifest: preparation.splatTrainingManifest,
+                backend: AppleNativeTrainingBackend(),
+                mode: .nativeAppleSilicon
+            )
+            let package = try SplatTrainingPackageBuilder().writePackage(
+                job: job,
+                manifestURL: preparation.report.splatTrainingManifestURL,
+                outputDirectory: state.workspaceURL.appendingPathComponent("SplatTrainingPackage", isDirectory: true)
+            )
+            splatTrainingPackage = package
+            appendArtifact(title: "Splat Training Package", url: package.trainScriptURL.deletingLastPathComponent(), kind: "splat-training-package")
+            appendArtifact(title: "Splat Training Frame Index", url: package.frameIndexURL, kind: "splat-training-index")
+            appendArtifact(title: "Capture Splat MLX Script", url: package.trainScriptURL, kind: "splat-training-script")
         }
     }
 
