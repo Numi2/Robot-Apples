@@ -127,7 +127,7 @@ public final class RobotCaptureMultipeerTransfer: NSObject {
 
     public init(
         role: RobotCaptureTransferRole,
-        displayName: String = Host.current().localizedName ?? ProcessInfo.processInfo.hostName,
+        displayName: String = RobotCaptureMultipeerTransfer.defaultDisplayName(),
         inboxDirectory: URL
     ) {
         self.role = role
@@ -136,6 +136,14 @@ public final class RobotCaptureMultipeerTransfer: NSObject {
         self.session = MCSession(peer: peerID, securityIdentity: nil, encryptionPreference: .required)
         super.init()
         self.session.delegate = self
+    }
+
+    public static func defaultDisplayName() -> String {
+        #if os(macOS)
+        return Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        #else
+        return ProcessInfo.processInfo.hostName
+        #endif
     }
 
     deinit {

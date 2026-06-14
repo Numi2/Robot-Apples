@@ -1,0 +1,599 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		019767EB4275A940E9981DB7 /* iPhone.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6FADA4D87030FDC8FC875032 /* iPhone.xcassets */; };
+		09C3E41FF9EE3310C3544438 /* RobotSceneStudioiPhoneApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EC4BE245574746927BD03B2 /* RobotSceneStudioiPhoneApp.swift */; };
+		1200DC6F53E9B6826EDD6792 /* RobotSceneStudioMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62182D0796C8ED7834AE868F /* RobotSceneStudioMacApp.swift */; };
+		87310A280C5A879F7D37F775 /* RobotSceneStudioVision in Frameworks */ = {isa = PBXBuildFile; productRef = 8BBDE59AA83624A3B014F894 /* RobotSceneStudioVision */; };
+		8865A9FE5B711E8475A4E9DC /* Mac.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2FC8D63DD0EAEE7A7929F0EB /* Mac.xcassets */; };
+		C281D9A3A06019AFA0D3D9FB /* RobotSceneStudioVisionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F3938B95B077160A790DF29 /* RobotSceneStudioVisionApp.swift */; };
+		CB73B5BBCDE73569A4BD3C09 /* RobotSceneStudioiPhone in Frameworks */ = {isa = PBXBuildFile; productRef = E41B522B29EB6911AC986564 /* RobotSceneStudioiPhone */; };
+		E1813A0C80DBDFFF2D68DC88 /* Vision.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A18E6E7854A2F338434B23F6 /* Vision.xcassets */; };
+		F43CD5CF8A3FE21FE27D5638 /* RobotSceneStudioMac in Frameworks */ = {isa = PBXBuildFile; productRef = 57E032CD6A1B35233708D15D /* RobotSceneStudioMac */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		1E97DA8B6F7FDA26170E06D0 /* RobotSceneStudioVision.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = RobotSceneStudioVision.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		2FC8D63DD0EAEE7A7929F0EB /* Mac.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Mac.xcassets; sourceTree = "<group>"; };
+		3F3938B95B077160A790DF29 /* RobotSceneStudioVisionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RobotSceneStudioVisionApp.swift; sourceTree = "<group>"; };
+		62182D0796C8ED7834AE868F /* RobotSceneStudioMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RobotSceneStudioMacApp.swift; sourceTree = "<group>"; };
+		6FADA4D87030FDC8FC875032 /* iPhone.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = iPhone.xcassets; sourceTree = "<group>"; };
+		7EC4BE245574746927BD03B2 /* RobotSceneStudioiPhoneApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RobotSceneStudioiPhoneApp.swift; sourceTree = "<group>"; };
+		8776262EA0B9EA525F11E483 /* RobotSceneStudioCapture.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = RobotSceneStudioCapture.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		8B29F0306C889EAC14142B7E /* Apple ML Vision Robot */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Apple ML Vision Robot"; path = .; sourceTree = SOURCE_ROOT; };
+		92680861F0CC3B02A52602CF /* RobotSceneStudioMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RobotSceneStudioMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A18E6E7854A2F338434B23F6 /* Vision.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Vision.xcassets; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1A3C362322D00941D669B1DC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				87310A280C5A879F7D37F775 /* RobotSceneStudioVision in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		707B788075FBB3A59D268B6E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CB73B5BBCDE73569A4BD3C09 /* RobotSceneStudioiPhone in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DA4DC8F8ACF33CC4042E02EE /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F43CD5CF8A3FE21FE27D5638 /* RobotSceneStudioMac in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		2EF49F569F7701393E1E96E2 = {
+			isa = PBXGroup;
+			children = (
+				98680134A78DDA0BB9A183B2 /* AppAssets */,
+				71A8CE90FE703D697EA08A44 /* iPhone */,
+				A1A22B59FC400C51388AADAC /* Packages */,
+				52D33E4DB5D15ED92C0006B3 /* RobotSceneStudioMacApp */,
+				E1D36F2D8DE9FED5C488D08A /* Vision */,
+				8F73DB18453D1631E07B2AE4 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		52D33E4DB5D15ED92C0006B3 /* RobotSceneStudioMacApp */ = {
+			isa = PBXGroup;
+			children = (
+				62182D0796C8ED7834AE868F /* RobotSceneStudioMacApp.swift */,
+			);
+			name = RobotSceneStudioMacApp;
+			path = Sources/RobotSceneStudioMacApp;
+			sourceTree = "<group>";
+		};
+		71A8CE90FE703D697EA08A44 /* iPhone */ = {
+			isa = PBXGroup;
+			children = (
+				7EC4BE245574746927BD03B2 /* RobotSceneStudioiPhoneApp.swift */,
+			);
+			name = iPhone;
+			path = Apps/iPhone;
+			sourceTree = "<group>";
+		};
+		8F73DB18453D1631E07B2AE4 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				8776262EA0B9EA525F11E483 /* RobotSceneStudioCapture.app */,
+				92680861F0CC3B02A52602CF /* RobotSceneStudioMac.app */,
+				1E97DA8B6F7FDA26170E06D0 /* RobotSceneStudioVision.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		98680134A78DDA0BB9A183B2 /* AppAssets */ = {
+			isa = PBXGroup;
+			children = (
+				6FADA4D87030FDC8FC875032 /* iPhone.xcassets */,
+				2FC8D63DD0EAEE7A7929F0EB /* Mac.xcassets */,
+				A18E6E7854A2F338434B23F6 /* Vision.xcassets */,
+			);
+			path = AppAssets;
+			sourceTree = "<group>";
+		};
+		A1A22B59FC400C51388AADAC /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				8B29F0306C889EAC14142B7E /* Apple ML Vision Robot */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		E1D36F2D8DE9FED5C488D08A /* Vision */ = {
+			isa = PBXGroup;
+			children = (
+				3F3938B95B077160A790DF29 /* RobotSceneStudioVisionApp.swift */,
+			);
+			name = Vision;
+			path = Apps/Vision;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		25C272674C3ADCBE710F8F5E /* RobotSceneStudioMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6C0B452633EE6839558A66D0 /* Build configuration list for PBXNativeTarget "RobotSceneStudioMac" */;
+			buildPhases = (
+				6A35E08A07451D104C58AAFF /* Sources */,
+				E91A67E835367518BA0F8D43 /* Resources */,
+				DA4DC8F8ACF33CC4042E02EE /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RobotSceneStudioMac;
+			packageProductDependencies = (
+				57E032CD6A1B35233708D15D /* RobotSceneStudioMac */,
+			);
+			productName = RobotSceneStudioMac;
+			productReference = 92680861F0CC3B02A52602CF /* RobotSceneStudioMac.app */;
+			productType = "com.apple.product-type.application";
+		};
+		8BF3E062D4F3C8FD7334305B /* RobotSceneStudioVision */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 962CBC7218F4944E9E8B3510 /* Build configuration list for PBXNativeTarget "RobotSceneStudioVision" */;
+			buildPhases = (
+				C8047901ACCED38541CE5676 /* Sources */,
+				21059274D9D76D7631BF5A50 /* Resources */,
+				1A3C362322D00941D669B1DC /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RobotSceneStudioVision;
+			packageProductDependencies = (
+				8BBDE59AA83624A3B014F894 /* RobotSceneStudioVision */,
+			);
+			productName = RobotSceneStudioVision;
+			productReference = 1E97DA8B6F7FDA26170E06D0 /* RobotSceneStudioVision.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E8BAA1B14173153093237E56 /* RobotSceneStudioCapture */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AC722163EB6795318586911A /* Build configuration list for PBXNativeTarget "RobotSceneStudioCapture" */;
+			buildPhases = (
+				9EA0CE7D5A7AC943DDFD2B77 /* Sources */,
+				5CE2DC0A0B36D1F43DD7A385 /* Resources */,
+				707B788075FBB3A59D268B6E /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RobotSceneStudioCapture;
+			packageProductDependencies = (
+				E41B522B29EB6911AC986564 /* RobotSceneStudioiPhone */,
+			);
+			productName = RobotSceneStudioCapture;
+			productReference = 8776262EA0B9EA525F11E483 /* RobotSceneStudioCapture.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		40508C46E7CF0FAF43EE1933 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					25C272674C3ADCBE710F8F5E = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					8BF3E062D4F3C8FD7334305B = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					E8BAA1B14173153093237E56 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 545DB042D4FC7B750E286E6E /* Build configuration list for PBXProject "RobotSceneStudio" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 2EF49F569F7701393E1E96E2;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				76D3031555716457CB12EC9F /* XCLocalSwiftPackageReference "." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 8F73DB18453D1631E07B2AE4 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E8BAA1B14173153093237E56 /* RobotSceneStudioCapture */,
+				25C272674C3ADCBE710F8F5E /* RobotSceneStudioMac */,
+				8BF3E062D4F3C8FD7334305B /* RobotSceneStudioVision */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		21059274D9D76D7631BF5A50 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E1813A0C80DBDFFF2D68DC88 /* Vision.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5CE2DC0A0B36D1F43DD7A385 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				019767EB4275A940E9981DB7 /* iPhone.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E91A67E835367518BA0F8D43 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8865A9FE5B711E8475A4E9DC /* Mac.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		6A35E08A07451D104C58AAFF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1200DC6F53E9B6826EDD6792 /* RobotSceneStudioMacApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9EA0CE7D5A7AC943DDFD2B77 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				09C3E41FF9EE3310C3544438 /* RobotSceneStudioiPhoneApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C8047901ACCED38541CE5676 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C281D9A3A06019AFA0D3D9FB /* RobotSceneStudioVisionApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		0092D60961D523F021DDFEDC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.10;
+				XROS_DEPLOYMENT_TARGET = 1.0;
+			};
+			name = Debug;
+		};
+		12D830A7C3F2DAD0945E4ED8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = AppConfig/Vision/RobotSceneStudioVision.entitlements;
+				INFOPLIST_FILE = AppConfig/Vision/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.numi.robot-scene-studio.vision";
+				PRODUCT_NAME = "Robot Scene Review";
+				SDKROOT = xros;
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 7;
+			};
+			name = Debug;
+		};
+		1E00B3D62D5DAC8128F608EF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = AppConfig/Mac/RobotSceneStudioMac.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				INFOPLIST_FILE = AppConfig/Mac/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.numi.robot-scene-studio.mac";
+				PRODUCT_NAME = "Robot Scene Studio";
+				SDKROOT = macosx;
+				SUPPORTS_MACCATALYST = NO;
+			};
+			name = Release;
+		};
+		3084375337B29C6D59A83FC7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = AppConfig/Mac/RobotSceneStudioMac.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				INFOPLIST_FILE = AppConfig/Mac/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.numi.robot-scene-studio.mac";
+				PRODUCT_NAME = "Robot Scene Studio";
+				SDKROOT = macosx;
+				SUPPORTS_MACCATALYST = NO;
+			};
+			name = Debug;
+		};
+		8C388F48B90BF0CD31B11354 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = AppConfig/Vision/RobotSceneStudioVision.entitlements;
+				INFOPLIST_FILE = AppConfig/Vision/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.numi.robot-scene-studio.vision";
+				PRODUCT_NAME = "Robot Scene Review";
+				SDKROOT = xros;
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 7;
+			};
+			name = Release;
+		};
+		B9387654EF30EDAEC91441C5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = AppConfig/iPhone/RobotSceneStudioiPhone.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = AppConfig/iPhone/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.numi.robot-scene-studio.capture";
+				PRODUCT_NAME = "Robot Capture";
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		C4A5D9E845A514B34A63E8E4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.10;
+				XROS_DEPLOYMENT_TARGET = 1.0;
+			};
+			name = Release;
+		};
+		E2362A4A53BCAFCA3877370C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = AppConfig/iPhone/RobotSceneStudioiPhone.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = AppConfig/iPhone/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.numi.robot-scene-studio.capture";
+				PRODUCT_NAME = "Robot Capture";
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		545DB042D4FC7B750E286E6E /* Build configuration list for PBXProject "RobotSceneStudio" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0092D60961D523F021DDFEDC /* Debug */,
+				C4A5D9E845A514B34A63E8E4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		6C0B452633EE6839558A66D0 /* Build configuration list for PBXNativeTarget "RobotSceneStudioMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3084375337B29C6D59A83FC7 /* Debug */,
+				1E00B3D62D5DAC8128F608EF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		962CBC7218F4944E9E8B3510 /* Build configuration list for PBXNativeTarget "RobotSceneStudioVision" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				12D830A7C3F2DAD0945E4ED8 /* Debug */,
+				8C388F48B90BF0CD31B11354 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AC722163EB6795318586911A /* Build configuration list for PBXNativeTarget "RobotSceneStudioCapture" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B9387654EF30EDAEC91441C5 /* Debug */,
+				E2362A4A53BCAFCA3877370C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		76D3031555716457CB12EC9F /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		57E032CD6A1B35233708D15D /* RobotSceneStudioMac */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RobotSceneStudioMac;
+		};
+		8BBDE59AA83624A3B014F894 /* RobotSceneStudioVision */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RobotSceneStudioVision;
+		};
+		E41B522B29EB6911AC986564 /* RobotSceneStudioiPhone */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RobotSceneStudioiPhone;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 40508C46E7CF0FAF43EE1933 /* Project object */;
+}

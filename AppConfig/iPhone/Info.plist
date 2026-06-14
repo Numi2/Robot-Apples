@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Robot Capture</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.numi.robot-scene-studio.capture</string>
+	<key>CFBundleName</key>
+	<string>Robot Capture</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_robotcapture._tcp</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Robot Capture records AVFoundation video for robot-environment datasets.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Robot Capture discovers nearby Macs and sends .robotcapture packages over Multipeer Connectivity.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Robot Capture may record synchronized audio in AVFoundation movie files when enabled for capture diagnostics.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Robot Capture records Core Motion samples for camera trajectory and robot-dataset calibration.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Robot Capture can export capture packages or diagnostics to the photo library when requested.</string>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Robot Capture Package</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.numi.robotcapture</string>
+			</array>
+			<key>LSTypeIsPackage</key>
+			<true/>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.apple.package</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Robot Capture Package</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.numi.robotcapture</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>robotcapture</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

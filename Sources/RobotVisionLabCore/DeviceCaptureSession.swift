@@ -467,7 +467,12 @@ private extension Pose3D {
             Double(matrix.columns.3.y),
             Double(matrix.columns.3.z)
         )
-        let rotation = simd_quatd(simd_quatf(matrix))
+        let rotationMatrix = simd_double3x3(columns: (
+            SIMD3<Double>(Double(matrix.columns.0.x), Double(matrix.columns.0.y), Double(matrix.columns.0.z)),
+            SIMD3<Double>(Double(matrix.columns.1.x), Double(matrix.columns.1.y), Double(matrix.columns.1.z)),
+            SIMD3<Double>(Double(matrix.columns.2.x), Double(matrix.columns.2.y), Double(matrix.columns.2.z))
+        ))
+        let rotation = simd_quatd(rotationMatrix)
         self.init(position: position, orientation: rotation)
     }
 }

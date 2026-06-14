@@ -92,8 +92,34 @@ The CLI writes `GeneratedDataset/dataset.json`, route files, import reports,
 training plans, evaluation reports, and `.robotscene` packages. It remains a
 developer tool for exercising the native contracts.
 
+## Xcode Apps
+
+```bash
+xcodegen generate
+xcodebuild -project RobotSceneStudio.xcodeproj -scheme RobotSceneStudioMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project RobotSceneStudio.xcodeproj -scheme RobotSceneStudioCapture -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project RobotSceneStudio.xcodeproj -scheme RobotSceneStudioVision -destination 'generic/platform=visionOS Simulator' CODE_SIGNING_ALLOWED=NO build
+```
+
+`project.yml` is the source of truth for the generated Xcode project. It defines
+the Mac workstation, iPhone capture client, and Vision Pro review app targets
+against the local Swift package products. The app configuration lives under
+`AppConfig/`, including entitlements, privacy usage strings, local-network
+descriptions, Bonjour service declarations, document types, and exported package
+UTTypes for `.robotcapture` and `.robotscene`. App icon asset catalogs live
+under `AppAssets/`.
+
+Set `DEVELOPMENT_TEAM` in `project.yml`, regenerate the project, and let Xcode
+manage signing for physical iPhone, Mac, and Vision Pro deployment.
+
 ## Current Implementation
 
+- `RobotSceneStudio.xcodeproj`: generated Xcode project with app targets for
+  macOS, iOS, and visionOS.
+- `AppConfig`: platform Info.plist and entitlement files for sandboxed macOS
+  document access, iPhone camera/motion/AR/local-network permissions, Vision Pro
+  document opening, package UTTypes, and Bonjour discovery.
+- `AppAssets`: native app icon catalogs for all three app targets.
 - `AppleDeviceCaptureSession`: iOS-gated capture coordinator that records
   `video.mov`, writes ARKit camera pose/intrinsics/tracking records to
   `frames.jsonl`, writes Core Motion records to `motion.jsonl`, captures LiDAR

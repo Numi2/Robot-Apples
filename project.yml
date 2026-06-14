@@ -1,0 +1,91 @@
+name: RobotSceneStudio
+options:
+  bundleIdPrefix: com.numi
+  deploymentTarget:
+    macOS: "14.0"
+    iOS: "17.0"
+    visionOS: "1.0"
+packages:
+  RobotSceneStudioPackage:
+    path: .
+settings:
+  base:
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.10"
+targets:
+  RobotSceneStudioMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/RobotSceneStudioMacApp
+      - path: AppAssets/Mac.xcassets
+    dependencies:
+      - package: RobotSceneStudioPackage
+        product: RobotSceneStudioMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.numi.robot-scene-studio.mac
+        PRODUCT_NAME: Robot Scene Studio
+        INFOPLIST_FILE: AppConfig/Mac/Info.plist
+        CODE_SIGN_ENTITLEMENTS: AppConfig/Mac/RobotSceneStudioMac.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_HARDENED_RUNTIME: YES
+        SUPPORTS_MACCATALYST: NO
+  RobotSceneStudioCapture:
+    type: application
+    platform: iOS
+    sources:
+      - path: Apps/iPhone
+      - path: AppAssets/iPhone.xcassets
+    dependencies:
+      - package: RobotSceneStudioPackage
+        product: RobotSceneStudioiPhone
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.numi.robot-scene-studio.capture
+        PRODUCT_NAME: Robot Capture
+        INFOPLIST_FILE: AppConfig/iPhone/Info.plist
+        CODE_SIGN_ENTITLEMENTS: AppConfig/iPhone/RobotSceneStudioiPhone.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: 1
+        SUPPORTS_MACCATALYST: NO
+  RobotSceneStudioVision:
+    type: application
+    platform: visionOS
+    sources:
+      - path: Apps/Vision
+      - path: AppAssets/Vision.xcassets
+    dependencies:
+      - package: RobotSceneStudioPackage
+        product: RobotSceneStudioVision
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.numi.robot-scene-studio.vision
+        PRODUCT_NAME: Robot Scene Review
+        INFOPLIST_FILE: AppConfig/Vision/Info.plist
+        CODE_SIGN_ENTITLEMENTS: AppConfig/Vision/RobotSceneStudioVision.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: 7
+        SUPPORTS_MACCATALYST: NO
+schemes:
+  RobotSceneStudioMac:
+    build:
+      targets:
+        RobotSceneStudioMac: all
+    run:
+      config: Debug
+  RobotSceneStudioCapture:
+    build:
+      targets:
+        RobotSceneStudioCapture: all
+    run:
+      config: Debug
+  RobotSceneStudioVision:
+    build:
+      targets:
+        RobotSceneStudioVision: all
+    run:
+      config: Debug
