@@ -357,7 +357,6 @@ private struct FailureMapControlPanel: View {
         GroupBox("Failure Map") {
             VStack(alignment: .leading, spacing: 10) {
                 Button {
-                    model.evaluateBaselineModel()
                     model.exportRobotScene()
                 } label: {
                     Label("Refresh Failure Map", systemImage: "map")

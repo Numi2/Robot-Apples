@@ -643,30 +643,6 @@ public final class WorkstationModel {
         }
     }
 
-    public func evaluateBaselineModel() {
-        perform(stage: .evaluatingModel) {
-            let manifest = try ensureDatasetManifest()
-            let manifestURL = state.workspaceURL.appendingPathComponent("dataset.json")
-            let request = ModelEvaluationRequest(
-                id: "mac-workstation-baseline",
-                model: LocalModelReference(name: "manifest-baseline", runtime: .baseline),
-                datasetManifestURL: manifestURL,
-                tasks: [.navigationTargetDetection, .obstacleDetection, .segmentation, .failureCaseDetection]
-            )
-            let report = BaselineDatasetEvaluator().evaluate(request: request, manifest: manifest)
-            let reportURL = state.workspaceURL.appendingPathComponent("evaluation_report.json")
-            try EvaluationReportWriter().write(report, to: reportURL)
-            let calibrationURL = state.workspaceURL.appendingPathComponent("failure_map_calibration_report.json")
-            let calibration = FailureMapCalibrationReporter().makeReport(from: report)
-            try FailureMapCalibrationReporter().write(calibration, to: calibrationURL)
-            failureMapCalibrationReport = calibration
-            evaluationReportURL = reportURL
-            state.warningCount += report.summary.warningCount
-            appendArtifact(title: "Evaluation Report", url: reportURL, kind: "evaluation")
-            appendArtifact(title: "Failure-Map Calibration Report", url: calibrationURL, kind: "failure-calibration")
-        }
-    }
-
     public func exportRobotScene() {
         perform(stage: .exportingRobotScene) {
             let manifest = try ensureDatasetManifest()
@@ -696,7 +672,6 @@ public final class WorkstationModel {
         guard state.stage != .failed else { return }
         planMetalRender()
         planTraining()
-        evaluateBaselineModel()
         exportRobotScene()
     }
 

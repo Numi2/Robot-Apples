@@ -30,8 +30,8 @@ struct RobotVisionLabCLI {
 
         let outputDirectory = try parseOutputDirectory()
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        if CommandLine.arguments.contains("--render-preview") {
-            throw SplatTrainingCLIError.missingRequiredInput("--render-preview was removed as a product path. Use --render-apple-native for Metal Gaussian splat rendering, or --render-dev-preview for explicit developer fixtures.")
+        if CommandLine.arguments.contains("--render-preview") || CommandLine.arguments.contains("--render-dev-preview") || CommandLine.arguments.contains("--render-splat-points") {
+            throw SplatTrainingCLIError.missingRequiredInput("Preview and point-projection render paths were removed from product CLI. Use --render-apple-native for native Metal Gaussian splat rendering.")
         }
 
         if CommandLine.arguments.contains("--export-demo-capture") {
@@ -104,15 +104,6 @@ struct RobotVisionLabCLI {
         )
 
         try DatasetExporter().writeManifestAndLabels(manifest, to: outputDirectory)
-        if CommandLine.arguments.contains("--render-dev-preview") {
-            try DatasetExporter().renderFrames(manifest, to: outputDirectory, renderer: PreviewSyntheticRenderer())
-            _ = try DatasetExporter().writeRenderedLiDARScans(manifest, to: outputDirectory)
-            _ = try DatasetExporter().writeRenderedFailureLabels(manifest, to: outputDirectory)
-        }
-        if CommandLine.arguments.contains("--render-splat-points") {
-            try renderSplatPointFrames(manifest: manifest, outputDirectory: outputDirectory)
-            print("Rendered splat point-projection RGB artifacts")
-        }
         if CommandLine.arguments.contains("--render-apple-native") || CommandLine.arguments.contains("--render-metal-splats") {
             try renderMetalSplatFrames(manifest: manifest, outputDirectory: outputDirectory)
             _ = try DatasetExporter().writeRenderedLiDARScans(manifest, to: outputDirectory)
@@ -150,7 +141,10 @@ struct RobotVisionLabCLI {
         if CommandLine.arguments.contains("--write-mlx-training-package") {
             try writeMLXTrainingPackage(manifest: manifest, outputDirectory: outputDirectory)
         }
-        if CommandLine.arguments.contains("--evaluate-baseline") || CommandLine.arguments.contains("--evaluate-coreml") || CommandLine.arguments.contains("--plan-mlx-evaluation") {
+        if CommandLine.arguments.contains("--evaluate-baseline") {
+            throw SplatTrainingCLIError.missingRequiredInput("--evaluate-baseline was removed. Evaluate a real Apple-native model with --evaluate-coreml --evaluate-model <Model.mlpackage>, or write an MLX evaluation plan with --plan-mlx-evaluation.")
+        }
+        if CommandLine.arguments.contains("--evaluate-coreml") || CommandLine.arguments.contains("--plan-mlx-evaluation") {
             try runModelEvaluation(manifest: manifest, outputDirectory: outputDirectory)
         }
         if CommandLine.arguments.contains("--export-robotscene") {
@@ -166,23 +160,17 @@ struct RobotVisionLabCLI {
         }
         let manifestURL = outputDirectory.appendingPathComponent("dataset.json")
         print("Wrote \(manifest.frames.count) planned frames to \(manifestURL.path)")
-        if CommandLine.arguments.contains("--render-dev-preview") {
-            print("Rendered developer preview RGB/depth/visibility/segmentation/obstacle artifacts")
-        }
     }
 
     private static func needsDatasetWorkflow() -> Bool {
         let datasetFlags = [
-            "--render-dev-preview",
             "--render-apple-native",
-            "--render-splat-points",
             "--render-metal-splats",
             "--augment-dataset",
             "--metal-render-plan",
             "--expand-capture-route",
             "--align-capture-route",
             "--write-mlx-training-package",
-            "--evaluate-baseline",
             "--evaluate-coreml",
             "--plan-mlx-evaluation",
             "--export-robotscene"
@@ -597,9 +585,11 @@ struct RobotVisionLabCLI {
 
         let reportURL = outputDirectory.appendingPathComponent("evaluation_report.json")
         let report: ModelEvaluationReport
-        var baselineForComparison: ModelEvaluationReport?
         if CommandLine.arguments.contains("--evaluate-coreml") {
             let modelURL = stringValue(for: "--evaluate-model").map { URL(fileURLWithPath: $0) }
+            guard modelURL != nil else {
+                throw SplatTrainingCLIError.missingRequiredInput("Missing --evaluate-model <Model.mlpackage> for Core ML evaluation.")
+            }
             let request = ModelEvaluationRequest(
                 id: "coreml-evaluation",
                 model: LocalModelReference(name: modelURL?.lastPathComponent ?? "CoreMLModel", runtime: .coreML, url: modelURL),
@@ -611,29 +601,8 @@ struct RobotVisionLabCLI {
                 manifest: manifest,
                 generatedAt: Date(timeIntervalSince1970: 1_800_000_000)
             )
-            let baselineRequest = ModelEvaluationRequest(
-                id: "baseline-preview-evaluation",
-                model: LocalModelReference(name: "manifest-baseline", runtime: .baseline),
-                datasetManifestURL: datasetManifestURL,
-                tasks: tasks
-            )
-            baselineForComparison = BaselineDatasetEvaluator().evaluate(
-                request: baselineRequest,
-                manifest: manifest,
-                generatedAt: Date(timeIntervalSince1970: 1_800_000_000)
-            )
         } else {
-            let request = ModelEvaluationRequest(
-                id: "baseline-preview-evaluation",
-                model: LocalModelReference(name: "manifest-baseline", runtime: .baseline),
-                datasetManifestURL: datasetManifestURL,
-                tasks: tasks
-            )
-            report = BaselineDatasetEvaluator().evaluate(
-                request: request,
-                manifest: manifest,
-                generatedAt: Date(timeIntervalSince1970: 1_800_000_000)
-            )
+            throw SplatTrainingCLIError.missingRequiredInput("No real evaluation backend selected. Use --evaluate-coreml or --plan-mlx-evaluation.")
         }
         try EvaluationReportWriter().write(report, to: reportURL)
         print("Wrote evaluation report to \(reportURL.path)")
@@ -641,15 +610,6 @@ struct RobotVisionLabCLI {
         let calibration = FailureMapCalibrationReporter().makeReport(from: report)
         try FailureMapCalibrationReporter().write(calibration, to: calibrationURL)
         print("Wrote failure-map calibration report to \(calibrationURL.path)")
-        if let baselineForComparison {
-            let baselineURL = outputDirectory.appendingPathComponent("baseline_evaluation_report.json")
-            try EvaluationReportWriter().write(baselineForComparison, to: baselineURL)
-            let comparison = ModelComparisonReporter().compare(baseline: baselineForComparison, candidate: report)
-            let comparisonURL = outputDirectory.appendingPathComponent("model_comparison_report.json")
-            try ModelComparisonReporter().write(comparison, to: comparisonURL)
-            print("Wrote baseline evaluation report to \(baselineURL.path)")
-            print("Wrote model comparison report to \(comparisonURL.path)")
-        }
     }
 
     private static func writeModelAdapterSchemas(outputDirectory: URL) throws {
@@ -682,18 +642,6 @@ struct RobotVisionLabCLI {
         print("Dataset loader: \(package.datasetLoaderURL.path)")
         print("Training script: \(package.trainScriptURL.path)")
         print("Core ML export script: \(package.exportScriptURL.path)")
-    }
-
-    private static func renderSplatPointFrames(manifest: DatasetManifest, outputDirectory: URL) throws {
-        let renderer = SplatPointProjectionRenderer()
-        for frame in manifest.frames {
-            try renderer.renderSynchronously(
-                frame: frame,
-                scene: manifest.scene,
-                cameraRig: manifest.cameraRig,
-                outputDirectory: outputDirectory
-            )
-        }
     }
 
     private static func renderMetalSplatFrames(manifest: DatasetManifest, outputDirectory: URL) throws {

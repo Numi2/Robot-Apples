@@ -385,21 +385,6 @@ public struct DatasetExporter: Sendable {
         }
     }
 
-    public func renderFrames(
-        _ manifest: DatasetManifest,
-        to outputDirectory: URL,
-        renderer: PreviewSyntheticRenderer
-    ) throws {
-        for frame in manifest.frames {
-            try renderer.renderSynchronously(
-                frame: frame,
-                scene: manifest.scene,
-                cameraRig: manifest.cameraRig,
-                outputDirectory: outputDirectory
-            )
-        }
-    }
-
     public func writeRenderedFailureLabels(_ manifest: DatasetManifest, to outputDirectory: URL) throws -> [RenderedFailureLabelReport] {
         try RenderedFailureLabeler().writeReports(for: manifest, to: outputDirectory)
     }

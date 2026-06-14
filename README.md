@@ -146,6 +146,8 @@ deployment.
 ## Developer CLI
 
 Production CLI commands require explicit inputs.
+The active quality map is maintained in
+[`Docs/AppleNativeQualityMap.md`](Docs/AppleNativeQualityMap.md).
 
 ```bash
 swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --path-mode lawnmower --path-rows 20 --path-columns 50 --render-apple-native
@@ -159,10 +161,9 @@ swift run robot-vision-lab --output ./RobotSceneWork --splat-training-manifest .
 swift run robot-vision-lab --validate-package ./RobotSceneWork/Project.robotscene
 ```
 
-Synthetic developer data is isolated behind explicit demo flags:
+Developer fixture capture export remains isolated behind an explicit demo flag:
 
 ```bash
-swift run robot-vision-lab --output ./DemoRobotScene --demo --render-dev-preview
 swift run robot-vision-lab --output ./DemoRobotScene --export-demo-capture
 ```
 

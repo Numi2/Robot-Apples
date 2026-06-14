@@ -27,7 +27,6 @@ public struct LocalModelReference: Codable, Equatable, Sendable {
 }
 
 public enum LocalModelRuntime: String, Codable, Sendable {
-    case baseline
     case coreML
     case mlx
 }
@@ -196,74 +195,6 @@ public struct ModelComparisonFrameDelta: Codable, Equatable, Sendable, Identifia
         self.baselineLabel = baselineLabel
         self.candidateLabel = candidateLabel
         self.confidenceDelta = confidenceDelta
-    }
-}
-
-public struct BaselineDatasetEvaluator: Sendable {
-    public init() {}
-
-    public func evaluate(request: ModelEvaluationRequest, manifest: DatasetManifest, generatedAt: Date = Date()) -> ModelEvaluationReport {
-        let frameResults = manifest.frames.map { frame in
-            evaluate(frame: frame, requestedTasks: request.tasks)
-        }
-        let taskCounts = Dictionary(grouping: frameResults.flatMap(\.predictions), by: \.task)
-            .mapValues(\.count)
-        return ModelEvaluationReport(
-            request: request,
-            generatedAt: generatedAt,
-            frameResults: frameResults,
-            summary: makeSummary(frameResults, taskCounts: taskCounts)
-        )
-    }
-
-    private func evaluate(frame: DatasetFrame, requestedTasks: Set<VisionTask>) -> FrameEvaluationResult {
-        var predictions: [VisionPrediction] = []
-        var warnings: [String] = []
-        let rgbURL = frame.productURL(for: .rgb)
-
-        if rgbURL == nil {
-            warnings.append("Frame has no RGB product URL.")
-        }
-        if requestedTasks.contains(.navigationTargetDetection) {
-            predictions.append(VisionPrediction(
-                task: .navigationTargetDetection,
-                label: frame.navigationTarget?.label ?? "none",
-                confidence: frame.navigationTarget == nil ? 0 : 1,
-                source: "manifest_navigation_target"
-            ))
-        }
-        if requestedTasks.contains(.obstacleDetection) {
-            predictions.append(VisionPrediction(
-                task: .obstacleDetection,
-                label: frame.productURL(for: .obstacleMask) == nil ? "unknown" : "obstacle_mask_available",
-                confidence: frame.productURL(for: .obstacleMask) == nil ? 0 : 0.5,
-                source: "dataset_product_presence"
-            ))
-        }
-        if requestedTasks.contains(.segmentation) {
-            predictions.append(VisionPrediction(
-                task: .segmentation,
-                label: frame.productURL(for: .segmentation) == nil ? "missing" : "segmentation_available",
-                confidence: frame.productURL(for: .segmentation) == nil ? 0 : 0.5,
-                source: "dataset_product_presence"
-            ))
-        }
-        if requestedTasks.contains(.failureCaseDetection) {
-            let degraded = frame.augmentations.contains { augmentation in
-                if case .motionBlur = augmentation { return true }
-                if case .compressionJPEG = augmentation { return true }
-                return false
-            }
-            predictions.append(VisionPrediction(
-                task: .failureCaseDetection,
-                label: degraded ? "degraded_camera_frame" : "nominal",
-                confidence: degraded ? 0.8 : 0.4,
-                source: "augmentation_metadata",
-                failureKind: degraded ? .badLighting : nil
-            ))
-        }
-
-        return FrameEvaluationResult(frameIndex: frame.index, rgbURL: rgbURL, predictions: predictions, warnings: warnings)
     }
 }
 
