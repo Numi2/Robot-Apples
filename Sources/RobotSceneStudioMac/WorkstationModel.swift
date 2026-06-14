@@ -669,8 +669,8 @@ public final class WorkstationModel {
             )
             let startedAt = Date()
             let result = try runProcess(
-                executableURL: URL(fileURLWithPath: "/usr/bin/env"),
-                arguments: ["python3"] + splatTrainingArguments(package: package, splatsPerFrame: splatsPerFrame, epochs: epochs, asciiPLY: asciiPLY),
+                executableURL: splatTrainingPythonExecutableURL(),
+                arguments: splatTrainingPythonPrefixArguments() + splatTrainingArguments(package: package, splatsPerFrame: splatsPerFrame, epochs: epochs, asciiPLY: asciiPLY),
                 currentDirectoryURL: package.trainScriptURL.deletingLastPathComponent()
             )
             let finishedAt = Date()
@@ -816,6 +816,17 @@ public final class WorkstationModel {
             arguments.append("--ascii-ply")
         }
         return arguments
+    }
+
+    private func splatTrainingPythonExecutableURL() -> URL {
+        if let explicit = ProcessInfo.processInfo.environment["ROBOT_SCENE_PYTHON"] {
+            return URL(fileURLWithPath: explicit)
+        }
+        return URL(fileURLWithPath: "/usr/bin/env")
+    }
+
+    private func splatTrainingPythonPrefixArguments() -> [String] {
+        ProcessInfo.processInfo.environment["ROBOT_SCENE_PYTHON"] == nil ? ["python3"] : []
     }
 
     private func runProcess(

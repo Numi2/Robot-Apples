@@ -172,8 +172,12 @@ swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-ex
 swift run robot-vision-lab --output ./RobotSceneWork --splat ./room.ply --use-expanded-route --write-mlx-training-package
 swift run robot-vision-lab --output ./RobotSceneWork --splat-training-manifest ./PreparedCapture/prepared_splat_training_manifest.json --plan-splat-training
 swift run robot-vision-lab --output ./RobotSceneWork --splat-training-manifest ./PreparedCapture/prepared_splat_training_manifest.json --write-splat-training-package
+swift run robot-vision-lab --output ./RobotSceneWork --splat-training-manifest ./PreparedCapture/prepared_splat_training_manifest.json --run-splat-training --splat-training-python /path/to/mlx/bin/python3 --splat-training-splats-per-frame 64 --splat-training-epochs 100
 swift run robot-vision-lab --validate-package ./RobotSceneWork/Project.robotscene
 ```
+
+Set `ROBOT_SCENE_PYTHON=/path/to/mlx/bin/python3` to make the Mac workstation
+app and CLI use the same Apple MLX Python environment.
 
 Developer fixture capture export remains isolated behind an explicit demo flag:
 

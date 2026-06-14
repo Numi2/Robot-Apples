@@ -6,6 +6,7 @@ enum SplatTrainingCLIError: Error {
     case missingPreparedManifest(URL)
     case missingOutputDirectory
     case missingRequiredInput(String)
+    case splatTrainingFailed(URL)
 }
 
 extension SplatTrainingCLIError: LocalizedError {
@@ -17,6 +18,8 @@ extension SplatTrainingCLIError: LocalizedError {
             "Missing --output <directory>. Production commands require an explicit workspace output directory."
         case .missingRequiredInput(let message):
             message
+        case .splatTrainingFailed(let url):
+            "Apple MLX splat training failed. Inspect \(url.path)."
         }
     }
 }
@@ -88,8 +91,22 @@ struct RobotVisionLabCLI {
             print("Training script: \(package.trainScriptURL.path)")
             print("Expected output: \(package.outputURL.path)")
         }
+        if CommandLine.arguments.contains("--run-splat-training") {
+            let manifestURL = try parseSplatTrainingManifestURL(outputDirectory: outputDirectory)
+            let job = try splatTrainingJob(outputDirectory: outputDirectory, manifestURL: manifestURL)
+            let package = try SplatTrainingPackageBuilder().writePackage(
+                job: job,
+                manifestURL: manifestURL,
+                outputDirectory: outputDirectory.appendingPathComponent("SplatTrainingPackage", isDirectory: true)
+            )
+            try runSplatTraining(package: package, job: job, outputDirectory: outputDirectory)
+        }
         if CommandLine.arguments.contains("--write-model-adapter-schemas") {
             try writeModelAdapterSchemas(outputDirectory: outputDirectory)
+        }
+
+        if CommandLine.arguments.contains("--run-splat-training"), !hasDatasetActionFlag(), parseSplatURL() == nil, !routeURLArgumentIsPresent() {
+            return
         }
 
         guard needsDatasetWorkflow() else {
@@ -164,6 +181,13 @@ struct RobotVisionLabCLI {
     }
 
     private static func needsDatasetWorkflow() -> Bool {
+        hasDatasetActionFlag()
+            || CommandLine.arguments.contains("--demo")
+            || parseSplatURL() != nil
+            || routeURLArgumentIsPresent()
+    }
+
+    private static func hasDatasetActionFlag() -> Bool {
         let datasetFlags = [
             "--render-apple-native",
             "--render-metal-splats",
@@ -176,10 +200,7 @@ struct RobotVisionLabCLI {
             "--plan-mlx-evaluation",
             "--export-robotscene"
         ]
-        return CommandLine.arguments.contains("--demo")
-            || parseSplatURL() != nil
-            || routeURLArgumentIsPresent()
-            || datasetFlags.contains { CommandLine.arguments.contains($0) }
+        return datasetFlags.contains { CommandLine.arguments.contains($0) }
     }
 
     private static func routeURLArgumentIsPresent() -> Bool {
@@ -640,6 +661,105 @@ struct RobotVisionLabCLI {
         print("Dataset loader: \(package.datasetLoaderURL.path)")
         print("Training script: \(package.trainScriptURL.path)")
         print("Core ML export script: \(package.exportScriptURL.path)")
+    }
+
+    private static func runSplatTraining(
+        package: SplatTrainingPackageManifest,
+        job: SplatTrainingJob,
+        outputDirectory: URL
+    ) throws {
+        let startedAt = Date()
+        let result = try runProcess(
+            executableURL: splatTrainingPythonExecutableURL(),
+            arguments: splatTrainingPythonPrefixArguments() + splatTrainingArguments(package: package),
+            currentDirectoryURL: package.trainScriptURL.deletingLastPathComponent()
+        )
+        let finishedAt = Date()
+        let report = SplatTrainingReportBuilder().completedReport(
+            job: job,
+            startedAt: startedAt,
+            finishedAt: finishedAt,
+            exitCode: result.exitCode,
+            standardOutput: result.standardOutput,
+            standardError: result.standardError
+        )
+        let reportURL = outputDirectory.appendingPathComponent("splat_training_report.json")
+        try SplatTrainingReportWriter().write(report, to: reportURL)
+        print("Wrote Apple MLX splat training report to \(reportURL.path)")
+        guard result.exitCode == 0 else {
+            throw SplatTrainingCLIError.splatTrainingFailed(reportURL)
+        }
+        let asset = try GaussianSplatImporter().inspect(url: package.outputURL)
+        let summaryURL = package.outputURL.deletingPathExtension().appendingPathExtension("training_summary.json")
+        let metricsURL = package.outputURL.deletingPathExtension().appendingPathExtension("training_metrics.jsonl")
+        print("Trained Gaussian splat: \(package.outputURL.path)")
+        print("Imported trained \(asset.format.rawValue) splat with \(asset.vertexCount) vertices")
+        if FileManager.default.fileExists(atPath: summaryURL.path) {
+            print("Training summary: \(summaryURL.path)")
+        }
+        if FileManager.default.fileExists(atPath: metricsURL.path) {
+            print("Training metrics: \(metricsURL.path)")
+        }
+    }
+
+    private static func splatTrainingArguments(package: SplatTrainingPackageManifest) -> [String] {
+        var arguments = [
+            package.trainScriptURL.path,
+            "--frames", package.frameIndexURL.path,
+            "--output", package.outputURL.path,
+            "--splats-per-frame", "\(intValue(for: "--splat-training-splats-per-frame", default: 24))",
+            "--epochs", "\(intValue(for: "--splat-training-epochs", default: 25))"
+        ]
+        if let depthPriorIndexURL = package.depthPriorIndexURL {
+            arguments.append(contentsOf: ["--depth-priors", depthPriorIndexURL.path])
+        }
+        if CommandLine.arguments.contains("--splat-training-ascii-ply") {
+            arguments.append("--ascii-ply")
+        }
+        return arguments
+    }
+
+    private static func splatTrainingPythonExecutableURL() -> URL {
+        if let explicit = stringValue(for: "--splat-training-python") ?? ProcessInfo.processInfo.environment["ROBOT_SCENE_PYTHON"] {
+            return URL(fileURLWithPath: explicit)
+        }
+        return URL(fileURLWithPath: "/usr/bin/env")
+    }
+
+    private static func splatTrainingPythonPrefixArguments() -> [String] {
+        if stringValue(for: "--splat-training-python") != nil || ProcessInfo.processInfo.environment["ROBOT_SCENE_PYTHON"] != nil {
+            return []
+        }
+        return ["python3"]
+    }
+
+    private static func runProcess(
+        executableURL: URL,
+        arguments: [String],
+        currentDirectoryURL: URL
+    ) throws -> (exitCode: Int32, standardOutput: String, standardError: String) {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.currentDirectoryURL = currentDirectoryURL
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        try process.run()
+        process.waitUntilExit()
+        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let error = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        if !output.isEmpty {
+            print(output, terminator: output.hasSuffix("\n") ? "" : "\n")
+        }
+        if !error.isEmpty {
+            FileHandle.standardError.write(Data(error.utf8))
+            if !error.hasSuffix("\n") {
+                FileHandle.standardError.write(Data("\n".utf8))
+            }
+        }
+        return (process.terminationStatus, output, error)
     }
 
     private static func renderMetalSplatFrames(manifest: DatasetManifest, outputDirectory: URL) throws {
