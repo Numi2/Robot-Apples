@@ -368,27 +368,36 @@ public struct RobotScenePackageExporter: Sendable {
         let tools = SharedProjectFormatTools()
         try fileManager.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: packageDirectory.appendingPathComponent("review", isDirectory: true), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: packageDirectory.appendingPathComponent("assets/splat", isDirectory: true), withIntermediateDirectories: true)
         _ = try tools.compactBundle(at: packageDirectory)
 
+        let packagedScene = try packageSplatScene(manifest.scene, packageDirectory: packageDirectory)
         let datasetManifestURL = packageDirectory.appendingPathComponent("dataset.json")
-        try JSONEncoder.robotVisionLabEncoder.encode(manifest).write(to: datasetManifestURL)
+        let packagedDatasetManifest = DatasetManifest(
+            recipeID: manifest.recipeID,
+            generatedAt: manifest.generatedAt,
+            scene: packagedScene,
+            cameraRig: manifest.cameraRig,
+            frames: manifest.frames
+        )
+        try JSONEncoder.robotVisionLabEncoder.encode(packagedDatasetManifest).write(to: datasetManifestURL)
 
-        let navigationGraph = makeNavigationGraph(from: manifest)
+        let navigationGraph = makeNavigationGraph(from: packagedDatasetManifest)
         let navigationGraphURL = packageDirectory.appendingPathComponent("navigation_graph.json")
         try JSONEncoder.robotVisionLabEncoder.encode(navigationGraph).write(to: navigationGraphURL)
 
         let evaluationReport = evaluationReportURL.flatMap { try? JSONDecoder.robotVisionLabDecoder.decode(ModelEvaluationReport.self, from: Data(contentsOf: $0)) }
-        let failureMap = makeFailureMap(from: manifest, evaluationReport: evaluationReport)
+        let failureMap = makeFailureMap(from: packagedDatasetManifest, evaluationReport: evaluationReport)
         let failureMapURL = packageDirectory.appendingPathComponent("failure_map.json")
         try JSONEncoder.robotVisionLabEncoder.encode(failureMap).write(to: failureMapURL)
 
         let routeURL = packageDirectory.appendingPathComponent("review/robot_route.json")
-        try JSONEncoder.robotVisionLabEncoder.encode(manifest.frames.map {
+        try JSONEncoder.robotVisionLabEncoder.encode(packagedDatasetManifest.frames.map {
             PoseLabel(frameIndex: $0.index, timestamp: $0.timestamp, cameraPose: $0.cameraPose)
         }).write(to: routeURL)
 
         let reviewAsset = VisionProReviewAsset(
-            splatSceneURL: manifest.scene.sourceURL,
+            splatSceneURL: packagedScene.sourceURL,
             robotRouteURL: routeURL,
             failureMapURL: failureMapURL,
             datasetManifestURL: datasetManifestURL,
@@ -396,10 +405,12 @@ public struct RobotScenePackageExporter: Sendable {
         )
         let artifactURLs: [(String, URL)] = [
             ("dataset-manifest", datasetManifestURL),
+            ("splat-scene", packagedScene.sourceURL),
             ("navigation-graph", navigationGraphURL),
             ("failure-map", failureMapURL),
             ("review-route", routeURL)
-        ] + [evaluationReportURL.map { ("evaluation-report", $0) }].compactMap { $0 }
+        ].compactMap { role, url in url.map { (role, $0) } }
+            + [evaluationReportURL.map { ("evaluation-report", $0) }].compactMap { $0 }
         let artifacts = artifactURLs.map { tools.artifactRecord(role: $0.0, url: $0.1, packageRoot: packageDirectory) }
         let report = tools.validate(
             packageID: "\(manifest.recipeID)-robot-scene",
@@ -416,7 +427,7 @@ public struct RobotScenePackageExporter: Sendable {
             validationReportURL: reportURLs.json,
             humanReportURL: reportURLs.markdown,
             capturePackageURL: capturePackageURL,
-            splatScene: manifest.scene,
+            splatScene: packagedScene,
             datasetManifestURL: datasetManifestURL,
             navigationGraphURL: navigationGraphURL,
             failureMapURL: failureMapURL,
@@ -424,6 +435,40 @@ public struct RobotScenePackageExporter: Sendable {
         )
         try JSONEncoder.robotVisionLabEncoder.encode(package).write(to: packageDirectory.appendingPathComponent("robotscene.json"))
         return package
+    }
+
+    private func packageSplatScene(_ scene: GaussianSplatScene, packageDirectory: URL) throws -> GaussianSplatScene {
+        guard let sourceURL = scene.sourceURL else {
+            return scene
+        }
+        let fileName = sourceURL.lastPathComponent.isEmpty ? "scene.ply" : sourceURL.lastPathComponent
+        let relativeURL = URL(string: "assets/splat/\(fileName)") ?? URL(fileURLWithPath: "assets/splat/\(fileName)")
+        let targetURL = packageDirectory.appendingPathComponent(relativeURL.relativePath)
+        if sourceURL.standardizedFileURL.path != targetURL.standardizedFileURL.path {
+            try FileManager.default.createDirectory(at: targetURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: targetURL.path) {
+                try FileManager.default.removeItem(at: targetURL)
+            }
+            try FileManager.default.copyItem(at: sourceURL, to: targetURL)
+        }
+        return GaussianSplatScene(
+            id: scene.id,
+            source: packagedSource(from: scene.source, packagedURL: relativeURL),
+            alignmentTransform: scene.alignmentTransform,
+            bounds: scene.bounds,
+            roomPlanModelURL: scene.roomPlanModelURL
+        )
+    }
+
+    private func packagedSource(from source: SplatSource, packagedURL: URL) -> SplatSource {
+        switch source {
+        case .importedPLY:
+            return .importedPLY(packagedURL)
+        case .importedSplat:
+            return .importedSplat(packagedURL)
+        case .trainingOutput:
+            return .trainingOutput(packagedURL)
+        }
     }
 
     private func makeNavigationGraph(from manifest: DatasetManifest) -> NavigationGraph {
