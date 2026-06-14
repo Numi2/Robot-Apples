@@ -64,7 +64,11 @@ public struct NativeModelPredictionAdapter: Sendable {
            let confidence = outputs[confidenceOutput.name]?.doubleValue {
             return min(max(confidence, 0), 1)
         }
-        return min(max(outputs[mapping.outputName]?.doubleValue ?? 1, 0), 1)
+        let raw = min(max(outputs[mapping.outputName]?.doubleValue ?? 1, 0), 1)
+        if mapping.outputKind == .freeSpaceProbability {
+            return raw >= 0.5 ? raw : 1 - raw
+        }
+        return raw
     }
 
     private func failureKind(for label: String, outputKind: ModelAdapterOutputKind) -> FailureMarkerKind? {

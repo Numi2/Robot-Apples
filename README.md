@@ -143,7 +143,9 @@ developer tool for exercising the native contracts.
 - `RobotScenePackageExporter`: writes `.robotscene` packages for Vision Pro
   spatial review.
 - `FailureMapMarker`: spatial markers for confident, blocked, uncertain,
-  missing-view, ambiguous-view, bad-lighting, and low-texture regions.
+  missing-view, ambiguous-view, bad-lighting, and low-texture regions, including
+  calibrated markers from Core ML/MLX obstacle, free-space, uncertainty, and
+  failure-kind outputs.
 
 ## Roadmap
 

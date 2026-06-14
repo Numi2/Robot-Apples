@@ -291,6 +291,9 @@ public struct RobotScenePackageExporter: Sendable {
         if hasLightingOrImageDegradation(frame) {
             append(.badLighting, confidence: 0.72, note: "Camera augmentation includes exposure, blur, noise, or compression degradation.")
         }
+        for marker in calibratedModelMarkers(evaluation) {
+            append(marker.kind, confidence: marker.confidence, note: marker.note)
+        }
         for prediction in failurePredictions(evaluation) {
             append(
                 prediction.kind,
@@ -345,12 +348,64 @@ public struct RobotScenePackageExporter: Sendable {
                     || $0.label.localizedCaseInsensitiveContains("not_free")
                     || $0.label.localizedCaseInsensitiveContains("collision")
                 )
+                && $0.confidence >= 0.55
         } ?? false
     }
 
     private func hasLowConfidencePrediction(_ evaluation: FrameEvaluationResult?) -> Bool {
         guard let evaluation else { return false }
         return !evaluation.warnings.isEmpty || evaluation.predictions.contains { $0.confidence < 0.55 }
+    }
+
+    private func calibratedModelMarkers(_ evaluation: FrameEvaluationResult?) -> [(kind: FailureMarkerKind, confidence: Double, note: String)] {
+        guard let evaluation else { return [] }
+        var markers: [(kind: FailureMarkerKind, confidence: Double, note: String)] = []
+        for prediction in evaluation.predictions {
+            let label = prediction.label.lowercased()
+            switch prediction.task {
+            case .obstacleDetection:
+                if (label.contains("blocked") || label.contains("not_free")) && prediction.confidence >= 0.55 {
+                    markers.append((
+                        .blockedPrediction,
+                        min(max(prediction.confidence, 0), 1),
+                        "Calibrated obstacle output \(prediction.label) from \(prediction.source)."
+                    ))
+                }
+                if label.contains("free_path") && prediction.confidence >= 0.8 {
+                    markers.append((
+                        .confident,
+                        min(max(prediction.confidence, 0), 1),
+                        "Calibrated free-space output from \(prediction.source)."
+                    ))
+                }
+            case .failureCaseDetection:
+                if label.contains("uncertain") && prediction.confidence >= 0.45 {
+                    markers.append((
+                        .uncertainLocalization,
+                        min(max(prediction.confidence, 0), 1),
+                        "Calibrated localization uncertainty from \(prediction.source)."
+                    ))
+                }
+                if let kind = prediction.failureKind, kind != .confident, prediction.confidence >= 0.45 {
+                    markers.append((
+                        kind,
+                        min(max(prediction.confidence, 0), 1),
+                        "Calibrated failure-kind output \(prediction.label) from \(prediction.source)."
+                    ))
+                }
+            case .segmentation:
+                if label.contains("missing") && prediction.confidence >= 0.5 {
+                    markers.append((
+                        .missingTrainingViews,
+                        min(max(prediction.confidence, 0), 1),
+                        "Calibrated segmentation gap from \(prediction.source)."
+                    ))
+                }
+            case .navigationTargetDetection:
+                continue
+            }
+        }
+        return markers
     }
 
     private func failurePredictions(_ evaluation: FrameEvaluationResult?) -> [(kind: FailureMarkerKind, confidence: Double, label: String, source: String)] {
