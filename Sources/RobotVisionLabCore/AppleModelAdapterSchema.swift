@@ -88,17 +88,27 @@ public struct NativeModelAdapterSchema: Codable, Equatable, Sendable {
             id: "coreml-robot-vision-default",
             runtime: .coreML,
             inputs: [
-                ModelAdapterFeature(name: "imagePath", kind: "String", semantic: ModelAdapterInputKind.image.rawValue),
+                ModelAdapterFeature(name: "rgb", kind: "Float32", shape: [1, 3, 720, 1280], semantic: ModelAdapterInputKind.image.rawValue),
+                ModelAdapterFeature(name: "depth", kind: "Float32", shape: [1, 1, 720, 1280], semantic: ModelAdapterInputKind.depth.rawValue),
+                ModelAdapterFeature(name: "pose", kind: "Float32", shape: [1, 7], semantic: ModelAdapterInputKind.cameraPose.rawValue),
+                ModelAdapterFeature(name: "intrinsics", kind: "Float32", shape: [1, 4], semantic: ModelAdapterInputKind.intrinsics.rawValue),
                 ModelAdapterFeature(name: "frameIndex", kind: "Int64", semantic: ModelAdapterInputKind.frameIndex.rawValue),
                 ModelAdapterFeature(name: "timestamp", kind: "Double", semantic: ModelAdapterInputKind.timestamp.rawValue)
             ],
             outputs: [
                 ModelAdapterFeature(name: "label", kind: "String", semantic: ModelAdapterOutputKind.classLabel.rawValue),
-                ModelAdapterFeature(name: "confidence", kind: "Double", semantic: ModelAdapterOutputKind.confidence.rawValue)
+                ModelAdapterFeature(name: "confidence", kind: "Double", semantic: ModelAdapterOutputKind.confidence.rawValue),
+                ModelAdapterFeature(name: "obstacle_probability", kind: "Double", semantic: ModelAdapterOutputKind.obstacleProbability.rawValue),
+                ModelAdapterFeature(name: "free_space_probability", kind: "Double", semantic: ModelAdapterOutputKind.freeSpaceProbability.rawValue),
+                ModelAdapterFeature(name: "localization_uncertainty", kind: "Double", semantic: ModelAdapterOutputKind.localizationUncertainty.rawValue),
+                ModelAdapterFeature(name: "failure_kind", kind: "String", semantic: ModelAdapterOutputKind.failureKind.rawValue)
             ],
             predictionMappings: [
                 ModelAdapterPredictionMapping(outputName: "label", outputKind: .classLabel, visionTask: .failureCaseDetection),
-                ModelAdapterPredictionMapping(outputName: "label", outputKind: .classLabel, visionTask: .obstacleDetection)
+                ModelAdapterPredictionMapping(outputName: "obstacle_probability", outputKind: .obstacleProbability, visionTask: .obstacleDetection),
+                ModelAdapterPredictionMapping(outputName: "free_space_probability", outputKind: .freeSpaceProbability, visionTask: .obstacleDetection),
+                ModelAdapterPredictionMapping(outputName: "localization_uncertainty", outputKind: .localizationUncertainty, visionTask: .failureCaseDetection),
+                ModelAdapterPredictionMapping(outputName: "failure_kind", outputKind: .failureKind, visionTask: .failureCaseDetection)
             ]
         )
     }
