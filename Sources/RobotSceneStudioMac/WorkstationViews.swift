@@ -101,6 +101,9 @@ public struct WorkstationControlPanel: View {
     @State private var metalTileSize = 16
     @State private var metalMaxSplats = ""
     @State private var metalStreamingChunkSplats = ""
+    @State private var splatTrainingSplatsPerFrame = 24
+    @State private var splatTrainingEpochs = 25
+    @State private var writesASCIITrainingPLY = false
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -123,7 +126,10 @@ public struct WorkstationControlPanel: View {
                     model: model,
                     metalTileSize: $metalTileSize,
                     metalMaxSplats: $metalMaxSplats,
-                    metalStreamingChunkSplats: $metalStreamingChunkSplats
+                    metalStreamingChunkSplats: $metalStreamingChunkSplats,
+                    splatTrainingSplatsPerFrame: $splatTrainingSplatsPerFrame,
+                    splatTrainingEpochs: $splatTrainingEpochs,
+                    writesASCIITrainingPLY: $writesASCIITrainingPLY
                 )
             case .export:
                 ExportControlPanel(model: model)
@@ -375,6 +381,9 @@ private struct AppleSiliconControlPanel: View {
     @Binding var metalTileSize: Int
     @Binding var metalMaxSplats: String
     @Binding var metalStreamingChunkSplats: String
+    @Binding var splatTrainingSplatsPerFrame: Int
+    @Binding var splatTrainingEpochs: Int
+    @Binding var writesASCIITrainingPLY: Bool
 
     var body: some View {
         GroupBox("Apple Silicon") {
@@ -418,6 +427,29 @@ private struct AppleSiliconControlPanel: View {
                     model.writeSplatTrainingPackage()
                 } label: {
                     Label("Write Splat Training Package", systemImage: "camera.aperture")
+                }
+                .disabled(model.state.activeCaptureURL == nil)
+
+                Stepper(value: $splatTrainingSplatsPerFrame, in: 4...256, step: 4) {
+                    Label("Splat Rays \(splatTrainingSplatsPerFrame)", systemImage: "camera.metering.multispot")
+                }
+
+                Stepper(value: $splatTrainingEpochs, in: 1...500, step: 5) {
+                    Label("Epochs \(splatTrainingEpochs)", systemImage: "repeat")
+                }
+
+                Toggle(isOn: $writesASCIITrainingPLY) {
+                    Label("Inspection PLY", systemImage: "doc.plaintext")
+                }
+
+                Button {
+                    model.runSplatTraining(
+                        splatsPerFrame: splatTrainingSplatsPerFrame,
+                        epochs: splatTrainingEpochs,
+                        asciiPLY: writesASCIITrainingPLY
+                    )
+                } label: {
+                    Label("Run MLX Splat Training", systemImage: "play.circle")
                 }
                 .disabled(model.state.activeCaptureURL == nil)
 
@@ -1099,6 +1131,7 @@ private extension WorkstationStage {
         case .planningMetalRender: "Planning Metal Render"
         case .renderingMetalSplats: "Rendering Metal Splats"
         case .planningTraining: "Planning Training"
+        case .runningSplatTraining: "Running MLX Splat Training"
         case .evaluatingModel: "Evaluating Model"
         case .exportingRobotScene: "Exporting Robot Scene"
         case .complete: "Complete"
@@ -1111,6 +1144,7 @@ private extension WorkstationStage {
         case .failed: "xmark.octagon"
         case .complete: "checkmark.circle"
         case .idle: "circle"
+        case .runningSplatTraining: "play.circle"
         default: "gearshape.2"
         }
     }

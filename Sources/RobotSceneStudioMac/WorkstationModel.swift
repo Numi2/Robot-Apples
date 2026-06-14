@@ -12,6 +12,7 @@ public enum WorkstationStage: String, Codable, CaseIterable, Sendable {
     case planningMetalRender
     case renderingMetalSplats
     case planningTraining
+    case runningSplatTraining
     case evaluatingModel
     case exportingRobotScene
     case complete
@@ -176,6 +177,7 @@ public final class WorkstationModel {
     public private(set) var metalRenderProfile: MetalSplatRenderProfile?
     public private(set) var mlxTrainingPackage: MLXTrainingPackageManifest?
     public private(set) var splatTrainingPackage: SplatTrainingPackageManifest?
+    public private(set) var splatTrainingReport: SplatTrainingReport?
     public private(set) var failureMapCalibrationReport: FailureMapCalibrationReport?
     public private(set) var isMultipeerReceiverRunning = false
     public private(set) var transferEvents: [WorkstationTransferEvent] = []
@@ -248,6 +250,8 @@ public final class WorkstationModel {
             let asset = try GaussianSplatImporter().inspect(url: splatURL)
             splatAsset = asset
             state.activeSplatURL = splatURL
+            datasetManifest = nil
+            metalRenderProfile = nil
             appendArtifact(title: "Gaussian Splat", url: splatURL, kind: "splat")
             appendDiagnostic("Linked \(asset.format.rawValue.uppercased()) splat with \(asset.vertexCount) splats.")
         }
@@ -628,6 +632,85 @@ public final class WorkstationModel {
         }
     }
 
+    public func runSplatTraining(splatsPerFrame: Int = 24, epochs: Int = 25, asciiPLY: Bool = false) {
+        perform(stage: .runningSplatTraining) {
+            let package: SplatTrainingPackageManifest
+            if let existingPackage = splatTrainingPackage {
+                package = existingPackage
+            } else {
+                guard let preparation else {
+                    throw WorkstationError.missingPreparedCapture
+                }
+                let job = SplatTrainingJob(
+                    id: "\(preparation.splatTrainingManifest.id)-apple-native-splat-package",
+                    manifest: preparation.splatTrainingManifest,
+                    backend: AppleNativeTrainingBackend(),
+                    mode: .nativeAppleSilicon
+                )
+                package = try SplatTrainingPackageBuilder().writePackage(
+                    job: job,
+                    manifestURL: preparation.report.splatTrainingManifestURL,
+                    outputDirectory: state.workspaceURL.appendingPathComponent("SplatTrainingPackage", isDirectory: true)
+                )
+                splatTrainingPackage = package
+                appendArtifact(title: "Splat Training Package", url: package.trainScriptURL.deletingLastPathComponent(), kind: "splat-training-package")
+                appendArtifact(title: "Splat Training Frame Index", url: package.frameIndexURL, kind: "splat-training-index")
+                appendArtifact(title: "Capture Splat MLX Script", url: package.trainScriptURL, kind: "splat-training-script")
+            }
+
+            let job = SplatTrainingJob(
+                id: "\(package.id)-run",
+                manifest: try JSONDecoder.robotVisionLabDecoder.decode(
+                    SplatTrainingManifest.self,
+                    from: Data(contentsOf: package.sourceManifestURL)
+                ),
+                backend: AppleNativeTrainingBackend(),
+                mode: .nativeAppleSilicon
+            )
+            let startedAt = Date()
+            let result = try runProcess(
+                executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+                arguments: ["python3"] + splatTrainingArguments(package: package, splatsPerFrame: splatsPerFrame, epochs: epochs, asciiPLY: asciiPLY),
+                currentDirectoryURL: package.trainScriptURL.deletingLastPathComponent()
+            )
+            let finishedAt = Date()
+            let report = SplatTrainingReportBuilder().completedReport(
+                job: job,
+                startedAt: startedAt,
+                finishedAt: finishedAt,
+                exitCode: result.exitCode,
+                standardOutput: result.standardOutput,
+                standardError: result.standardError
+            )
+            let reportURL = state.workspaceURL.appendingPathComponent("splat_training_report.json")
+            try SplatTrainingReportWriter().write(report, to: reportURL)
+            splatTrainingReport = report
+            appendArtifact(title: "Splat Training Report", url: reportURL, kind: "training-report")
+
+            guard result.exitCode == 0 else {
+                throw WorkstationError.trainingFailed(reportURL)
+            }
+
+            let outputURL = package.outputURL
+            let summaryURL = outputURL.deletingPathExtension().appendingPathExtension("training_summary.json")
+            let metricsURL = outputURL.deletingPathExtension().appendingPathExtension("training_metrics.jsonl")
+            appendArtifact(title: "Trained Gaussian Splat", url: outputURL, kind: "splat-training-output")
+            if FileManager.default.fileExists(atPath: summaryURL.path) {
+                appendArtifact(title: "Splat Training Summary", url: summaryURL, kind: "training-summary")
+            }
+            if FileManager.default.fileExists(atPath: metricsURL.path) {
+                appendArtifact(title: "Splat Training Metrics", url: metricsURL, kind: "training-metrics")
+            }
+            let asset = try GaussianSplatImporter().inspect(url: outputURL)
+            splatAsset = asset
+            state.activeSplatURL = outputURL
+            datasetManifest = nil
+            metalRenderProfile = nil
+            appendArtifact(title: "Gaussian Splat", url: outputURL, kind: "splat")
+            appendDiagnostic("Apple MLX splat training complete: \(outputURL.lastPathComponent) linked as the active Gaussian splat.")
+        }
+    }
+
     public func writeMLXTrainingPackage() {
         perform(stage: .planningTraining) {
             let manifest = try ensureDatasetManifest()
@@ -711,6 +794,51 @@ public final class WorkstationModel {
             state.stage = .failed
             appendDiagnostic(error.localizedDescription)
         }
+    }
+
+    private func splatTrainingArguments(
+        package: SplatTrainingPackageManifest,
+        splatsPerFrame: Int,
+        epochs: Int,
+        asciiPLY: Bool
+    ) -> [String] {
+        var arguments = [
+            package.trainScriptURL.path,
+            "--frames", package.frameIndexURL.path,
+            "--output", package.outputURL.path,
+            "--splats-per-frame", "\(max(splatsPerFrame, 1))",
+            "--epochs", "\(max(epochs, 1))"
+        ]
+        if let depthPriorIndexURL = package.depthPriorIndexURL {
+            arguments.append(contentsOf: ["--depth-priors", depthPriorIndexURL.path])
+        }
+        if asciiPLY {
+            arguments.append("--ascii-ply")
+        }
+        return arguments
+    }
+
+    private func runProcess(
+        executableURL: URL,
+        arguments: [String],
+        currentDirectoryURL: URL
+    ) throws -> (exitCode: Int32, standardOutput: String, standardError: String) {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.currentDirectoryURL = currentDirectoryURL
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let error = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return (process.terminationStatus, output, error)
     }
 
     private func makeDatasetManifest() throws -> DatasetManifest {
@@ -930,6 +1058,7 @@ public enum WorkstationError: Error, LocalizedError {
     case missingPreparedCapture
     case missingSplat
     case nativeRenderProductsNotReady(URL)
+    case trainingFailed(URL)
 
     public var errorDescription: String? {
         switch self {
@@ -941,6 +1070,8 @@ public enum WorkstationError: Error, LocalizedError {
             "Link a .ply or .splat scene before rendering Metal splats."
         case .nativeRenderProductsNotReady(let url):
             "Native render products are not ready for MLX training. Render Metal splats first and inspect \(url.path)."
+        case .trainingFailed(let url):
+            "Apple MLX splat training failed. Inspect \(url.path)."
         }
     }
 }
