@@ -36,7 +36,8 @@ size policies.
   `motion.jsonl`.
 - `session.json` with device, lens, resolution, fps, user notes, and capture
   package metadata.
-- LiDAR depth snapshots and RoomPlan export where available.
+- LiDAR depth snapshots where available, stored as Float32 meters with per-frame
+  metadata and optional ARKit confidence maps; RoomPlan export where available.
 - Capture quality indicators.
 - `.robotcapture` package browser.
 - Multipeer sender to Mac.
@@ -48,7 +49,9 @@ The required iPhone capture output is a `.robotcapture` package containing:
 - `frames.jsonl`
 - `motion.jsonl`
 - `session.json`
-- Optional LiDAR, RoomPlan, and object-capture artifacts
+- LiDAR `lidar/depth_*.f32` plus `lidar/depth_*.json` metadata when LiDAR mode
+  is enabled, optional `lidar/confidence_*.bin`, RoomPlan, and object-capture
+  artifacts
 - Manifest, checksums, and package report
 
 ### Mac Workstation

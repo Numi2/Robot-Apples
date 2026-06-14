@@ -26,6 +26,7 @@ public struct RobotCapturePreparationReport: Codable, Equatable, Sendable {
     public var routeKeyframeCount: Int
     public var trainingFrameCount: Int
     public var evaluationFrameCount: Int
+    public var lidarDepthFrameCount: Int
     public var estimatedDurationSeconds: TimeInterval
     public var warnings: [String]
 
@@ -39,6 +40,7 @@ public struct RobotCapturePreparationReport: Codable, Equatable, Sendable {
         routeKeyframeCount: Int,
         trainingFrameCount: Int,
         evaluationFrameCount: Int,
+        lidarDepthFrameCount: Int,
         estimatedDurationSeconds: TimeInterval,
         warnings: [String]
     ) {
@@ -51,6 +53,7 @@ public struct RobotCapturePreparationReport: Codable, Equatable, Sendable {
         self.routeKeyframeCount = routeKeyframeCount
         self.trainingFrameCount = trainingFrameCount
         self.evaluationFrameCount = evaluationFrameCount
+        self.lidarDepthFrameCount = lidarDepthFrameCount
         self.estimatedDurationSeconds = estimatedDurationSeconds
         self.warnings = warnings
     }
@@ -121,6 +124,7 @@ public struct RobotCapturePreparer: Sendable {
             routeKeyframeCount: route.keyframes.count,
             trainingFrameCount: split.trainingFrameIndexes.count,
             evaluationFrameCount: split.evaluationFrameIndexes.count,
+            lidarDepthFrameCount: trainingManifest.lidarFrames.count,
             estimatedDurationSeconds: estimatedDuration(from: importedCapture.frames),
             warnings: preparationWarnings(importedCapture: importedCapture, split: split)
         )
@@ -199,6 +203,7 @@ public struct RobotCapturePreparer: Sendable {
         return SplatTrainingManifest(
             id: "\(importedCapture.session.id)-prepared-splat-training",
             imageFrames: imageFrames,
+            lidarFrames: importedCapture.captureBundle.lidarFrames,
             coordinateSystem: .arkitWorldMeters,
             roomPlanGeometryURL: importedCapture.captureBundle.roomPlanModelURL,
             objectGeometryURLs: importedCapture.captureBundle.objectCaptureAssetURLs,
@@ -233,6 +238,9 @@ public struct RobotCapturePreparer: Sendable {
         }
         if importedCapture.captureBundle.roomPlanModelURL == nil {
             warnings.append("No RoomPlan geometry is linked for structured scene alignment.")
+        }
+        if importedCapture.captureBundle.lidarFrames.isEmpty {
+            warnings.append("No strict ARKit LiDAR Float32 depth frames are linked for depth-prior splat training.")
         }
         return warnings
     }

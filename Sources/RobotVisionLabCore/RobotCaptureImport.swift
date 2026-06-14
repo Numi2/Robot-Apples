@@ -130,6 +130,7 @@ public struct RobotCaptureImporter: Sendable {
         if importedPackage.frames.count != importedPackage.captureBundle.rgbFrames.count {
             warnings.append("frames.jsonl count does not match capture_bundle.json RGB frame count.")
         }
+        warnings.append(contentsOf: lidarWarnings(importedPackage: importedPackage, packageRoot: packageRoot))
 
         let hasVideo: Bool
         if let videoURL = manifest.videoURL.map({ resolve($0, relativeTo: packageRoot) }) {
@@ -202,6 +203,48 @@ public struct RobotCaptureImporter: Sendable {
                     throw RobotCaptureImportError.invalidJSONLine(url: url, line: lineIndex + 1, underlying: error)
                 }
             }
+    }
+
+    private func lidarWarnings(importedPackage: RobotCaptureImport, packageRoot: URL) -> [String] {
+        var warnings: [String] = []
+        let decoder = JSONDecoder.robotVisionLabDecoder
+        for (index, frame) in importedPackage.captureBundle.lidarFrames.enumerated() {
+            let depthURL = resolve(frame.depthURL, relativeTo: packageRoot)
+            let metadataURL = resolve(frame.metadataURL, relativeTo: packageRoot)
+            if depthURL.pathExtension.lowercased() != "f32" {
+                warnings.append("LiDAR frame \(index) depth must be Float32 meters with .f32 extension.")
+            }
+            guard FileManager.default.fileExists(atPath: depthURL.path) else {
+                warnings.append("LiDAR frame \(index) depth file is missing: \(frame.depthURL.path).")
+                continue
+            }
+            guard FileManager.default.fileExists(atPath: metadataURL.path) else {
+                warnings.append("LiDAR frame \(index) metadata file is missing: \(frame.metadataURL.path).")
+                continue
+            }
+            do {
+                let metadata = try decoder.decode(CapturedLiDARDepthMetadata.self, from: Data(contentsOf: metadataURL))
+                let expectedByteCount = metadata.width * metadata.height * MemoryLayout<Float32>.stride
+                let attributes = try? FileManager.default.attributesOfItem(atPath: depthURL.path)
+                let actualByteCount = (attributes?[.size] as? NSNumber)?.intValue ?? -1
+                if actualByteCount != expectedByteCount {
+                    warnings.append("LiDAR frame \(index) depth byte count \(actualByteCount) does not match metadata dimensions \(metadata.width)x\(metadata.height).")
+                }
+                if metadata.depthFormat != "float32-little-endian-meters-row-major" {
+                    warnings.append("LiDAR frame \(index) depth format is \(metadata.depthFormat), expected float32-little-endian-meters-row-major.")
+                }
+                if resolve(metadata.depthURL, relativeTo: packageRoot).lastPathComponent != depthURL.lastPathComponent {
+                    warnings.append("LiDAR frame \(index) metadata depthURL does not match capture bundle depthURL.")
+                }
+            } catch {
+                warnings.append("LiDAR frame \(index) metadata could not be decoded: \(error.localizedDescription)")
+            }
+            if let confidenceURL = frame.confidenceURL.map({ resolve($0, relativeTo: packageRoot) }),
+               !FileManager.default.fileExists(atPath: confidenceURL.path) {
+                warnings.append("LiDAR frame \(index) confidence file is referenced but missing: \(confidenceURL.lastPathComponent).")
+            }
+        }
+        return warnings
     }
 }
 

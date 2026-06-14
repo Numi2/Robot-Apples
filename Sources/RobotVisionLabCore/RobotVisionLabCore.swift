@@ -48,14 +48,56 @@ public struct CapturedRGBFrame: Codable, Equatable, Sendable {
 public struct CapturedLiDARFrame: Codable, Equatable, Sendable {
     public var depthURL: URL
     public var confidenceURL: URL?
+    public var metadataURL: URL
     public var pose: Pose3D
     public var timestamp: TimeInterval
 
-    public init(depthURL: URL, confidenceURL: URL? = nil, pose: Pose3D, timestamp: TimeInterval) {
+    public init(depthURL: URL, confidenceURL: URL? = nil, metadataURL: URL, pose: Pose3D, timestamp: TimeInterval) {
         self.depthURL = depthURL
         self.confidenceURL = confidenceURL
+        self.metadataURL = metadataURL
         self.pose = pose
         self.timestamp = timestamp
+    }
+}
+
+public struct CapturedLiDARDepthMetadata: Codable, Equatable, Sendable {
+    public var timestamp: TimeInterval
+    public var width: Int
+    public var height: Int
+    public var depthFormat: String
+    public var confidenceFormat: String?
+    public var unit: WorldUnit
+    public var cameraPose: Pose3D
+    public var intrinsics: CameraIntrinsics?
+    public var depthURL: URL
+    public var confidenceURL: URL?
+    public var notes: String
+
+    public init(
+        timestamp: TimeInterval,
+        width: Int,
+        height: Int,
+        depthFormat: String = "float32-little-endian-meters-row-major",
+        confidenceFormat: String? = nil,
+        unit: WorldUnit = .meters,
+        cameraPose: Pose3D,
+        intrinsics: CameraIntrinsics? = nil,
+        depthURL: URL,
+        confidenceURL: URL? = nil,
+        notes: String = ""
+    ) {
+        self.timestamp = timestamp
+        self.width = width
+        self.height = height
+        self.depthFormat = depthFormat
+        self.confidenceFormat = confidenceFormat
+        self.unit = unit
+        self.cameraPose = cameraPose
+        self.intrinsics = intrinsics
+        self.depthURL = depthURL
+        self.confidenceURL = confidenceURL
+        self.notes = notes
     }
 }
 

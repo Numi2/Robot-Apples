@@ -756,6 +756,7 @@ struct RobotVisionLabCLI {
             imageFrames: demoScanSession().rgbFrames.map {
                 SplatTrainingFrame(imageURL: $0.imageURL, pose: $0.pose, timestamp: $0.timestamp, calibration: calibration)
             },
+            lidarFrames: demoScanSession().lidarFrames,
             roomPlanGeometryURL: URL(fileURLWithPath: "CaptureBundle/roomplan/room.usdz"),
             objectGeometryURLs: [
                 URL(fileURLWithPath: "CaptureBundle/object-capture/chair.usdz"),
@@ -804,8 +805,9 @@ struct RobotVisionLabCLI {
             ],
             lidarFrames: [
                 CapturedLiDARFrame(
-                    depthURL: URL(fileURLWithPath: "CaptureBundle/lidar/depth_000000.exr"),
-                    confidenceURL: URL(fileURLWithPath: "CaptureBundle/lidar/confidence_000000.png"),
+                    depthURL: URL(fileURLWithPath: "CaptureBundle/lidar/depth_000000.f32"),
+                    confidenceURL: URL(fileURLWithPath: "CaptureBundle/lidar/confidence_000000.bin"),
+                    metadataURL: URL(fileURLWithPath: "CaptureBundle/lidar/depth_000000.json"),
                     pose: Pose3D(position: SIMD3<Double>(-2, 1.4, 1.5)),
                     timestamp: 0
                 )

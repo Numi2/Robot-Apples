@@ -96,7 +96,6 @@ public protocol DeviceCaptureSessionControlling: AnyObject {
 import ARKit
 import AVFoundation
 import CoreMotion
-import CoreImage
 import RoomPlan
 import UIKit
 
@@ -117,7 +116,6 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
     private var lidarFrames: [CapturedLiDARFrame] = []
     private var roomPlanModelURL: URL?
     private var objectCaptureAssetURLs: [URL] = []
-    private let context = CIContext()
     private var videoURL: URL?
     private var framesJSONLURL: URL?
     private var motionJSONLURL: URL?
@@ -213,9 +211,15 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
             state = reducer.reduce(state, event: .appendRGBFrame)
         }
 
-        if plan?.captureModes.contains(.lidarDepth) == true, let depthMap = frame.sceneDepth?.depthMap {
-            if let depthURL = try? writePixelBuffer(depthMap, to: outputDirectory.appendingPathComponent("lidar"), prefix: "depth", timestamp: timestamp) {
-                lidarFrames.append(CapturedLiDARFrame(depthURL: depthURL, pose: pose, timestamp: timestamp))
+        if plan?.captureModes.contains(.lidarDepth) == true, let sceneDepth = frame.sceneDepth {
+            if let lidarFrame = try? writeLiDARFrameArtifacts(
+                sceneDepth: sceneDepth,
+                frame: frame,
+                pose: pose,
+                to: outputDirectory.appendingPathComponent("lidar"),
+                timestamp: timestamp
+            ) {
+                lidarFrames.append(lidarFrame)
                 state = reducer.reduce(state, event: .appendLiDARFrame)
             }
         }
@@ -260,14 +264,83 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         }
     }
 
-    private func writePixelBuffer(_ pixelBuffer: CVPixelBuffer, to directory: URL, prefix: String, timestamp: TimeInterval) throws -> URL {
+    private func writeLiDARFrameArtifacts(
+        sceneDepth: ARDepthData,
+        frame: ARFrame,
+        pose: Pose3D,
+        to directory: URL,
+        timestamp: TimeInterval
+    ) throws -> CapturedLiDARFrame {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let timestampMilliseconds = Int((timestamp * 1000).rounded())
-        let url = directory.appendingPathComponent(String(format: "%@_%06d.png", prefix, timestampMilliseconds))
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return url }
-        try context.writePNGRepresentation(of: image, to: url, format: .RGBA8, colorSpace: colorSpace)
-        return url
+        let depthURL = directory.appendingPathComponent(String(format: "depth_%06d.f32", timestampMilliseconds))
+        let confidenceURL = sceneDepth.confidenceMap.map { _ in
+            directory.appendingPathComponent(String(format: "confidence_%06d.bin", timestampMilliseconds))
+        }
+        let metadataURL = directory.appendingPathComponent(String(format: "depth_%06d.json", timestampMilliseconds))
+
+        let depthSize = try writeFloat32DepthBuffer(sceneDepth.depthMap, to: depthURL)
+        if let confidenceMap = sceneDepth.confidenceMap, let confidenceURL {
+            try writeUInt8PixelBuffer(confidenceMap, to: confidenceURL)
+        }
+
+        let metadata = CapturedLiDARDepthMetadata(
+            timestamp: timestamp,
+            width: depthSize.width,
+            height: depthSize.height,
+            confidenceFormat: confidenceURL == nil ? nil : "uint8-arkit-confidence-row-major",
+            cameraPose: pose,
+            intrinsics: CameraIntrinsics(matrix: frame.camera.intrinsics, resolution: frame.camera.imageResolution),
+            depthURL: depthURL,
+            confidenceURL: confidenceURL,
+            notes: "ARKit sceneDepth.depthMap captured as Float32 meters without PNG quantization."
+        )
+        try JSONEncoder.robotVisionLabEncoder.encode(metadata).write(to: metadataURL)
+        return CapturedLiDARFrame(
+            depthURL: depthURL,
+            confidenceURL: confidenceURL,
+            metadataURL: metadataURL,
+            pose: pose,
+            timestamp: timestamp
+        )
+    }
+
+    private func writeFloat32DepthBuffer(_ pixelBuffer: CVPixelBuffer, to url: URL) throws -> (width: Int, height: Int) {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            throw AppleDeviceCaptureError.missingPixelBufferBaseAddress
+        }
+        var data = Data(capacity: width * height * MemoryLayout<Float32>.stride)
+        for row in 0..<height {
+            let rowPointer = baseAddress.advanced(by: row * bytesPerRow).assumingMemoryBound(to: Float32.self)
+            for column in 0..<width {
+                var value = rowPointer[column]
+                withUnsafeBytes(of: &value) { data.append(contentsOf: $0) }
+            }
+        }
+        try data.write(to: url, options: .atomic)
+        return (width, height)
+    }
+
+    private func writeUInt8PixelBuffer(_ pixelBuffer: CVPixelBuffer, to url: URL) throws {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            throw AppleDeviceCaptureError.missingPixelBufferBaseAddress
+        }
+        var data = Data(capacity: width * height)
+        for row in 0..<height {
+            let rowPointer = baseAddress.advanced(by: row * bytesPerRow).assumingMemoryBound(to: UInt8.self)
+            data.append(rowPointer, count: width)
+        }
+        try data.write(to: url, options: .atomic)
     }
 
     private func startMovieCapture(plan: CapturePlan, outputDirectory: URL) throws {
@@ -378,6 +451,12 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
 
     private func writeRobotCaptureManifest(to outputDirectory: URL) throws {
         let tools = SharedProjectFormatTools()
+        let lidarArtifactURLs = lidarFrames.flatMap { frame in
+            [
+                ("lidar-depth", frame.depthURL),
+                ("lidar-metadata", frame.metadataURL)
+            ] + [frame.confidenceURL.map { ("lidar-confidence", $0) }].compactMap { $0 }
+        }
         let artifactURLs: [(String, URL)] = [
             ("video", outputDirectory.appendingPathComponent("video.mov")),
             ("frames", outputDirectory.appendingPathComponent("frames.jsonl")),
@@ -385,7 +464,7 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
             ("session", outputDirectory.appendingPathComponent("session.json")),
             ("capture-bundle", outputDirectory.appendingPathComponent("capture_bundle.json")),
             ("splat-training-manifest", outputDirectory.appendingPathComponent("splat_training_manifest.json"))
-        ]
+        ] + lidarArtifactURLs
         let artifacts = artifactURLs.map { tools.artifactRecord(role: $0.0, url: $0.1, packageRoot: outputDirectory) }
         let report = tools.validate(
             packageID: "\(outputDirectory.lastPathComponent)-robot-capture",
@@ -448,6 +527,7 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
                     )
                 )
             },
+            lidarFrames: lidarFrames,
             roomPlanGeometryURL: roomPlanModelURL,
             objectGeometryURLs: objectCaptureAssetURLs,
             expectedOutput: SplatTrainingOutput(
@@ -557,6 +637,7 @@ public enum AppleDeviceCaptureError: Error, LocalizedError {
     case missingVideoDevice
     case cannotAddVideoInput
     case cannotAddMovieOutput
+    case missingPixelBufferBaseAddress
 
     public var errorDescription: String? {
         switch self {
@@ -566,6 +647,8 @@ public enum AppleDeviceCaptureError: Error, LocalizedError {
             "AVCaptureSession could not add the video input."
         case .cannotAddMovieOutput:
             "AVCaptureSession could not add AVCaptureMovieFileOutput."
+        case .missingPixelBufferBaseAddress:
+            "ARKit LiDAR pixel buffer did not expose a readable base address."
         }
     }
 }

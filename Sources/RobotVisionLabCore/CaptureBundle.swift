@@ -115,6 +115,7 @@ public struct RobotCaptureSessionMetadata: Codable, Equatable, Sendable {
 public struct SplatTrainingManifest: Codable, Equatable, Sendable {
     public var id: String
     public var imageFrames: [SplatTrainingFrame]
+    public var lidarFrames: [CapturedLiDARFrame]
     public var coordinateSystem: CoordinateSystem
     public var roomPlanGeometryURL: URL?
     public var objectGeometryURLs: [URL]
@@ -123,6 +124,7 @@ public struct SplatTrainingManifest: Codable, Equatable, Sendable {
     public init(
         id: String,
         imageFrames: [SplatTrainingFrame],
+        lidarFrames: [CapturedLiDARFrame] = [],
         coordinateSystem: CoordinateSystem = .arkitWorldMeters,
         roomPlanGeometryURL: URL? = nil,
         objectGeometryURLs: [URL] = [],
@@ -130,6 +132,7 @@ public struct SplatTrainingManifest: Codable, Equatable, Sendable {
     ) {
         self.id = id
         self.imageFrames = imageFrames
+        self.lidarFrames = lidarFrames
         self.coordinateSystem = coordinateSystem
         self.roomPlanGeometryURL = roomPlanGeometryURL
         self.objectGeometryURLs = objectGeometryURLs
@@ -237,6 +240,7 @@ public struct CaptureBundleExporter: Sendable {
                     )
                 )
             },
+            lidarFrames: packagedScanSession.lidarFrames,
             roomPlanGeometryURL: packagedScanSession.roomPlanModelURL,
             objectGeometryURLs: packagedScanSession.objectCaptureAssetURLs,
             expectedOutput: SplatTrainingOutput(
@@ -293,13 +297,19 @@ public struct CaptureBundleExporter: Sendable {
 
         let tools = SharedProjectFormatTools()
         let packageVideoURL = FileManager.default.fileExists(atPath: videoURL.path) ? videoURL : nil
+        let lidarArtifactURLs = packagedScanSession.lidarFrames.flatMap { frame in
+            [
+                ("lidar-depth", frame.depthURL),
+                ("lidar-metadata", frame.metadataURL)
+            ] + [frame.confidenceURL.map { ("lidar-confidence", $0) }].compactMap { $0 }
+        }
         let artifactURLs: [(String, URL)] = [
             ("frames", framesJSONLURL),
             ("motion", motionJSONLURL),
             ("session", sessionJSONURL),
             ("capture-bundle", outputDirectory.appendingPathComponent("capture_bundle.json")),
             ("splat-training-manifest", trainingManifestURL)
-        ] + [packageVideoURL.map { ("video", $0) }].compactMap { $0 }
+        ] + [packageVideoURL.map { ("video", $0) }].compactMap { $0 } + lidarArtifactURLs
         let artifacts = artifactURLs.map { tools.artifactRecord(role: $0.0, url: $0.1, packageRoot: outputDirectory) }
         let report = tools.validate(
             packageID: "\(packagedScanSession.id)-robot-capture",
@@ -351,6 +361,9 @@ public struct CaptureBundleExporter: Sendable {
                             .appendingPathComponent("lidar", isDirectory: true)
                             .appendingPathComponent($0.lastPathComponent)
                     },
+                    metadataURL: outputDirectory
+                        .appendingPathComponent("lidar", isDirectory: true)
+                        .appendingPathComponent($0.metadataURL.lastPathComponent),
                     pose: $0.pose,
                     timestamp: $0.timestamp
                 )
