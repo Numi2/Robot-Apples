@@ -67,6 +67,8 @@ swift run robot-vision-lab --output ./GeneratedDataset --path-mode random --fram
 swift run robot-vision-lab --output ./GeneratedDataset --render-preview --augment-dataset --augmentation-seed 42
 swift run robot-vision-lab --output ./GeneratedDataset --splat ./room.ply --render-splat-points
 swift run robot-vision-lab --output ./GeneratedDataset --splat ./Fixtures/sample_gaussian_splats.ply --render-metal-splats --metal-tile-size 16 --metal-max-splats 1000000
+swift run robot-vision-lab --output ./GeneratedDatasetBinaryPLY --splat ./Fixtures/sample_gaussian_splats_binary.ply --render-metal-splats
+swift run robot-vision-lab --output ./GeneratedDatasetSplat --splat ./Fixtures/sample_gaussian_splats.splat --render-metal-splats
 swift run robot-vision-lab --output ./GeneratedDataset --export-sample-capture
 swift run robot-vision-lab --output ./GeneratedDataset --import-robotcapture ./GeneratedDataset/CaptureBundle --capture-holdout-every 5
 swift run robot-vision-lab --output ./GeneratedDataset --capture-route ./GeneratedDataset/PreparedCapture/capture_route.json --align-capture-route
@@ -114,12 +116,13 @@ developer tool for exercising the native contracts.
 - `MetalRenderPlanner`: validates native Metal render readiness and device
   capability before the real Gaussian splat renderer.
 - `MetalGaussianSplatRenderer`: native Metal renderer that loads Gaussian PLY
-  properties, uploads splats into Metal buffers, projects splats in the vertex
-  shader, projects anisotropic covariance into screen space, runs Metal compute
-  passes for tile counts, prefix offsets, compaction, per-tile depth sorting,
-  and vertex-buffer construction, composites Gaussian point discs on the GPU,
-  and writes RGB, GPU-derived depth images, GPU-derived visibility images,
-  diagnostic depth/visibility summaries, and tile-bin products.
+  and binary `.splat` properties, uploads splats into Metal buffers, projects
+  splats in the vertex shader, projects anisotropic covariance into screen
+  space, runs Metal compute passes for tile counts, prefix offsets, compaction,
+  per-tile depth sorting, and vertex-buffer construction, composites Gaussian
+  point discs on the GPU, and writes RGB, GPU-derived depth images, GPU-derived
+  visibility images, diagnostic depth/visibility summaries, and tile-bin
+  products.
 - `MetalGaussianSplatRenderConfiguration`: controls tile size and per-frame
   splat budget for larger Apple Silicon render jobs.
 - `SplatTrainingJob`: Apple-native training plan for MLX/Create ML/Metal

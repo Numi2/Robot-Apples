@@ -7,5 +7,6 @@ DerivedData/
 *.xcuserdata/
 
 GeneratedDataset/
+GeneratedDataset*/
 *.robotcapture/
 *.robotscene/

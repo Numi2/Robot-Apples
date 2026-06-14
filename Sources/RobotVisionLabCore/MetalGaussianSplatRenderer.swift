@@ -211,69 +211,71 @@ public struct GaussianSplatCloudLoader: Sendable {
     public func load(url: URL) throws -> RenderableGaussianSplatCloud {
         switch url.pathExtension.lowercased() {
         case "ply":
-            return try loadASCIIPLY(url: url)
+            return try loadPLY(url: url)
+        case "splat":
+            return try loadBinarySplat(url: url)
         default:
             throw GaussianSplatImportError.unsupportedFormat(url.pathExtension)
         }
     }
 
-    public func loadASCIIPLY(url: URL) throws -> RenderableGaussianSplatCloud {
-        let text = try String(contentsOf: url, encoding: .utf8)
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    public func loadPLY(url: URL) throws -> RenderableGaussianSplatCloud {
+        let data = try Data(contentsOf: url)
+        guard let headerEndRange = data.range(of: Data("\nend_header\n".utf8)) ?? data.range(of: Data("\rend_header\r".utf8)) else {
+            throw GaussianSplatImportError.invalidPLY("Missing end_header.")
+        }
+        let headerData = data[..<headerEndRange.upperBound]
+        guard let header = String(data: headerData, encoding: .utf8) else {
+            throw GaussianSplatImportError.invalidPLY("Header is not valid UTF-8.")
+        }
+        let lines = header.split(whereSeparator: \.isNewline).map(String.init)
         guard lines.first == "ply" else {
             throw GaussianSplatImportError.invalidPLY("Missing ply magic header.")
         }
-        guard lines.contains("format ascii 1.0") else {
-            throw GaussianSplatImportError.invalidPLY("Only ASCII PLY files are supported by the native Metal loader.")
+        let format = lines.first { $0.hasPrefix("format ") } ?? ""
+        if format == "format ascii 1.0" {
+            return try loadASCIIPLY(url: url, lines: lines, endHeaderByteOffset: headerEndRange.upperBound)
         }
+        if format == "format binary_little_endian 1.0" {
+            return try loadBinaryLittleEndianPLY(url: url, data: data, lines: lines, vertexStartOffset: headerEndRange.upperBound)
+        }
+        throw GaussianSplatImportError.invalidPLY("Unsupported PLY format: \(format).")
+    }
+
+    private func loadASCIIPLY(url: URL, lines: [String], endHeaderByteOffset: Data.Index) throws -> RenderableGaussianSplatCloud {
         guard let endHeaderIndex = lines.firstIndex(of: "end_header") else {
             throw GaussianSplatImportError.invalidPLY("Missing end_header.")
         }
 
-        var vertexCount = 0
-        var vertexProperties: [String] = []
-        var readingVertexElement = false
-        for line in lines[..<endHeaderIndex] {
-            let parts = line.split(separator: " ").map(String.init)
-            if parts.count == 3, parts[0] == "element", parts[1] == "vertex", let count = Int(parts[2]) {
-                vertexCount = count
-                readingVertexElement = true
-                continue
-            }
-            if parts.first == "element", parts.dropFirst().first != "vertex" {
-                readingVertexElement = false
-            }
-            if readingVertexElement, parts.count >= 3, parts[0] == "property" {
-                vertexProperties.append(parts.last ?? "")
-            }
-        }
+        let layout = try parsePLYLayout(lines: Array(lines[..<endHeaderIndex]))
 
-        guard let xIndex = vertexProperties.firstIndex(of: "x"),
-              let yIndex = vertexProperties.firstIndex(of: "y"),
-              let zIndex = vertexProperties.firstIndex(of: "z") else {
+        guard let xIndex = layout.vertexProperties.firstIndex(where: { $0.name == "x" }),
+              let yIndex = layout.vertexProperties.firstIndex(where: { $0.name == "y" }),
+              let zIndex = layout.vertexProperties.firstIndex(where: { $0.name == "z" }) else {
             throw GaussianSplatImportError.invalidPLY("PLY vertices must contain x, y, and z properties.")
         }
 
-        let redIndex = vertexProperties.firstIndex(of: "red") ?? vertexProperties.firstIndex(of: "f_dc_0")
-        let greenIndex = vertexProperties.firstIndex(of: "green") ?? vertexProperties.firstIndex(of: "f_dc_1")
-        let blueIndex = vertexProperties.firstIndex(of: "blue") ?? vertexProperties.firstIndex(of: "f_dc_2")
-        let opacityIndex = vertexProperties.firstIndex(of: "opacity")
-        let scale0Index = vertexProperties.firstIndex(of: "scale_0") ?? vertexProperties.firstIndex(of: "scale")
-        let scale1Index = vertexProperties.firstIndex(of: "scale_1")
-        let scale2Index = vertexProperties.firstIndex(of: "scale_2")
-        let rot0Index = vertexProperties.firstIndex(of: "rot_0") ?? vertexProperties.firstIndex(of: "rotation_0")
-        let rot1Index = vertexProperties.firstIndex(of: "rot_1") ?? vertexProperties.firstIndex(of: "rotation_1")
-        let rot2Index = vertexProperties.firstIndex(of: "rot_2") ?? vertexProperties.firstIndex(of: "rotation_2")
-        let rot3Index = vertexProperties.firstIndex(of: "rot_3") ?? vertexProperties.firstIndex(of: "rotation_3")
+        let propertyNames = layout.vertexProperties.map(\.name)
+        let redIndex = propertyNames.firstIndex(of: "red") ?? propertyNames.firstIndex(of: "f_dc_0")
+        let greenIndex = propertyNames.firstIndex(of: "green") ?? propertyNames.firstIndex(of: "f_dc_1")
+        let blueIndex = propertyNames.firstIndex(of: "blue") ?? propertyNames.firstIndex(of: "f_dc_2")
+        let opacityIndex = propertyNames.firstIndex(of: "opacity")
+        let scale0Index = propertyNames.firstIndex(of: "scale_0") ?? propertyNames.firstIndex(of: "scale")
+        let scale1Index = propertyNames.firstIndex(of: "scale_1")
+        let scale2Index = propertyNames.firstIndex(of: "scale_2")
+        let rot0Index = propertyNames.firstIndex(of: "rot_0") ?? propertyNames.firstIndex(of: "rotation_0")
+        let rot1Index = propertyNames.firstIndex(of: "rot_1") ?? propertyNames.firstIndex(of: "rotation_1")
+        let rot2Index = propertyNames.firstIndex(of: "rot_2") ?? propertyNames.firstIndex(of: "rotation_2")
+        let rot3Index = propertyNames.firstIndex(of: "rot_3") ?? propertyNames.firstIndex(of: "rotation_3")
 
         var splats: [RenderableGaussianSplat] = []
-        splats.reserveCapacity(vertexCount)
+        splats.reserveCapacity(layout.vertexCount)
         var minimum = SIMD3<Double>(Double.greatestFiniteMagnitude, Double.greatestFiniteMagnitude, Double.greatestFiniteMagnitude)
         var maximum = SIMD3<Double>(-Double.greatestFiniteMagnitude, -Double.greatestFiniteMagnitude, -Double.greatestFiniteMagnitude)
 
-        for line in lines.dropFirst(endHeaderIndex + 1).prefix(vertexCount) {
+        for line in lines.dropFirst(endHeaderIndex + 1).prefix(layout.vertexCount) {
             let values = line.split(separator: " ")
-            guard values.count >= vertexProperties.count,
+            guard values.count >= layout.vertexProperties.count,
                   let x = Float(values[xIndex]),
                   let y = Float(values[yIndex]),
                   let z = Float(values[zIndex]) else {
@@ -312,7 +314,7 @@ public struct GaussianSplatCloudLoader: Sendable {
             sourceURL: url,
             splats: splats,
             bounds: AxisAlignedBounds(minimum: minimum, maximum: maximum),
-            properties: detectedProperties(from: Set(vertexProperties))
+            properties: detectedProperties(from: Set(propertyNames))
         )
     }
 
@@ -335,6 +337,187 @@ public struct GaussianSplatCloudLoader: Sendable {
         }
         return properties
     }
+
+    private func loadBinaryLittleEndianPLY(url: URL, data: Data, lines: [String], vertexStartOffset: Data.Index) throws -> RenderableGaussianSplatCloud {
+        guard let endHeaderIndex = lines.firstIndex(of: "end_header") else {
+            throw GaussianSplatImportError.invalidPLY("Missing end_header.")
+        }
+        let layout = try parsePLYLayout(lines: Array(lines[..<endHeaderIndex]))
+        guard layout.vertexStride > 0 else {
+            throw GaussianSplatImportError.invalidPLY("Binary vertex stride is zero.")
+        }
+        let propertyNames = layout.vertexProperties.map(\.name)
+        guard let xProperty = layout.property(named: "x"),
+              let yProperty = layout.property(named: "y"),
+              let zProperty = layout.property(named: "z") else {
+            throw GaussianSplatImportError.invalidPLY("PLY vertices must contain x, y, and z properties.")
+        }
+        let redProperty = layout.property(named: "red") ?? layout.property(named: "f_dc_0")
+        let greenProperty = layout.property(named: "green") ?? layout.property(named: "f_dc_1")
+        let blueProperty = layout.property(named: "blue") ?? layout.property(named: "f_dc_2")
+        let opacityProperty = layout.property(named: "opacity")
+        let scale0Property = layout.property(named: "scale_0") ?? layout.property(named: "scale")
+        let scale1Property = layout.property(named: "scale_1")
+        let scale2Property = layout.property(named: "scale_2")
+        let rot0Property = layout.property(named: "rot_0") ?? layout.property(named: "rotation_0")
+        let rot1Property = layout.property(named: "rot_1") ?? layout.property(named: "rotation_1")
+        let rot2Property = layout.property(named: "rot_2") ?? layout.property(named: "rotation_2")
+        let rot3Property = layout.property(named: "rot_3") ?? layout.property(named: "rotation_3")
+
+        var splats: [RenderableGaussianSplat] = []
+        splats.reserveCapacity(layout.vertexCount)
+        var minimum = SIMD3<Double>(Double.greatestFiniteMagnitude, Double.greatestFiniteMagnitude, Double.greatestFiniteMagnitude)
+        var maximum = SIMD3<Double>(-Double.greatestFiniteMagnitude, -Double.greatestFiniteMagnitude, -Double.greatestFiniteMagnitude)
+        for vertexIndex in 0..<layout.vertexCount {
+            let base = vertexStartOffset + vertexIndex * layout.vertexStride
+            guard base + layout.vertexStride <= data.endIndex else {
+                throw GaussianSplatImportError.invalidPLY("Binary vertex data is truncated.")
+            }
+            let position = SIMD3<Float>(
+                try readFloat(data, base: base, property: xProperty),
+                try readFloat(data, base: base, property: yProperty),
+                try readFloat(data, base: base, property: zProperty)
+            )
+            let color = SIMD4<Float>(
+                try redProperty.map { try readColor(data, base: base, property: $0) } ?? 1,
+                try greenProperty.map { try readColor(data, base: base, property: $0) } ?? 1,
+                try blueProperty.map { try readColor(data, base: base, property: $0) } ?? 1,
+                try opacityProperty.map { try sigmoid(readFloat(data, base: base, property: $0)) } ?? 1
+            )
+            let scale = SIMD3<Float>(
+                try scale0Property.map { try expClamped(readFloat(data, base: base, property: $0)) } ?? 0.015,
+                try scale1Property.map { try expClamped(readFloat(data, base: base, property: $0)) } ?? scale0Property.map { try expClamped(readFloat(data, base: base, property: $0)) } ?? 0.015,
+                try scale2Property.map { try expClamped(readFloat(data, base: base, property: $0)) } ?? scale0Property.map { try expClamped(readFloat(data, base: base, property: $0)) } ?? 0.015
+            )
+            let rotation = SIMD4<Float>(
+                try rot0Property.map { try readFloat(data, base: base, property: $0) } ?? 0,
+                try rot1Property.map { try readFloat(data, base: base, property: $0) } ?? 0,
+                try rot2Property.map { try readFloat(data, base: base, property: $0) } ?? 0,
+                try rot3Property.map { try readFloat(data, base: base, property: $0) } ?? 1
+            )
+            splats.append(RenderableGaussianSplat(position: position, color: color, scale: scale, rotation: rotation))
+            minimum = min(minimum, SIMD3<Double>(Double(position.x), Double(position.y), Double(position.z)))
+            maximum = max(maximum, SIMD3<Double>(Double(position.x), Double(position.y), Double(position.z)))
+        }
+        return RenderableGaussianSplatCloud(
+            sourceURL: url,
+            splats: splats,
+            bounds: AxisAlignedBounds(minimum: minimum, maximum: maximum),
+            properties: detectedProperties(from: Set(propertyNames))
+        )
+    }
+
+    private func loadBinarySplat(url: URL) throws -> RenderableGaussianSplatCloud {
+        let data = try Data(contentsOf: url)
+        let recordStride = 32
+        guard data.count >= recordStride, data.count.isMultiple(of: recordStride) else {
+            throw GaussianSplatImportError.invalidSplat("Expected 32-byte splat records.")
+        }
+        var splats: [RenderableGaussianSplat] = []
+        splats.reserveCapacity(data.count / recordStride)
+        var minimum = SIMD3<Double>(Double.greatestFiniteMagnitude, Double.greatestFiniteMagnitude, Double.greatestFiniteMagnitude)
+        var maximum = SIMD3<Double>(-Double.greatestFiniteMagnitude, -Double.greatestFiniteMagnitude, -Double.greatestFiniteMagnitude)
+        for offset in stride(from: 0, to: data.count, by: recordStride) {
+            let position = SIMD3<Float>(
+                try data.readLittleEndianFloat32(at: offset),
+                try data.readLittleEndianFloat32(at: offset + 4),
+                try data.readLittleEndianFloat32(at: offset + 8)
+            )
+            let scale = SIMD3<Float>(
+                max(0.001, try data.readLittleEndianFloat32(at: offset + 12)),
+                max(0.001, try data.readLittleEndianFloat32(at: offset + 16)),
+                max(0.001, try data.readLittleEndianFloat32(at: offset + 20))
+            )
+            let color = SIMD4<Float>(
+                Float(data[offset + 24]) / 255,
+                Float(data[offset + 25]) / 255,
+                Float(data[offset + 26]) / 255,
+                Float(data[offset + 27]) / 255
+            )
+            let rotation = SIMD4<Float>(
+                (Float(data[offset + 28]) - 128) / 128,
+                (Float(data[offset + 29]) - 128) / 128,
+                (Float(data[offset + 30]) - 128) / 128,
+                (Float(data[offset + 31]) - 128) / 128
+            )
+            splats.append(RenderableGaussianSplat(position: position, color: color, scale: scale, rotation: rotation))
+            minimum = min(minimum, SIMD3<Double>(Double(position.x), Double(position.y), Double(position.z)))
+            maximum = max(maximum, SIMD3<Double>(Double(position.x), Double(position.y), Double(position.z)))
+        }
+        return RenderableGaussianSplatCloud(
+            sourceURL: url,
+            splats: splats,
+            bounds: AxisAlignedBounds(minimum: minimum, maximum: maximum),
+            properties: [.position, .color, .opacity, .scale, .rotation]
+        )
+    }
+
+    private func parsePLYLayout(lines: [String]) throws -> PLYVertexLayout {
+        var vertexCount = 0
+        var properties: [PLYProperty] = []
+        var readingVertexElement = false
+        var offset = 0
+        for line in lines {
+            let parts = line.split(separator: " ").map(String.init)
+            if parts.count == 3, parts[0] == "element", parts[1] == "vertex", let count = Int(parts[2]) {
+                vertexCount = count
+                readingVertexElement = true
+                continue
+            }
+            if parts.first == "element", parts.dropFirst().first != "vertex" {
+                readingVertexElement = false
+            }
+            if readingVertexElement, parts.count >= 3, parts[0] == "property" {
+                guard let type = PLYScalarType(rawValue: parts[1]) else {
+                    throw GaussianSplatImportError.invalidPLY("Unsupported PLY property type: \(parts[1]).")
+                }
+                properties.append(PLYProperty(name: parts.last ?? "", type: type, offset: offset))
+                offset += type.byteCount
+            }
+        }
+        guard vertexCount > 0 else {
+            throw GaussianSplatImportError.invalidPLY("PLY file does not declare vertex elements.")
+        }
+        return PLYVertexLayout(vertexCount: vertexCount, vertexProperties: properties, vertexStride: offset)
+    }
+
+    private func readFloat(_ data: Data, base: Int, property: PLYProperty) throws -> Float {
+        let offset = base + property.offset
+        switch property.type {
+        case .float, .float32:
+            return try data.readLittleEndianFloat32(at: offset)
+        case .double, .float64:
+            return Float(try data.readLittleEndianFloat64(at: offset))
+        case .uchar, .uint8:
+            return Float(data[offset])
+        case .char, .int8:
+            return Float(Int8(bitPattern: data[offset]))
+        case .ushort, .uint16:
+            return Float(try data.readLittleEndianUInt16(at: offset))
+        case .short, .int16:
+            return Float(try data.readLittleEndianInt16(at: offset))
+        case .uint, .uint32:
+            return Float(try data.readLittleEndianUInt32(at: offset))
+        case .int, .int32:
+            return Float(try data.readLittleEndianInt32(at: offset))
+        }
+    }
+
+    private func readColor(_ data: Data, base: Int, property: PLYProperty) throws -> Float {
+        let value = try readFloat(data, base: base, property: property)
+        if property.type == .uchar || property.type == .uint8 {
+            return max(0, min(1, value / 255))
+        }
+        return max(0, min(1, value))
+    }
+
+    private func sigmoid(_ value: Float) -> Float {
+        max(0, min(1, 1 / (1 + exp(-value))))
+    }
+
+    private func expClamped(_ value: Float) -> Float {
+        max(0.001, min(0.5, exp(value)))
+    }
 }
 
 private extension Float {
@@ -356,6 +539,92 @@ private extension Float {
     init?(scaleComponent value: String.SubSequence) {
         guard let float = Float(value) else { return nil }
         self = max(0.001, min(0.5, exp(float)))
+    }
+}
+
+private struct PLYVertexLayout {
+    var vertexCount: Int
+    var vertexProperties: [PLYProperty]
+    var vertexStride: Int
+
+    func property(named name: String) -> PLYProperty? {
+        vertexProperties.first { $0.name == name }
+    }
+}
+
+private struct PLYProperty {
+    var name: String
+    var type: PLYScalarType
+    var offset: Int
+}
+
+private enum PLYScalarType: String {
+    case char
+    case int8
+    case uchar
+    case uint8
+    case short
+    case int16
+    case ushort
+    case uint16
+    case int
+    case int32
+    case uint
+    case uint32
+    case float
+    case float32
+    case double
+    case float64
+
+    var byteCount: Int {
+        switch self {
+        case .char, .int8, .uchar, .uint8:
+            return 1
+        case .short, .int16, .ushort, .uint16:
+            return 2
+        case .int, .int32, .uint, .uint32, .float, .float32:
+            return 4
+        case .double, .float64:
+            return 8
+        }
+    }
+}
+
+private extension Data {
+    func readLittleEndianFloat32(at offset: Int) throws -> Float {
+        Float(bitPattern: try readLittleEndianUInt32(at: offset))
+    }
+
+    func readLittleEndianFloat64(at offset: Int) throws -> Double {
+        Double(bitPattern: try readLittleEndianUInt64(at: offset))
+    }
+
+    func readLittleEndianUInt16(at offset: Int) throws -> UInt16 {
+        try readFixedWidth(at: offset, as: UInt16.self).littleEndian
+    }
+
+    func readLittleEndianInt16(at offset: Int) throws -> Int16 {
+        Int16(bitPattern: try readLittleEndianUInt16(at: offset))
+    }
+
+    func readLittleEndianUInt32(at offset: Int) throws -> UInt32 {
+        try readFixedWidth(at: offset, as: UInt32.self).littleEndian
+    }
+
+    func readLittleEndianInt32(at offset: Int) throws -> Int32 {
+        Int32(bitPattern: try readLittleEndianUInt32(at: offset))
+    }
+
+    func readLittleEndianUInt64(at offset: Int) throws -> UInt64 {
+        try readFixedWidth(at: offset, as: UInt64.self).littleEndian
+    }
+
+    func readFixedWidth<T: FixedWidthInteger>(at offset: Int, as type: T.Type) throws -> T {
+        let byteCount = MemoryLayout<T>.size
+        guard offset >= 0, offset + byteCount <= count else {
+            throw GaussianSplatImportError.invalidSplat("Binary data is truncated.")
+        }
+        return self[offset..<offset + byteCount].withUnsafeBytes { $0.loadUnaligned(as: T.self) }
     }
 }
 
@@ -454,7 +723,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         cameraRig: RobotCameraRig,
         outputDirectory: URL
     ) throws {
-        guard case .importedPLY(let url) = scene.source else {
+        guard let url = scene.sourceURL else {
             throw MetalGaussianSplatRenderError.unsupportedSceneSource
         }
         let cloud = try GaussianSplatCloudLoader().load(url: url)
@@ -462,7 +731,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
     }
 
     public func renderDataset(_ manifest: DatasetManifest, outputDirectory: URL) throws -> MetalSplatRenderReport {
-        guard case .importedPLY(let url) = manifest.scene.source else {
+        guard let url = manifest.scene.sourceURL else {
             throw MetalGaussianSplatRenderError.unsupportedSceneSource
         }
         let cloud = try GaussianSplatCloudLoader().load(url: url)
