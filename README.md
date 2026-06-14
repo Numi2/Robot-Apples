@@ -125,6 +125,11 @@ manage signing for physical iPhone, Mac, and Vision Pro deployment.
   `frames.jsonl`, writes Core Motion records to `motion.jsonl`, captures LiDAR
   depth snapshots where available, exports RoomPlan geometry, and writes
   `.robotcapture` metadata.
+- `RobotSceneStudioiPhoneApp`: native SwiftUI iPhone capture client with capture
+  controls around `AppleDeviceCaptureSession`, camera/motion/ARKit readiness
+  flows, live tracking/lighting/motion quality indicators, Finder-visible
+  `.robotcapture` package browsing, Multipeer sender controls, and wired Finder
+  fallback guidance.
 - `RobotCaptureMultipeerTransfer`: app-controlled nearby iPhone-to-Mac transfer
   using Multipeer Connectivity resource transfer, progress, completion, and
   receipt reporting.
