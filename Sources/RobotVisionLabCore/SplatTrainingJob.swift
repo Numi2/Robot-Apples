@@ -102,13 +102,20 @@ public struct SplatTrainingReportWriter: Sendable {
 public struct SplatTrainingReportBuilder: Sendable {
     public init() {}
 
-    public func dryRunReport(job: SplatTrainingJob, generatedAt: Date = Date()) -> SplatTrainingReport {
-        SplatTrainingReport(
+    public func preparationReport(job: SplatTrainingJob, generatedAt: Date = Date()) -> SplatTrainingReport {
+        let outputURL = job.manifest.expectedOutput.targetURL
+        let roomPlanState = job.manifest.roomPlanGeometryURL == nil ? "no RoomPlan geometry" : "RoomPlan geometry linked"
+        return SplatTrainingReport(
             job: job,
             status: .planned,
             startedAt: generatedAt,
             finishedAt: generatedAt,
-            standardOutput: "Plan: \(job.manifest.imageFrames.count) RGB frames prepared for Apple-native Gaussian Splat training on \(job.backend.framework.rawValue)."
+            standardOutput: [
+                "Prepared \(job.manifest.imageFrames.count) RGB frames for Apple-native Gaussian Splat training on \(job.backend.framework.rawValue).",
+                "Output target: \(outputURL.path).",
+                "Calibration: \(roomPlanState).",
+                "Deployment target after training: \(job.backend.deploymentTarget.rawValue)."
+            ].joined(separator: "\n")
         )
     }
 

@@ -162,6 +162,9 @@ manage signing for physical iPhone, Mac, and Vision Pro deployment.
   floor-constrained robot-valid paths, edits navigation graphs, and reports
   missing-view, repeated-view, and low-parallax coverage issues.
 - `GaussianSplatImporter`: inspects `.ply` and `.splat` assets.
+- `RouteDerivedSplatSeedWriter`: creates a valid route-derived Gaussian splat
+  seed PLY from captured camera poses when a trained/imported splat has not
+  been linked yet.
 - `SplatPointProjectionRenderer`: CPU reference renderer for camera geometry
   validation only.
 - `MetalRenderPlanner`: validates native Metal render readiness and device
@@ -189,7 +192,7 @@ manage signing for physical iPhone, Mac, and Vision Pro deployment.
   outputs.
 - `MLXTrainingPackageBuilder`: writes a local Apple Silicon MLX training package
   with a reusable rendered-dataset Python loader, an MLX training entrypoint,
-  and Core ML Tools export/conversion artifacts.
+  and a Core ML Tools ML Program export path.
 - `RobotScenePackageExporter`: writes `.robotscene` packages for Vision Pro
   spatial review.
 - `SharedProjectFormatTools`: versioned `.robotcapture`/`.robotscene` helpers

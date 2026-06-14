@@ -579,7 +579,7 @@ public final class WorkstationModel {
                 backend: AppleNativeTrainingBackend(),
                 mode: .planning
             )
-            let report = SplatTrainingReportBuilder().dryRunReport(job: job)
+            let report = SplatTrainingReportBuilder().preparationReport(job: job)
             let reportURL = state.workspaceURL.appendingPathComponent("splat_training_report.json")
             try SplatTrainingReportWriter().write(report, to: reportURL)
             appendArtifact(title: "Apple Native Training Plan", url: reportURL, kind: "training")
@@ -715,10 +715,15 @@ public final class WorkstationModel {
             )
         }
 
+        let seedURL = state.workspaceURL.appendingPathComponent("splats/capture_route_seed.ply")
+        let seedAsset = try RouteDerivedSplatSeedWriter().writeSeedPLY(route: route, to: seedURL)
+        splatAsset = seedAsset
+        state.activeSplatURL = seedURL
+        appendArtifact(title: "Route-Derived Splat Seed", url: seedURL, kind: "splat-seed")
         return GaussianSplatScene(
-            id: "capture-route-placeholder-splat",
-            source: .importedPLY(state.workspaceURL.appendingPathComponent("splats/capture-generated.ply")),
-            bounds: bounds(from: route),
+            id: "capture-route-splat-seed",
+            source: .importedPLY(seedURL),
+            bounds: seedAsset.bounds,
             roomPlanModelURL: importedCapture?.captureBundle.roomPlanModelURL
         )
     }

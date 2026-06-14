@@ -95,7 +95,7 @@ struct RobotVisionLabCLI {
             let reportURL = outputDirectory.appendingPathComponent("splat_training_report.json")
             let manifestURL = try parseSplatTrainingManifestURL(outputDirectory: outputDirectory)
             let job = try splatTrainingJob(outputDirectory: outputDirectory, manifestURL: manifestURL)
-            let report = SplatTrainingReportBuilder().dryRunReport(
+            let report = SplatTrainingReportBuilder().preparationReport(
                 job: job,
                 generatedAt: Date(timeIntervalSince1970: 1_800_000_000)
             )

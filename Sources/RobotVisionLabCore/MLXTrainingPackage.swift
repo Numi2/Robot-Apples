@@ -239,6 +239,8 @@ public struct MLXTrainingPackageBuilder: Sendable {
         import coremltools as ct
         import mlx.core as mx
         import mlx.nn as nn
+        import numpy as np
+        from coremltools.converters.mil import Builder as mb
 
         class RobotSceneNet(nn.Module):
             def __init__(self):
@@ -268,26 +270,51 @@ public struct MLXTrainingPackageBuilder: Sendable {
             example = mx.zeros((1, 11), dtype=mx.float32)
             mx.eval(model(example))
 
-            # Core ML Tools is Apple's supported conversion/optimization package.
-            # MLX conversion support evolves with Core ML Tools releases; if direct
-            # MLX conversion is unavailable, this emits a precise conversion manifest
-            # rather than silently producing an invalid deployment artifact.
-            conversion_manifest = {
-                "source_weights": str((mlx_output / "robot_scene_net.safetensors").resolve()),
-                "target": str(coreml_output.resolve()),
-                "runtime": "Core ML",
-                "input": {"name": "pose_intrinsics", "shape": [1, 11], "dtype": "float32"},
-                "outputs": [
-                    "free_space_probability",
-                    "obstacle_probability",
-                    "localization_uncertainty",
-                    "failure_kind_score"
-                ],
-                "coremltools_version": getattr(ct, "__version__", "unknown"),
-                "status": "ready_for_coremltools_conversion",
-            }
-            coreml_output.with_suffix(".conversion.json").write_text(json.dumps(conversion_manifest, indent=2))
-            print(f"Wrote Core ML conversion manifest to {coreml_output.with_suffix('.conversion.json')}")
+            params = dict(model.parameters())
+            dense0_w = np.array(params["pose.layers.0.weight"])
+            dense0_b = np.array(params["pose.layers.0.bias"])
+            dense1_w = np.array(params["pose.layers.2.weight"])
+            dense1_b = np.array(params["pose.layers.2.bias"])
+            dense2_w = np.array(params["pose.layers.4.weight"])
+            dense2_b = np.array(params["pose.layers.4.bias"])
+
+            @mb.program(input_specs=[mb.TensorSpec(shape=(1, 11), dtype=mb.fp32)])
+            def robot_scene_program(pose_intrinsics):
+                x = mb.linear(x=pose_intrinsics, weight=dense0_w, bias=dense0_b)
+                x = mb.relu(x=x)
+                x = mb.linear(x=x, weight=dense1_w, bias=dense1_b)
+                x = mb.relu(x=x)
+                x = mb.linear(x=x, weight=dense2_w, bias=dense2_b)
+                return mb.sigmoid(x=x, name="robot_scene_outputs")
+
+            try:
+                mlmodel = ct.convert(
+                    robot_scene_program,
+                    source="milinternal",
+                    convert_to="mlprogram",
+                    inputs=[ct.TensorType(name="pose_intrinsics", shape=(1, 11), dtype=np.float32)],
+                    outputs=[ct.TensorType(name="robot_scene_outputs", dtype=np.float32)],
+                    minimum_deployment_target=ct.target.macOS13,
+                    compute_units=ct.ComputeUnit.ALL,
+                )
+                mlmodel.short_description = "Robot Scene Studio route evaluation model exported from Apple MLX training."
+                mlmodel.input_description["pose_intrinsics"] = "Camera pose quaternion plus camera intrinsics."
+                mlmodel.output_description["robot_scene_outputs"] = "free_space, obstacle, localization_uncertainty, failure_kind_score."
+                mlmodel.save(str(coreml_output))
+                print(f"Wrote Core ML model package to {coreml_output}")
+            except Exception as error:
+                diagnostics = {
+                    "source_weights": str((mlx_output / "robot_scene_net.safetensors").resolve()),
+                    "target": str(coreml_output.resolve()),
+                    "runtime": "Core ML",
+                    "input": {"name": "pose_intrinsics", "shape": [1, 11], "dtype": "float32"},
+                    "outputs": ["robot_scene_outputs"],
+                    "coremltools_version": getattr(ct, "__version__", "unknown"),
+                    "error": str(error),
+                }
+                diagnostic_url = coreml_output.with_suffix(".conversion_error.json")
+                diagnostic_url.write_text(json.dumps(diagnostics, indent=2))
+                raise RuntimeError(f"Core ML export failed; diagnostics written to {diagnostic_url}") from error
 
         if __name__ == "__main__":
             main()
