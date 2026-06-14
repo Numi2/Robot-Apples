@@ -60,9 +60,9 @@ Fixture paths must not be wired into Mac workstation product actions.
 
 - Replace any generated fixture dataset dependencies in product docs with
   `.robotcapture` and imported splat workflows.
-- Make failure-map calibration require real Core ML reports when presenting
-  model predictions; dataset-only markers should be labeled as capture/render
-  diagnostics, not model evaluation.
+- Keep failure-map calibration anchored in real Core ML/MLX reports, then
+  compare those model outputs against native rendered failure labels and
+  synthetic LiDAR geometry before presenting product-quality metrics.
 - Promote structured geometry from metadata priors to spatial masks by parsing
   RoomPlan/Object Capture geometry into renderable, queryable scene layers.
 - Add CI-quality command coverage for strict package validation, native Metal

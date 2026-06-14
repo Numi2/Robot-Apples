@@ -114,30 +114,63 @@ public struct FailureMapCalibrationReport: Codable, Equatable, Sendable {
     public var reportID: String
     public var frameCount: Int
     public var calibratedFailureCounts: [FailureMarkerKind: Int]
+    public var modelEvidenceCounts: [FailureMarkerKind: Int]
+    public var nativeEvidenceCounts: [FailureMarkerKind: Int]
     public var meanConfidenceByKind: [FailureMarkerKind: Double]
+    public var agreementRateByKind: [FailureMarkerKind: Double]
+    public var modelNativeAgreementRate: Double
     public var blockedFrameRate: Double
     public var uncertainFrameRate: Double
     public var missingViewFrameRate: Double
+    public var lidarBlockedFrameRate: Double
+    public var lowLidarSupportFrameRate: Double
     public var notes: [String]
 
     public init(
         reportID: String,
         frameCount: Int,
         calibratedFailureCounts: [FailureMarkerKind: Int],
+        modelEvidenceCounts: [FailureMarkerKind: Int],
+        nativeEvidenceCounts: [FailureMarkerKind: Int],
         meanConfidenceByKind: [FailureMarkerKind: Double],
+        agreementRateByKind: [FailureMarkerKind: Double],
+        modelNativeAgreementRate: Double,
         blockedFrameRate: Double,
         uncertainFrameRate: Double,
         missingViewFrameRate: Double,
+        lidarBlockedFrameRate: Double,
+        lowLidarSupportFrameRate: Double,
         notes: [String]
     ) {
         self.reportID = reportID
         self.frameCount = frameCount
         self.calibratedFailureCounts = calibratedFailureCounts
+        self.modelEvidenceCounts = modelEvidenceCounts
+        self.nativeEvidenceCounts = nativeEvidenceCounts
         self.meanConfidenceByKind = meanConfidenceByKind
+        self.agreementRateByKind = agreementRateByKind
+        self.modelNativeAgreementRate = modelNativeAgreementRate
         self.blockedFrameRate = blockedFrameRate
         self.uncertainFrameRate = uncertainFrameRate
         self.missingViewFrameRate = missingViewFrameRate
+        self.lidarBlockedFrameRate = lidarBlockedFrameRate
+        self.lowLidarSupportFrameRate = lowLidarSupportFrameRate
         self.notes = notes
+    }
+}
+
+private struct LiDAREvidence: Sendable {
+    var blockedFrames: Set<Int>
+    var lowSupportFrames: Set<Int>
+
+    static let empty = LiDAREvidence(blockedFrames: [], lowSupportFrames: [])
+
+    func blockedFrameRate(frameCount: Int) -> Double {
+        Double(blockedFrames.count) / Double(max(frameCount, 1))
+    }
+
+    func lowSupportFrameRate(frameCount: Int) -> Double {
+        Double(lowSupportFrames.count) / Double(max(frameCount, 1))
     }
 }
 
@@ -210,35 +243,49 @@ public struct EvaluationReportWriter: Sendable {
 public struct FailureMapCalibrationReporter: Sendable {
     public init() {}
 
-    public func makeReport(from evaluationReport: ModelEvaluationReport) -> FailureMapCalibrationReport {
+    public func makeReport(from evaluationReport: ModelEvaluationReport, manifest: DatasetManifest? = nil) -> FailureMapCalibrationReport {
         var confidencesByKind: [FailureMarkerKind: [Double]] = [:]
-        var frameKinds: [Int: Set<FailureMarkerKind>] = [:]
+        var modelFrameKinds: [Int: Set<FailureMarkerKind>] = [:]
         for result in evaluationReport.frameResults {
             for prediction in result.predictions {
                 guard let kind = prediction.failureKind ?? failureKind(from: prediction), kind != .confident else {
                     continue
                 }
                 confidencesByKind[kind, default: []].append(min(max(prediction.confidence, 0), 1))
-                frameKinds[result.frameIndex, default: []].insert(kind)
+                modelFrameKinds[result.frameIndex, default: []].insert(kind)
             }
         }
-        let counts = confidencesByKind.mapValues(\.count)
+        let nativeEvidence = manifest.map(nativeFrameKinds(from:)) ?? [:]
+        let lidarEvidence = manifest.map(lidarEvidence(from:)) ?? LiDAREvidence.empty
+        let modelCounts = counts(from: modelFrameKinds)
+        let nativeCounts = counts(from: nativeEvidence)
+        let counts = mergedCounts(modelCounts, nativeCounts)
         let means = confidencesByKind.mapValues { values in
             values.reduce(0, +) / Double(max(values.count, 1))
         }
         let frameCount = max(evaluationReport.summary.frameCount, 1)
+        let agreement = agreementRates(model: modelFrameKinds, native: nativeEvidence)
+        let notes = notes(
+            hasNativeEvidence: manifest != nil,
+            modelFrameKinds: modelFrameKinds,
+            nativeFrameKinds: nativeEvidence,
+            lidarEvidence: lidarEvidence
+        )
         return FailureMapCalibrationReport(
             reportID: "\(evaluationReport.request.id)-failure-calibration",
             frameCount: evaluationReport.summary.frameCount,
             calibratedFailureCounts: counts,
+            modelEvidenceCounts: modelCounts,
+            nativeEvidenceCounts: nativeCounts,
             meanConfidenceByKind: means,
-            blockedFrameRate: frameRate(.blockedPrediction, frameKinds: frameKinds, frameCount: frameCount),
-            uncertainFrameRate: frameRate(.uncertainLocalization, frameKinds: frameKinds, frameCount: frameCount),
-            missingViewFrameRate: frameRate(.missingTrainingViews, frameKinds: frameKinds, frameCount: frameCount),
-            notes: [
-                "Calibrates Core ML or MLX-origin model outputs into Robot Scene failure-map marker kinds.",
-                "Rates are frame-level rates, so multiple predictions on one frame count once per marker kind."
-            ]
+            agreementRateByKind: agreement.byKind,
+            modelNativeAgreementRate: agreement.overall,
+            blockedFrameRate: frameRate(.blockedPrediction, frameKinds: mergedFrameKinds(modelFrameKinds, nativeEvidence), frameCount: frameCount),
+            uncertainFrameRate: frameRate(.uncertainLocalization, frameKinds: mergedFrameKinds(modelFrameKinds, nativeEvidence), frameCount: frameCount),
+            missingViewFrameRate: frameRate(.missingTrainingViews, frameKinds: mergedFrameKinds(modelFrameKinds, nativeEvidence), frameCount: frameCount),
+            lidarBlockedFrameRate: lidarEvidence.blockedFrameRate(frameCount: frameCount),
+            lowLidarSupportFrameRate: lidarEvidence.lowSupportFrameRate(frameCount: frameCount),
+            notes: notes
         )
     }
 
@@ -249,6 +296,144 @@ public struct FailureMapCalibrationReporter: Sendable {
 
     private func frameRate(_ kind: FailureMarkerKind, frameKinds: [Int: Set<FailureMarkerKind>], frameCount: Int) -> Double {
         Double(frameKinds.values.filter { $0.contains(kind) }.count) / Double(frameCount)
+    }
+
+    private func nativeFrameKinds(from manifest: DatasetManifest) -> [Int: Set<FailureMarkerKind>] {
+        var frameKinds: [Int: Set<FailureMarkerKind>] = [:]
+        for frame in manifest.frames {
+            for label in renderedFailureLabels(frame) where label.kind != .confident {
+                frameKinds[frame.index, default: []].insert(label.kind)
+            }
+            for kind in lidarKinds(frame) {
+                frameKinds[frame.index, default: []].insert(kind)
+            }
+        }
+        return frameKinds
+    }
+
+    private func renderedFailureLabels(_ frame: DatasetFrame) -> [RenderedFailureLabel] {
+        guard let url = frame.productURL(for: .failureLabels),
+              let data = try? Data(contentsOf: url),
+              let report = try? JSONDecoder.robotVisionLabDecoder.decode(RenderedFailureLabelReport.self, from: data) else {
+            return []
+        }
+        return report.labels
+    }
+
+    private func lidarKinds(_ frame: DatasetFrame) -> Set<FailureMarkerKind> {
+        guard let report = lidarReport(frame) else { return [] }
+        var kinds: Set<FailureMarkerKind> = []
+        let validRayCount = max(report.metrics.validRayCount, 1)
+        let validFraction = Double(report.metrics.validRayCount) / Double(max(report.metrics.rayCount, 1))
+        let nearRayRate = Double(report.rays.filter { ray in
+            guard !ray.droppedOut, let point = ray.cameraPointMeters else { return false }
+            return abs(point.z) < 1.0
+        }.count) / Double(validRayCount)
+        if nearRayRate > 0.42 || (report.metrics.meanRangeMeters ?? .greatestFiniteMagnitude) < 1.2 {
+            kinds.insert(.blockedPrediction)
+        }
+        if report.metrics.dropoutRate > 0.45 || report.metrics.lowSupportRate > 0.38 {
+            kinds.insert(.uncertainLocalization)
+        }
+        if validFraction < 0.35 || report.metrics.lowSupportRate > 0.52 {
+            kinds.insert(.missingTrainingViews)
+        }
+        return kinds
+    }
+
+    private func lidarEvidence(from manifest: DatasetManifest) -> LiDAREvidence {
+        var evidence = LiDAREvidence.empty
+        for frame in manifest.frames {
+            guard let report = lidarReport(frame) else { continue }
+            let validRayCount = max(report.metrics.validRayCount, 1)
+            let nearRayRate = Double(report.rays.filter { ray in
+                guard !ray.droppedOut, let point = ray.cameraPointMeters else { return false }
+                return abs(point.z) < 1.0
+            }.count) / Double(validRayCount)
+            if nearRayRate > 0.42 || (report.metrics.meanRangeMeters ?? .greatestFiniteMagnitude) < 1.2 {
+                evidence.blockedFrames.insert(frame.index)
+            }
+            if report.metrics.dropoutRate > 0.45 || report.metrics.lowSupportRate > 0.38 {
+                evidence.lowSupportFrames.insert(frame.index)
+            }
+        }
+        return evidence
+    }
+
+    private func lidarReport(_ frame: DatasetFrame) -> RenderedLiDARScanReport? {
+        guard let url = frame.productURL(for: .lidarScan),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        return try? JSONDecoder.robotVisionLabDecoder.decode(RenderedLiDARScanReport.self, from: data)
+    }
+
+    private func counts(from frameKinds: [Int: Set<FailureMarkerKind>]) -> [FailureMarkerKind: Int] {
+        var counts: [FailureMarkerKind: Int] = [:]
+        for kinds in frameKinds.values {
+            for kind in kinds where kind != .confident {
+                counts[kind, default: 0] += 1
+            }
+        }
+        return counts
+    }
+
+    private func mergedCounts(_ lhs: [FailureMarkerKind: Int], _ rhs: [FailureMarkerKind: Int]) -> [FailureMarkerKind: Int] {
+        var merged = lhs
+        for (kind, count) in rhs {
+            merged[kind, default: 0] += count
+        }
+        return merged
+    }
+
+    private func mergedFrameKinds(_ lhs: [Int: Set<FailureMarkerKind>], _ rhs: [Int: Set<FailureMarkerKind>]) -> [Int: Set<FailureMarkerKind>] {
+        var merged = lhs
+        for (frameIndex, kinds) in rhs {
+            merged[frameIndex, default: []].formUnion(kinds)
+        }
+        return merged
+    }
+
+    private func agreementRates(model: [Int: Set<FailureMarkerKind>], native: [Int: Set<FailureMarkerKind>]) -> (byKind: [FailureMarkerKind: Double], overall: Double) {
+        let sharedFrames = Set(model.keys).intersection(native.keys)
+        guard !sharedFrames.isEmpty else { return ([:], 0) }
+        var byKind: [FailureMarkerKind: Double] = [:]
+        for kind in FailureMarkerKind.allCases where kind != .confident {
+            let relevantFrames = sharedFrames.filter {
+                model[$0, default: []].contains(kind) || native[$0, default: []].contains(kind)
+            }
+            guard !relevantFrames.isEmpty else { continue }
+            let agreed = relevantFrames.filter {
+                model[$0, default: []].contains(kind) && native[$0, default: []].contains(kind)
+            }
+            byKind[kind] = Double(agreed.count) / Double(relevantFrames.count)
+        }
+        let agreedFrames = sharedFrames.filter { !model[$0, default: []].intersection(native[$0, default: []]).isEmpty }
+        return (byKind, Double(agreedFrames.count) / Double(sharedFrames.count))
+    }
+
+    private func notes(
+        hasNativeEvidence: Bool,
+        modelFrameKinds: [Int: Set<FailureMarkerKind>],
+        nativeFrameKinds: [Int: Set<FailureMarkerKind>],
+        lidarEvidence: LiDAREvidence
+    ) -> [String] {
+        var notes = [
+            "Calibrates Core ML or MLX-origin model outputs into Robot Scene failure-map marker kinds.",
+            "Rates are frame-level rates, so multiple predictions on one frame count once per marker kind."
+        ]
+        if hasNativeEvidence {
+            notes.append("Native rendered failure labels and synthetic LiDAR geometry are used as Apple-native calibration evidence.")
+        } else {
+            notes.append("No dataset manifest was supplied, so this report contains model-output calibration only.")
+        }
+        if !modelFrameKinds.isEmpty, nativeFrameKinds.isEmpty {
+            notes.append("Model failures have no native render evidence yet; render RGB/depth/visibility, failure labels, and LiDAR scans before product review.")
+        }
+        if !lidarEvidence.blockedFrames.isEmpty || !lidarEvidence.lowSupportFrames.isEmpty {
+            notes.append("LiDAR evidence contributes blocked/uncertain/missing-view markers from near-field occupancy, dropout, and low support.")
+        }
+        return notes
     }
 
     private func failureKind(from prediction: VisionPrediction) -> FailureMarkerKind? {

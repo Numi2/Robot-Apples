@@ -564,7 +564,13 @@ private struct AppleSiliconDetailPanel: View {
                         MetricCell(title: "Uncertain", value: String(format: "%.0f%%", calibration.uncertainFrameRate * 100))
                         MetricCell(title: "Missing", value: String(format: "%.0f%%", calibration.missingViewFrameRate * 100))
                     }
+                    GridRow {
+                        MetricCell(title: "Agreement", value: String(format: "%.0f%%", calibration.modelNativeAgreementRate * 100))
+                        MetricCell(title: "LiDAR Blocked", value: String(format: "%.0f%%", calibration.lidarBlockedFrameRate * 100))
+                        MetricCell(title: "LiDAR Support", value: String(format: "%.0f%%", calibration.lowLidarSupportFrameRate * 100))
+                    }
                 }
+                DiagnosticsList(messages: calibration.notes)
             }
         }
     }

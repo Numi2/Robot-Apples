@@ -597,7 +597,7 @@ struct RobotVisionLabCLI {
         try EvaluationReportWriter().write(report, to: reportURL)
         print("Wrote evaluation report to \(reportURL.path)")
         let calibrationURL = outputDirectory.appendingPathComponent("failure_map_calibration_report.json")
-        let calibration = FailureMapCalibrationReporter().makeReport(from: report)
+        let calibration = FailureMapCalibrationReporter().makeReport(from: report, manifest: manifest)
         try FailureMapCalibrationReporter().write(calibration, to: calibrationURL)
         print("Wrote failure-map calibration report to \(calibrationURL.path)")
     }

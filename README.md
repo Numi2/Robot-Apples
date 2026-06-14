@@ -110,14 +110,19 @@ The required iPhone capture output is a `.robotcapture` package containing:
   `MLXTrainingPackageBuilder`, `FailureMapCalibrationReporter`, and
   `ModelComparisonReporter`: Apple Silicon ML dataset loading, adapter schemas,
   dense RGB/depth/visibility tensors, synthetic LiDAR geometry features, Core
-  ML evaluation, MLX training package generation, failure-map calibration, and
-  model comparison.
+  ML evaluation, MLX training package generation, native-evidence failure-map
+  calibration, and model comparison.
 - `RenderedFailureLabeler`: derives blocked, missing-view, ambiguity,
   low-texture, and lighting failure labels from rendered RGB/depth/visibility
   products for MLX/Core ML supervision and Vision Pro review markers.
 - `RenderedLiDARSimulator`: derives fixed-ring LiDAR-style ray scans from
   rendered depth and visibility products, including deterministic dropout,
-  intensity, range, support metrics, and JSON reports for robot datasets.
+  intensity, range, support metrics, 3D camera/world returns, and JSON reports
+  for robot datasets.
+- `FailureMapCalibrationReporter`: fuses Core ML/MLX model outputs with native
+  rendered failure labels and synthetic LiDAR geometry, reporting model/native
+  agreement plus blocked, uncertain, and missing-view rates for Mac and Vision
+  Pro review.
 - `MLXTrainingPackageBuilder`: trains a compact Apple MLX model from fused
   pose, intrinsics, RGB statistics, depth coverage, visibility coverage, and
   synthetic LiDAR geometry/occupancy metrics plus rendered failure labels, then
