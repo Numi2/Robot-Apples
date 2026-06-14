@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 public struct RenderedLiDARScanReport: Codable, Equatable, Sendable {
     public var frameIndex: Int
@@ -89,7 +90,10 @@ public struct RenderedLiDARRay: Codable, Equatable, Sendable {
     public var imageY: Int
     public var azimuthDegrees: Double
     public var elevationDegrees: Double
+    public var cameraDirection: SIMD3<Double>
     public var rangeMeters: Double?
+    public var cameraPointMeters: SIMD3<Double>?
+    public var worldPointMeters: SIMD3<Double>?
     public var intensity: Double
     public var visibilitySupport: Double
     public var droppedOut: Bool
@@ -103,7 +107,10 @@ public struct RenderedLiDARRay: Codable, Equatable, Sendable {
         imageY: Int,
         azimuthDegrees: Double,
         elevationDegrees: Double,
+        cameraDirection: SIMD3<Double>,
         rangeMeters: Double?,
+        cameraPointMeters: SIMD3<Double>? = nil,
+        worldPointMeters: SIMD3<Double>? = nil,
         intensity: Double,
         visibilitySupport: Double,
         droppedOut: Bool,
@@ -116,7 +123,10 @@ public struct RenderedLiDARRay: Codable, Equatable, Sendable {
         self.imageY = imageY
         self.azimuthDegrees = azimuthDegrees
         self.elevationDegrees = elevationDegrees
+        self.cameraDirection = cameraDirection
         self.rangeMeters = rangeMeters
+        self.cameraPointMeters = cameraPointMeters
+        self.worldPointMeters = worldPointMeters
         self.intensity = intensity
         self.visibilitySupport = visibilitySupport
         self.droppedOut = droppedOut
@@ -132,7 +142,7 @@ public struct RenderedLiDARSimulator: Sendable {
     }
 
     public func writeReports(for manifest: DatasetManifest, to outputDirectory: URL) throws -> [RenderedLiDARScanReport] {
-        let reports = manifest.frames.map { makeReport(for: $0, generatedAt: manifest.generatedAt) }
+        let reports = manifest.frames.map { makeReport(for: $0, cameraRig: manifest.cameraRig, generatedAt: manifest.generatedAt) }
         for report in reports {
             let url = outputDirectory
                 .appendingPathComponent(RenderProduct.lidarScan.rawValue, isDirectory: true)
@@ -143,7 +153,7 @@ public struct RenderedLiDARSimulator: Sendable {
         return reports
     }
 
-    public func makeReport(for frame: DatasetFrame, generatedAt: Date = Date()) -> RenderedLiDARScanReport {
+    public func makeReport(for frame: DatasetFrame, cameraRig: RobotCameraRig? = nil, generatedAt: Date = Date()) -> RenderedLiDARScanReport {
         var warnings: [String] = []
         let depthURL = frame.productURL(for: .depth)
         let visibilityURL = frame.productURL(for: .visibility)
@@ -166,7 +176,14 @@ public struct RenderedLiDARSimulator: Sendable {
 
         let depthValues = depth?.normalizedGrayValues() ?? []
         let visibilityValues = visibility?.normalizedGrayValues() ?? []
-        let rays = makeRays(frameIndex: frame.index, depth: depth, depthValues: depthValues, visibility: visibility, visibilityValues: visibilityValues)
+        let rays = makeRays(
+            frame: frame,
+            cameraRig: cameraRig,
+            depth: depth,
+            depthValues: depthValues,
+            visibility: visibility,
+            visibilityValues: visibilityValues
+        )
         let valid = rays.filter { !$0.droppedOut && $0.rangeMeters != nil }
         let lowSupportCount = rays.filter { $0.visibilitySupport < 0.18 }.count
         let metrics = RenderedLiDARMetrics(
@@ -189,7 +206,8 @@ public struct RenderedLiDARSimulator: Sendable {
     }
 
     private func makeRays(
-        frameIndex: Int,
+        frame: DatasetFrame,
+        cameraRig: RobotCameraRig?,
         depth: PNMImage?,
         depthValues: [Double],
         visibility: PNMImage?,
@@ -212,6 +230,7 @@ public struct RenderedLiDARSimulator: Sendable {
                 let x = pixelCoordinate(u, count: depth?.width ?? visibility?.width ?? 1)
                 let y = pixelCoordinate(v, count: depth?.height ?? visibility?.height ?? 1)
                 let support = sampledValue(image: visibility, values: visibilityValues, x: x, y: y) ?? 0.5
+                let cameraDirection = rayDirection(azimuthDegrees: azimuth, elevationDegrees: elevation)
 
                 guard let depthValue = sampledValue(image: depth, values: depthValues, x: x, y: y), depthValue > 0.005 else {
                     rays.append(RenderedLiDARRay(
@@ -222,6 +241,7 @@ public struct RenderedLiDARSimulator: Sendable {
                         imageY: y,
                         azimuthDegrees: azimuth,
                         elevationDegrees: elevation,
+                        cameraDirection: cameraDirection,
                         rangeMeters: nil,
                         intensity: 0,
                         visibilitySupport: support,
@@ -233,7 +253,7 @@ public struct RenderedLiDARSimulator: Sendable {
 
                 let range = rangeMeters(fromDepthVisualization: depthValue)
                 let dropoutProbability = dropoutProbability(rangeMeters: range, visibilitySupport: support)
-                let deterministicSample = deterministicUnitSample(frameIndex: frameIndex, rayIndex: index)
+                let deterministicSample = deterministicUnitSample(frameIndex: frame.index, rayIndex: index)
                 let dropped = support < 0.05 || deterministicSample < dropoutProbability
                 let reason: String?
                 if support < 0.05 {
@@ -242,6 +262,10 @@ public struct RenderedLiDARSimulator: Sendable {
                     reason = "range-visibility-dropout"
                 } else {
                     reason = nil
+                }
+                let cameraPoint: SIMD3<Double>? = dropped ? nil : cameraDirection * range
+                let worldPoint: SIMD3<Double>? = cameraPoint.map { point in
+                    worldReturnPoint(cameraPoint: point, frame: frame, cameraRig: cameraRig)
                 }
 
                 rays.append(RenderedLiDARRay(
@@ -252,7 +276,10 @@ public struct RenderedLiDARSimulator: Sendable {
                     imageY: y,
                     azimuthDegrees: azimuth,
                     elevationDegrees: elevation,
+                    cameraDirection: cameraDirection,
                     rangeMeters: dropped ? nil : range,
+                    cameraPointMeters: cameraPoint,
+                    worldPointMeters: worldPoint,
                     intensity: dropped ? 0 : intensity(rangeMeters: range, visibilitySupport: support),
                     visibilitySupport: support,
                     droppedOut: dropped,
@@ -261,6 +288,24 @@ public struct RenderedLiDARSimulator: Sendable {
             }
         }
         return rays
+    }
+
+    private func rayDirection(azimuthDegrees: Double, elevationDegrees: Double) -> SIMD3<Double> {
+        let azimuth = azimuthDegrees * .pi / 180
+        let elevation = elevationDegrees * .pi / 180
+        let x = tan(azimuth)
+        let y = tan(elevation)
+        return simd_normalize(SIMD3<Double>(x, y, -1))
+    }
+
+    private func worldReturnPoint(cameraPoint: SIMD3<Double>, frame: DatasetFrame, cameraRig: RobotCameraRig?) -> SIMD3<Double> {
+        let cameraPose = cameraPose(framePose: frame.cameraPose, cameraRig: cameraRig)
+        return cameraPose.position + cameraPose.orientation.value.act(cameraPoint)
+    }
+
+    private func cameraPose(framePose: Pose3D, cameraRig: RobotCameraRig?) -> Pose3D {
+        guard let cameraRig else { return framePose }
+        return framePose.applying(cameraRig.bodyToCamera)
     }
 
     private func pixelCoordinate(_ normalized: Double, count: Int) -> Int {
