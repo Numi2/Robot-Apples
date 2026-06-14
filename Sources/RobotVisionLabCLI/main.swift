@@ -633,11 +633,18 @@ struct RobotVisionLabCLI {
     private static func writeMLXTrainingPackage(manifest: DatasetManifest, outputDirectory: URL) throws {
         let datasetManifestURL = outputDirectory.appendingPathComponent("dataset.json")
         let packageDirectory = outputDirectory.appendingPathComponent("MLXTrainingPackage", isDirectory: true)
+        let readiness = NativeRenderProductValidator().validate(manifest)
+        let readinessURL = outputDirectory.appendingPathComponent("native_render_product_readiness.json")
+        try JSONEncoder.robotVisionLabEncoder.encode(readiness).write(to: readinessURL)
+        guard readiness.isReady else {
+            throw SplatTrainingCLIError.missingRequiredInput("Native render products are not ready for MLX training. Run --render-apple-native first and inspect \(readinessURL.path).")
+        }
         let package = try MLXTrainingPackageBuilder().writePackage(
             manifest: manifest,
             datasetManifestURL: datasetManifestURL,
             outputDirectory: packageDirectory
         )
+        print("Wrote native render product readiness report to \(readinessURL.path)")
         print("Wrote Apple Silicon MLX training package to \(packageDirectory.path)")
         print("Dataset loader: \(package.datasetLoaderURL.path)")
         print("Training script: \(package.trainScriptURL.path)")

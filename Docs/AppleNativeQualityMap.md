@@ -35,6 +35,16 @@ evaluation, or `--plan-mlx-evaluation` for Apple Silicon research evaluation.
 
 Fixture paths must not be wired into Mac workstation product actions.
 
+## Active Native Product Gates
+
+- MLX training package export requires native rendered RGB, depth, visibility,
+  synthetic LiDAR, and rendered failure-label products for every frame.
+- CLI and Mac workstation both write `native_render_product_readiness.json`
+  before MLX package export. Missing or unreadable products block training
+  package generation.
+- Removed preview and point-projection renderers cannot satisfy the readiness
+  gate; the expected path is native Metal Gaussian splat rendering.
+
 ## Apple Documentation Anchors
 
 - Metal command encoders and draw/compute dispatch are the renderer foundation.
@@ -50,8 +60,6 @@ Fixture paths must not be wired into Mac workstation product actions.
 
 - Replace any generated fixture dataset dependencies in product docs with
   `.robotcapture` and imported splat workflows.
-- Expand Metal output validation so dense RGB, depth, visibility, tile-bin, and
-  timing products are required before training package generation.
 - Make failure-map calibration require real Core ML reports when presenting
   model predictions; dataset-only markers should be labeled as capture/render
   diagnostics, not model evaluation.

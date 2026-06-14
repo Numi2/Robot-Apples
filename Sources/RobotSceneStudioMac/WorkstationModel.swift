@@ -631,6 +631,13 @@ public final class WorkstationModel {
             if !FileManager.default.fileExists(atPath: manifestURL.path) {
                 try JSONEncoder.robotVisionLabEncoder.encode(manifest).write(to: manifestURL)
             }
+            let readiness = NativeRenderProductValidator().validate(manifest)
+            let readinessURL = state.workspaceURL.appendingPathComponent("native_render_product_readiness.json")
+            try JSONEncoder.robotVisionLabEncoder.encode(readiness).write(to: readinessURL)
+            appendArtifact(title: "Native Render Product Readiness", url: readinessURL, kind: "render-readiness")
+            guard readiness.isReady else {
+                throw WorkstationError.nativeRenderProductsNotReady(readinessURL)
+            }
             let package = try MLXTrainingPackageBuilder().writePackage(
                 manifest: manifest,
                 datasetManifestURL: manifestURL,
@@ -918,6 +925,7 @@ public enum WorkstationError: Error, LocalizedError {
     case missingCapture
     case missingPreparedCapture
     case missingSplat
+    case nativeRenderProductsNotReady(URL)
 
     public var errorDescription: String? {
         switch self {
@@ -927,6 +935,8 @@ public enum WorkstationError: Error, LocalizedError {
             "Prepare a capture package before running this workstation step."
         case .missingSplat:
             "Link a .ply or .splat scene before rendering Metal splats."
+        case .nativeRenderProductsNotReady(let url):
+            "Native render products are not ready for MLX training. Render Metal splats first and inspect \(url.path)."
         }
     }
 }

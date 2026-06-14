@@ -40,6 +40,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
         outputDirectory: URL,
         schema: NativeModelAdapterSchema = .defaultMLXTrainingSchema()
     ) throws -> MLXTrainingPackageManifest {
+        _ = try NativeRenderProductValidator().requireReady(manifest)
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         let schemaURL = outputDirectory.appendingPathComponent("native_model_adapter_schema.json")
         let loaderURL = outputDirectory.appendingPathComponent("robot_scene_dataset.py")
