@@ -80,19 +80,22 @@ public struct SpatialReviewOverlay: Codable, Equatable, Sendable {
     public var navigationNodes: [SpatialReviewNavigationNode]
     public var navigationEdges: [SpatialReviewNavigationEdge]
     public var failureMarkers: [SpatialReviewFailureMarker]
+    public var frameRisks: [SpatialReviewFrameRisk]
 
     public init(
         route: [SpatialReviewRoutePose] = [],
         cameraFrustums: [SpatialReviewCameraFrustum] = [],
         navigationNodes: [SpatialReviewNavigationNode] = [],
         navigationEdges: [SpatialReviewNavigationEdge] = [],
-        failureMarkers: [SpatialReviewFailureMarker] = []
+        failureMarkers: [SpatialReviewFailureMarker] = [],
+        frameRisks: [SpatialReviewFrameRisk] = []
     ) {
         self.route = route
         self.cameraFrustums = cameraFrustums
         self.navigationNodes = navigationNodes
         self.navigationEdges = navigationEdges
         self.failureMarkers = failureMarkers
+        self.frameRisks = frameRisks
     }
 }
 
@@ -147,6 +150,18 @@ public struct SpatialReviewLiDAREvidence: Codable, Equatable, Sendable {
     public var meanRangeMeters: Double?
 }
 
+public struct SpatialReviewFrameRisk: Codable, Equatable, Sendable {
+    public var frameIndex: Int
+    public var position: SIMD3<Double>
+    public var riskScore: Double
+    public var dominantKind: FailureMarkerKind?
+    public var markerCount: Int
+    public var modelEvidenceCount: Int
+    public var lidarEvidenceCount: Int
+    public var evidenceSources: Set<FailureEvidenceSource>
+    public var summary: String
+}
+
 @Observable
 public final class SpatialReviewModel {
     public var state: SpatialReviewState
@@ -184,8 +199,12 @@ public final class SpatialReviewModel {
         if evaluation != nil {
             layers.insert(.predictions)
         }
+        let route = routeLabels.map {
+            SpatialReviewRoutePose(frameIndex: $0.frameIndex, timestamp: $0.timestamp, pose: $0.cameraPose)
+        }
+        let failureMarkers = failureMap.map { reviewFailureMarker($0) }
         let overlay = SpatialReviewOverlay(
-            route: routeLabels.map { SpatialReviewRoutePose(frameIndex: $0.frameIndex, timestamp: $0.timestamp, pose: $0.cameraPose) },
+            route: route,
             cameraFrustums: routeLabels.map { cameraFrustum(for: $0) },
             navigationNodes: graph?.nodes.map {
                 SpatialReviewNavigationNode(id: $0.id, position: $0.position, label: $0.label)
@@ -193,7 +212,8 @@ public final class SpatialReviewModel {
             navigationEdges: graph?.edges.map {
                 SpatialReviewNavigationEdge(from: $0.from, to: $0.to, traversalCost: $0.traversalCost)
             } ?? [],
-            failureMarkers: failureMap.map { reviewFailureMarker($0) }
+            failureMarkers: failureMarkers,
+            frameRisks: frameRisks(route: route, markers: failureMarkers)
         )
         state.summary = SpatialReviewSceneSummary(
             sceneID: manifest.id,
@@ -245,6 +265,17 @@ public final class SpatialReviewModel {
             return state.overlay?.failureMarkers ?? []
         }
         return state.overlay?.failureMarkers.filter { $0.frameIndex == selectedFrameIndex } ?? []
+    }
+
+    public var highestRiskFrames: [SpatialReviewFrameRisk] {
+        state.overlay?.frameRisks
+            .filter { $0.riskScore > 0 }
+            .sorted { lhs, rhs in
+                if lhs.riskScore == rhs.riskScore {
+                    return lhs.frameIndex < rhs.frameIndex
+                }
+                return lhs.riskScore > rhs.riskScore
+            } ?? []
     }
 
     private func decodeIfPresent<T: Decodable>(_ type: T.Type, _ url: URL, relativeTo root: URL) throws -> T? {
@@ -324,6 +355,64 @@ public final class SpatialReviewModel {
         )
     }
 
+    private func frameRisks(route: [SpatialReviewRoutePose], markers: [SpatialReviewFailureMarker]) -> [SpatialReviewFrameRisk] {
+        let markersByFrame = Dictionary(grouping: markers.compactMap { marker -> (Int, SpatialReviewFailureMarker)? in
+            guard let frameIndex = marker.frameIndex else { return nil }
+            return (frameIndex, marker)
+        }, by: \.0).mapValues { $0.map(\.1) }
+        return route.map { routePose in
+            let frameMarkers = markersByFrame[routePose.frameIndex] ?? []
+            return frameRisk(frameIndex: routePose.frameIndex, position: routePose.pose.position, markers: frameMarkers)
+        }
+    }
+
+    private func frameRisk(frameIndex: Int, position: SIMD3<Double>, markers: [SpatialReviewFailureMarker]) -> SpatialReviewFrameRisk {
+        let evidenceSources = markers.reduce(into: Set<FailureEvidenceSource>()) { partial, marker in
+            partial.formUnion(marker.evidenceSources)
+        }
+        let dominant = markers.max { lhs, rhs in
+            markerRisk(lhs) < markerRisk(rhs)
+        }
+        let risk = min(markers.reduce(0) { $0 + markerRisk($1) }, 1)
+        let modelEvidenceCount = markers.filter { $0.modelLabel != nil || $0.modelSource != nil }.count
+        let lidarEvidenceCount = markers.filter { $0.lidarEvidence != nil }.count
+        return SpatialReviewFrameRisk(
+            frameIndex: frameIndex,
+            position: position,
+            riskScore: risk,
+            dominantKind: dominant?.kind,
+            markerCount: markers.count,
+            modelEvidenceCount: modelEvidenceCount,
+            lidarEvidenceCount: lidarEvidenceCount,
+            evidenceSources: evidenceSources,
+            summary: frameRiskSummary(frameIndex: frameIndex, risk: risk, dominant: dominant, markers: markers)
+        )
+    }
+
+    private func markerRisk(_ marker: SpatialReviewFailureMarker) -> Double {
+        var score = marker.confidence * marker.kind.riskWeight
+        if marker.modelLabel != nil || marker.modelSource != nil {
+            score += 0.08
+        }
+        if let lidar = marker.lidarEvidence {
+            score += min(max(lidar.dropoutRate, lidar.lowSupportRate) * 0.12, 0.12)
+            score += min(lidar.nearFieldOccupancyRate * 0.08, 0.08)
+        }
+        return min(score, 1)
+    }
+
+    private func frameRiskSummary(
+        frameIndex: Int,
+        risk: Double,
+        dominant: SpatialReviewFailureMarker?,
+        markers: [SpatialReviewFailureMarker]
+    ) -> String {
+        guard let dominant else {
+            return "Frame \(frameIndex): no review failures."
+        }
+        return "Frame \(frameIndex): \(dominant.label) risk \(Int((risk * 100).rounded()))%, \(markers.count) markers."
+    }
+
     private func rotate(_ vector: SIMD3<Double>, by quaternion: SIMD4<Double>) -> SIMD3<Double> {
         let q = SIMD3<Double>(quaternion.x, quaternion.y, quaternion.z)
         let t = 2 * simd_cross(q, vector)
@@ -353,6 +442,18 @@ private extension FailureMarkerKind {
         case .visualAmbiguity: SIMD3<Double>(0.65, 0.35, 1.0)
         case .badLighting: SIMD3<Double>(1.0, 0.55, 0.08)
         case .lowTexture: SIMD3<Double>(0.55, 0.58, 0.62)
+        }
+    }
+
+    var riskWeight: Double {
+        switch self {
+        case .confident: 0.05
+        case .blockedPrediction: 1.0
+        case .uncertainLocalization: 0.86
+        case .missingTrainingViews: 0.78
+        case .visualAmbiguity: 0.72
+        case .badLighting: 0.58
+        case .lowTexture: 0.52
         }
     }
 }

@@ -420,6 +420,10 @@ struct RobotVisionLabCLI {
             let modelEvidenceCount = overlay.failureMarkers.filter { $0.modelLabel != nil || $0.modelSource != nil }.count
             let lidarEvidenceCount = overlay.failureMarkers.filter { $0.lidarEvidence != nil }.count
             print("Overlay evidence model \(modelEvidenceCount), lidar \(lidarEvidenceCount)")
+            print("Overlay frame risks \(overlay.frameRisks.count)")
+            if let highestRisk = model.highestRiskFrames.first {
+                print("Highest risk frame \(highestRisk.frameIndex): score \(String(format: "%.3f", highestRisk.riskScore)), \(highestRisk.summary)")
+            }
         }
     }
 
