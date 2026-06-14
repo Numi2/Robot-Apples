@@ -69,7 +69,7 @@ public struct SplatTrainingPackageBuilder: Sendable {
             notes: [
                 "Uses Apple MLX on Apple Silicon for local differentiable Gaussian parameter optimization.",
                 "Consumes captured RGB frame URLs, camera intrinsics, tracking quality, and ARKit/RoomPlan-aligned camera poses.",
-                "Seeds Gaussians along quaternion-rotated camera rays from captured viewpoints before MLX optimization.",
+                "Seeds Gaussians along quaternion-rotated camera rays and optimizes against per-splat RGB/ray supervision from captured views.",
                 "Exports a Gaussian PLY asset for the native Metal renderer and .robotscene packaging."
             ]
         )
@@ -127,6 +127,23 @@ public struct SplatTrainingPackageBuilder: Sendable {
             image = Image.open(image_path).convert("RGB").resize((32, 32))
             return np.asarray(image, dtype=np.float32).reshape(-1, 3).mean(axis=0) / 255.0
 
+        def load_rgb_image(path):
+            if Image is None:
+                return None
+            image_path = Path(path.replace("file://", ""))
+            if not image_path.exists():
+                return None
+            return np.asarray(Image.open(image_path).convert("RGB"), dtype=np.float32) / 255.0
+
+        def sample_rgb(frame, u, v):
+            image = load_rgb_image(frame["imageURL"])
+            if image is None:
+                return average_rgb(frame["imageURL"])
+            height, width = image.shape[:2]
+            x = int(np.clip(round(u / max(frame_intrinsics(frame)[0], 1) * width), 0, width - 1))
+            y = int(np.clip(round(v / max(frame_intrinsics(frame)[1], 1) * height), 0, height - 1))
+            return image[y, x]
+
         def vector3(value):
             if isinstance(value, dict):
                 return np.array([value["x"], value["y"], value["z"]], dtype=np.float32)
@@ -173,11 +190,14 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 dtype=np.float32,
             )
             camera_direction /= max(np.linalg.norm(camera_direction), 1e-6)
-            return rotate_vector(quaternion(frame["orientation"]), camera_direction)
+            return rotate_vector(quaternion(frame["orientation"]), camera_direction), u, v
 
         def seed_gaussians(frames, splats_per_frame):
             positions = []
             colors = []
+            source_origins = []
+            source_rays = []
+            target_colors = []
             for frame in frames:
                 if frame.get("split") != "train":
                     continue
@@ -187,10 +207,20 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 color = average_rgb(frame["imageURL"])
                 for offset in range(splats_per_frame):
                     t = (offset + 1) / float(splats_per_frame + 1)
-                    ray = camera_ray(frame, offset, splats_per_frame)
+                    ray, u, v = camera_ray(frame, offset, splats_per_frame)
                     positions.append(origin + ray * (0.4 + t * 2.0))
-                    colors.append(color)
-            return np.asarray(positions, dtype=np.float32), np.asarray(colors, dtype=np.float32)
+                    sampled_color = sample_rgb(frame, u, v)
+                    colors.append(0.5 * color + 0.5 * sampled_color)
+                    source_origins.append(origin)
+                    source_rays.append(ray)
+                    target_colors.append(sampled_color)
+            return (
+                np.asarray(positions, dtype=np.float32),
+                np.asarray(colors, dtype=np.float32),
+                np.asarray(source_origins, dtype=np.float32),
+                np.asarray(source_rays, dtype=np.float32),
+                np.asarray(target_colors, dtype=np.float32),
+            )
 
         def write_ply(path, positions, colors, opacity, scale):
             path = Path(path)
@@ -226,22 +256,34 @@ public struct SplatTrainingPackageBuilder: Sendable {
             frames = load_jsonl(args.frames)
             if not frames:
                 raise ValueError("No training frames were provided.")
-            seed_positions, seed_colors = seed_gaussians(frames, max(args.splats_per_frame, 1))
+            seed_positions, seed_colors, source_origins, source_rays, target_colors = seed_gaussians(
+                frames,
+                max(args.splats_per_frame, 1),
+            )
             if len(seed_positions) == 0:
                 raise ValueError("No trainable frames were available after split and tracking-quality filtering.")
             positions = mx.array(seed_positions)
             colors = mx.array(seed_colors)
+            camera_origins = mx.array(source_origins)
+            camera_rays = mx.array(source_rays)
+            observed_colors = mx.array(target_colors)
             opacity_logits = mx.zeros((seed_positions.shape[0],), dtype=mx.float32)
             log_scale = mx.full((seed_positions.shape[0], 3), -3.0, dtype=mx.float32)
             learning_rate = 1e-3
 
             def loss_fn(position_values, color_values, opacity_values, scale_values):
                 centroid = mx.mean(position_values, axis=0, keepdims=True)
+                origin_to_splat = position_values - camera_origins
+                projected_distance = mx.sum(origin_to_splat * camera_rays, axis=1, keepdims=True)
+                closest_on_ray = camera_origins + camera_rays * projected_distance
+                ray_alignment = mx.mean((position_values - closest_on_ray) ** 2)
+                forward_depth = mx.mean(mx.maximum(0.05 - projected_distance, 0.0) ** 2)
+                photometric = mx.mean((mx.clip(color_values, 0.0, 1.0) - observed_colors) ** 2)
                 spatial_reg = mx.mean((position_values - centroid) ** 2) * 0.0005
                 color_reg = mx.mean((color_values - mx.clip(color_values, 0.0, 1.0)) ** 2)
                 opacity_reg = mx.mean((mx.sigmoid(opacity_values) - 0.75) ** 2) * 0.01
                 scale_reg = mx.mean((mx.exp(scale_values) - 0.05) ** 2) * 0.01
-                return spatial_reg + color_reg + opacity_reg + scale_reg
+                return photometric + ray_alignment * 0.05 + forward_depth * 0.05 + spatial_reg + color_reg + opacity_reg + scale_reg
 
             grad_fn = mx.grad(loss_fn, argnums=[0, 1, 2, 3])
             for epoch in range(args.epochs):
@@ -269,6 +311,7 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 "splats": int(seed_positions.shape[0]),
                 "output": str(Path(args.output).resolve()),
                 "runtime": "Apple MLX",
+                "loss_terms": ["photometric_rgb", "camera_ray_alignment", "positive_depth", "scale_opacity_regularization"],
             }
             Path(args.output).with_suffix(".training_summary.json").write_text(json.dumps(summary, indent=2))
             print(json.dumps(summary, indent=2))
