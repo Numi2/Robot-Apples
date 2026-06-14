@@ -43,6 +43,8 @@ public struct WorkstationState: Codable, Equatable, Sendable {
     public var warningCount: Int
     public var artifacts: [WorkstationArtifact]
     public var diagnostics: [String]
+    public var activeRobotSceneID: String?
+    public var failureMarkerCount: Int
 
     public init(
         stage: WorkstationStage = .idle,
@@ -54,7 +56,9 @@ public struct WorkstationState: Codable, Equatable, Sendable {
         motionSampleCount: Int = 0,
         warningCount: Int = 0,
         artifacts: [WorkstationArtifact] = [],
-        diagnostics: [String] = []
+        diagnostics: [String] = [],
+        activeRobotSceneID: String? = nil,
+        failureMarkerCount: Int = 0
     ) {
         self.stage = stage
         self.workspaceURL = workspaceURL
@@ -66,6 +70,57 @@ public struct WorkstationState: Codable, Equatable, Sendable {
         self.warningCount = warningCount
         self.artifacts = artifacts
         self.diagnostics = diagnostics
+        self.activeRobotSceneID = activeRobotSceneID
+        self.failureMarkerCount = failureMarkerCount
+    }
+}
+
+public struct RouteAlignmentAnchorDraft: Identifiable, Equatable, Sendable {
+    public var id: UUID
+    public var arkitX: Double
+    public var arkitY: Double
+    public var arkitZ: Double
+    public var sceneX: Double
+    public var sceneY: Double
+    public var sceneZ: Double
+
+    public init(
+        id: UUID = UUID(),
+        arkitX: Double = 0,
+        arkitY: Double = 0,
+        arkitZ: Double = 0,
+        sceneX: Double = 0,
+        sceneY: Double = 0,
+        sceneZ: Double = 0
+    ) {
+        self.id = id
+        self.arkitX = arkitX
+        self.arkitY = arkitY
+        self.arkitZ = arkitZ
+        self.sceneX = sceneX
+        self.sceneY = sceneY
+        self.sceneZ = sceneZ
+    }
+
+    public var controlPoint: RouteAlignmentControlPoint {
+        RouteAlignmentControlPoint(
+            arkitPosition: SIMD3<Double>(arkitX, arkitY, arkitZ),
+            scenePosition: SIMD3<Double>(sceneX, sceneY, sceneZ)
+        )
+    }
+}
+
+public struct WorkstationTransferEvent: Identifiable, Equatable, Sendable {
+    public var id: UUID
+    public var createdAt: Date
+    public var title: String
+    public var detail: String
+
+    public init(id: UUID = UUID(), createdAt: Date = Date(), title: String, detail: String) {
+        self.id = id
+        self.createdAt = createdAt
+        self.title = title
+        self.detail = detail
     }
 }
 
@@ -81,11 +136,27 @@ public enum WorkstationPaths {
 @Observable
 public final class WorkstationModel {
     public private(set) var state: WorkstationState
+    public private(set) var importHealthReport: RobotCaptureImportReport?
+    public private(set) var splatAsset: GaussianSplatAsset?
+    public private(set) var robotSceneManifest: RobotScenePackageManifest?
+    public private(set) var failureMarkers: [FailureMapMarker] = []
+    public private(set) var routeAlignmentReport: RouteAlignmentReport?
+    public private(set) var routeExpansionReport: RobotRouteExpansionReport?
+    public var routeAlignmentAnchors: [RouteAlignmentAnchorDraft] = []
+    public var routeExpansionLateralOffsets = "-0.25,0,0.25"
+    public var routeExpansionHeightOffsets = "-0.08,0,0.08"
+    public var routeExpansionYawOffsets = "-8,0,8"
+    public private(set) var isMultipeerReceiverRunning = false
+    public private(set) var transferEvents: [WorkstationTransferEvent] = []
 
     private var importedCapture: RobotCaptureImport?
     private var preparation: RobotCapturePreparationOutput?
+    private var alignedRoute: RobotPath?
+    private var expandedRoute: RobotPath?
     private var datasetManifest: DatasetManifest?
     private var evaluationReportURL: URL?
+    private var multipeerReceiver: RobotCaptureMultipeerTransfer?
+    private var multipeerDelegate: WorkstationMultipeerReceiverDelegate?
 
     public init(state: WorkstationState = WorkstationState()) {
         self.state = state
@@ -106,6 +177,7 @@ public final class WorkstationModel {
             try importer.writeReport(report, to: reportURL)
 
             importedCapture = imported
+            importHealthReport = report
             state.activeCaptureURL = packageURL
             state.frameCount = report.frameCount
             state.motionSampleCount = report.motionSampleCount
@@ -138,9 +210,35 @@ public final class WorkstationModel {
 
     public func linkSplat(at splatURL: URL) {
         perform(stage: .linkingSplat) {
-            _ = try GaussianSplatImporter().inspect(url: splatURL)
+            let asset = try GaussianSplatImporter().inspect(url: splatURL)
+            splatAsset = asset
             state.activeSplatURL = splatURL
             appendArtifact(title: "Gaussian Splat", url: splatURL, kind: "splat")
+            appendDiagnostic("Linked \(asset.format.rawValue.uppercased()) splat with \(asset.vertexCount) splats.")
+        }
+    }
+
+    public func openRobotScene(at packageURL: URL) {
+        perform(stage: .idle) {
+            let manifestURL = packageURL.pathExtension == "json" ? packageURL : packageURL.appendingPathComponent("robotscene.json")
+            let packageRoot = manifestURL.deletingLastPathComponent()
+            let manifest = try JSONDecoder.robotVisionLabDecoder.decode(
+                RobotScenePackageManifest.self,
+                from: Data(contentsOf: manifestURL)
+            )
+            let failureMapURL = resolve(manifest.failureMapURL, relativeTo: packageRoot)
+            let markers = try JSONDecoder.robotVisionLabDecoder.decode(
+                [FailureMapMarker].self,
+                from: Data(contentsOf: failureMapURL)
+            )
+            robotSceneManifest = manifest
+            failureMarkers = markers
+            state.activeRobotSceneURL = packageRoot
+            state.activeRobotSceneID = manifest.id
+            state.activeSplatURL = manifest.splatScene.sourceURL
+            state.failureMarkerCount = markers.count
+            appendArtifact(title: "Opened Robot Scene", url: packageRoot, kind: "robotscene")
+            appendArtifact(title: "Failure Map", url: failureMapURL, kind: "failure-map")
         }
     }
 
@@ -153,6 +251,102 @@ public final class WorkstationModel {
             state.frameCount = manifest.frames.count
             appendArtifact(title: "Dataset Manifest", url: manifestURL, kind: "dataset")
         }
+    }
+
+    public func addRouteAlignmentAnchor() {
+        routeAlignmentAnchors.append(RouteAlignmentAnchorDraft())
+    }
+
+    public func removeRouteAlignmentAnchor(id: UUID) {
+        routeAlignmentAnchors.removeAll { $0.id == id }
+    }
+
+    public func alignRoute(method: RouteAlignmentMethod = .controlPointCentroids, preserveVerticalScale: Bool = true) {
+        perform(stage: .preparingCapture) {
+            guard let preparation else {
+                throw WorkstationError.missingPreparedCapture
+            }
+            let sceneBounds = try activeSceneBounds(for: preparation.route)
+            let request = RouteAlignmentRequest(
+                sourceRoute: preparation.route,
+                sceneBounds: sceneBounds,
+                method: method,
+                controlPoints: routeAlignmentAnchors.map(\.controlPoint),
+                preserveVerticalScale: preserveVerticalScale
+            )
+            let output = try RobotRouteAligner().align(
+                request: request,
+                outputDirectory: state.workspaceURL.appendingPathComponent("RouteAlignment", isDirectory: true)
+            )
+            alignedRoute = output.alignedRoute
+            routeAlignmentReport = output.report
+            state.warningCount += output.report.warnings.count
+            state.diagnostics.append(contentsOf: output.report.warnings)
+            appendArtifact(title: "Aligned Route", url: output.report.alignedRouteURL, kind: "aligned-route")
+            appendArtifact(
+                title: "Route Alignment Report",
+                url: state.workspaceURL.appendingPathComponent("RouteAlignment/route_alignment_report.json"),
+                kind: "route-alignment"
+            )
+        }
+    }
+
+    public func generateRouteVariants() {
+        perform(stage: .preparingCapture) {
+            guard let preparation else {
+                throw WorkstationError.missingPreparedCapture
+            }
+            let sourceRoute = alignedRoute ?? preparation.route
+            let request = RobotRouteExpansionRequest(
+                sourceRoute: sourceRoute,
+                lateralOffsetsMeters: parseNumberList(routeExpansionLateralOffsets),
+                cameraHeightOffsetsMeters: parseNumberList(routeExpansionHeightOffsets),
+                yawOffsetsDegrees: parseNumberList(routeExpansionYawOffsets),
+                bounds: try activeSceneBounds(for: sourceRoute)
+            )
+            let output = try RobotRouteExpander().expand(
+                request: request,
+                outputDirectory: state.workspaceURL.appendingPathComponent("RouteVariants", isDirectory: true)
+            )
+            expandedRoute = output.route
+            routeExpansionReport = output.report
+            state.frameCount = output.report.expandedKeyframeCount
+            state.warningCount += output.report.warnings.count
+            state.diagnostics.append(contentsOf: output.report.warnings)
+            appendArtifact(title: "Expanded Robot Route", url: output.report.expandedRouteURL, kind: "route-variants")
+            appendArtifact(
+                title: "Route Variant Report",
+                url: state.workspaceURL.appendingPathComponent("RouteVariants/route_expansion_report.json"),
+                kind: "route-variants"
+            )
+        }
+    }
+
+    public func startMultipeerReceiver() {
+        do {
+            let inboxURL = state.workspaceURL.appendingPathComponent("Inbox", isDirectory: true)
+            let delegate = WorkstationMultipeerReceiverDelegate { [weak self] event in
+                self?.handleTransferEvent(event)
+            }
+            let receiver = RobotCaptureMultipeerTransfer(role: .receiver, inboxDirectory: inboxURL)
+            receiver.delegate = delegate
+            try receiver.start()
+            multipeerDelegate = delegate
+            multipeerReceiver = receiver
+            isMultipeerReceiverRunning = true
+            transferEvents.insert(WorkstationTransferEvent(title: "Receiver Started", detail: inboxURL.path), at: 0)
+        } catch {
+            appendDiagnostic(error.localizedDescription)
+            transferEvents.insert(WorkstationTransferEvent(title: "Receiver Failed", detail: error.localizedDescription), at: 0)
+        }
+    }
+
+    public func stopMultipeerReceiver() {
+        multipeerReceiver?.stop()
+        multipeerReceiver = nil
+        multipeerDelegate = nil
+        isMultipeerReceiverRunning = false
+        transferEvents.insert(WorkstationTransferEvent(title: "Receiver Stopped", detail: "Multipeer Connectivity advertising stopped."), at: 0)
     }
 
     public func planMetalRender() {
@@ -262,6 +456,7 @@ public final class WorkstationModel {
                 to: packageURL
             )
             state.activeRobotSceneURL = packageURL
+            openRobotScene(at: packageURL)
             appendArtifact(title: "Robot Scene Package", url: packageURL, kind: "robotscene")
         }
     }
@@ -298,7 +493,7 @@ public final class WorkstationModel {
         guard let preparation else {
             throw WorkstationError.missingPreparedCapture
         }
-        let route = preparation.route
+        let route = expandedRoute ?? alignedRoute ?? preparation.route
         let scene = try makeScene(route: route)
         let cameraRig = RobotCameraRig(
             name: "robot-front-camera",
@@ -328,7 +523,13 @@ public final class WorkstationModel {
 
     private func makeScene(route: RobotPath) throws -> GaussianSplatScene {
         if let splatURL = state.activeSplatURL {
-            return try GaussianSplatImporter().inspect(url: splatURL).makeScene(
+            let asset: GaussianSplatAsset
+            if let splatAsset {
+                asset = splatAsset
+            } else {
+                asset = try GaussianSplatImporter().inspect(url: splatURL)
+            }
+            return asset.makeScene(
                 id: splatURL.deletingPathExtension().lastPathComponent,
                 roomPlanModelURL: importedCapture?.captureBundle.roomPlanModelURL
             )
@@ -367,6 +568,68 @@ public final class WorkstationModel {
     private func appendDiagnostic(_ message: String) {
         guard !message.isEmpty else { return }
         state.diagnostics.append(message)
+    }
+
+    private func activeSceneBounds(for route: RobotPath) throws -> AxisAlignedBounds {
+        if let splatAsset {
+            return splatAsset.bounds
+        }
+        if let sceneBounds = robotSceneManifest?.splatScene.bounds {
+            return sceneBounds
+        }
+        return bounds(from: route)
+    }
+
+    private func parseNumberList(_ text: String) -> [Double] {
+        text.split(separator: ",")
+            .compactMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    }
+
+    private func resolve(_ url: URL, relativeTo root: URL) -> URL {
+        if url.isFileURL && url.path.hasPrefix("/") {
+            return url
+        }
+        return root.appendingPathComponent(url.relativePath)
+    }
+
+    private func handleTransferEvent(_ event: RobotCaptureTransferEvent) {
+        switch event {
+        case .peerFound(let name):
+            transferEvents.insert(WorkstationTransferEvent(title: "iPhone Found", detail: name), at: 0)
+        case .peerLost(let name):
+            transferEvents.insert(WorkstationTransferEvent(title: "iPhone Lost", detail: name), at: 0)
+        case .peerConnected(let name):
+            transferEvents.insert(WorkstationTransferEvent(title: "iPhone Connected", detail: name), at: 0)
+        case .peerDisconnected(let name):
+            transferEvents.insert(WorkstationTransferEvent(title: "iPhone Disconnected", detail: name), at: 0)
+        case .packageReceiveStarted(let packageName, let peer):
+            transferEvents.insert(WorkstationTransferEvent(title: "Receiving Capture", detail: "\(packageName) from \(peer)"), at: 0)
+        case .packageReceiveFinished(let peer, let url):
+            transferEvents.insert(WorkstationTransferEvent(title: "Capture Received", detail: "\(url.lastPathComponent) from \(peer)"), at: 0)
+            importCapture(at: url)
+        case .failed(let message):
+            transferEvents.insert(WorkstationTransferEvent(title: "Transfer Failed", detail: message), at: 0)
+            appendDiagnostic(message)
+        case .packageSendStarted, .packageSendProgress, .packageSendFinished:
+            break
+        }
+        if transferEvents.count > 20 {
+            transferEvents.removeLast(transferEvents.count - 20)
+        }
+    }
+}
+
+private final class WorkstationMultipeerReceiverDelegate: RobotCaptureTransferDelegate {
+    private let handler: @MainActor (RobotCaptureTransferEvent) -> Void
+
+    init(handler: @escaping @MainActor (RobotCaptureTransferEvent) -> Void) {
+        self.handler = handler
+    }
+
+    func robotCaptureTransferDidEmit(_ event: RobotCaptureTransferEvent) {
+        Task { @MainActor in
+            handler(event)
+        }
     }
 }
 

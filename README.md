@@ -129,13 +129,19 @@ manage signing for physical iPhone, Mac, and Vision Pro deployment.
   using Multipeer Connectivity resource transfer, progress, completion, and
   receipt reporting.
 - `RobotSceneStudioMacApp`: native SwiftUI Mac workstation shell with
-  `NavigationSplitView`, package import controls, pipeline actions, diagnostics,
-  artifact browsing, Metal renderer budget controls, and `.robotscene` export.
+  `NavigationSplitView`, project browser, `.robotscene` document opening,
+  Multipeer receiver controls, `.robotcapture` health inspection, splat
+  linking/inspection, route alignment anchors, route variant controls,
+  failure-map viewing, Metal renderer budget controls, diagnostics, artifact
+  browsing, and `.robotscene` export.
 - `WorkstationModel`: Observation-backed Mac workstation controller that imports
   captures, prepares routes, links splats, builds dataset manifests, plans Metal
   rendering, runs the native Metal splat renderer, records RGB/depth/visibility
-  render artifacts, plans Apple-native MLX training, evaluates baseline model
-  outputs, and exports Vision Pro scene packages.
+  render artifacts, receives iPhone packages through Multipeer Connectivity,
+  loads `.robotscene` manifests and failure maps, aligns captured ARKit routes
+  with manual anchors, generates robot-camera route variants, plans
+  Apple-native MLX training, evaluates baseline model outputs, and exports
+  Vision Pro scene packages.
 - `FinderFileSharingFallbackGuide`: wired local transfer fallback for large
   capture packages.
 - `RobotCaptureImporter`: Mac-side `.robotcapture` validation and ingest.
