@@ -153,6 +153,20 @@ public struct MLXTrainingPackageBuilder: Sendable {
             failure_score = max(blocked, uncertain, degraded)
             return np.array([free_space, blocked, uncertain, failure_score], dtype=np.float32)
 
+        def lidar_summary(path):
+            if not path:
+                return None
+            report = json.loads(Path(path).read_text())
+            metrics = report.get("metrics", {})
+            return {
+                "ray_count": int(metrics.get("rayCount", 0)),
+                "valid_ray_count": int(metrics.get("validRayCount", 0)),
+                "dropout_rate": float(metrics.get("dropoutRate", 0.0)),
+                "mean_range_meters": metrics.get("meanRangeMeters"),
+                "mean_intensity": metrics.get("meanIntensity"),
+                "low_support_rate": float(metrics.get("lowSupportRate", 0.0)),
+            }
+
         def safe_stats(values, count):
             if values is None:
                 return np.zeros((count,), dtype=np.float32)
@@ -202,10 +216,12 @@ public struct MLXTrainingPackageBuilder: Sendable {
                 rgb_path = product_url(frame, "rgb")
                 depth_path = product_url(frame, "depth")
                 visibility_path = product_url(frame, "visibility")
+                lidar_path = product_url(frame, "lidarScan")
                 failure_path = product_url(frame, "failureLabels")
                 rgb = read_rgb_chw(rgb_path) if rgb_path else None
                 depth = read_depth_chw(depth_path) if depth_path else None
                 visibility = read_visibility_chw(visibility_path) if visibility_path else None
+                lidar = lidar_summary(lidar_path)
                 pose_input = pose_vector(frame)
                 model_input = scene_feature_vector(pose_input, intrinsics, rgb, depth, visibility)
                 target = failure_signal(failure_path)
@@ -214,6 +230,7 @@ public struct MLXTrainingPackageBuilder: Sendable {
                     "rgb": rgb,
                     "depth": depth,
                     "visibility": visibility,
+                    "lidar": lidar,
                     "scene_features": model_input,
                     "target": target,
                 })

@@ -197,7 +197,7 @@ public struct RenderedFailureLabeler: Sendable {
     }
 }
 
-private struct PNMImage {
+struct PNMImage {
     var magic: String
     var width: Int
     var height: Int

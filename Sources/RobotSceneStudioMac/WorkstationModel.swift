@@ -552,6 +552,7 @@ public final class WorkstationModel {
                 )
             )
             let report = try renderer.renderDataset(manifest, outputDirectory: state.workspaceURL)
+            _ = try DatasetExporter().writeRenderedLiDARScans(manifest, to: state.workspaceURL)
             _ = try DatasetExporter().writeRenderedFailureLabels(manifest, to: state.workspaceURL)
             let reportURL = state.workspaceURL.appendingPathComponent("metal_splat_render_report.json")
             try MetalSplatRenderReportWriter().write(report, to: reportURL)
@@ -565,6 +566,7 @@ public final class WorkstationModel {
             appendArtifact(title: "Metal RGB Frames", url: state.workspaceURL.appendingPathComponent("rgb", isDirectory: true), kind: "rgb")
             appendArtifact(title: "Metal Depth Products", url: state.workspaceURL.appendingPathComponent("depth", isDirectory: true), kind: "depth")
             appendArtifact(title: "Metal Visibility Products", url: state.workspaceURL.appendingPathComponent("visibility", isDirectory: true), kind: "visibility")
+            appendArtifact(title: "Synthetic LiDAR Scans", url: state.workspaceURL.appendingPathComponent("lidarScan", isDirectory: true), kind: "lidar-scan")
             appendArtifact(title: "Rendered Failure Labels", url: state.workspaceURL.appendingPathComponent("failureLabels", isDirectory: true), kind: "failure-labels")
             appendArtifact(title: "Metal Tile Bins", url: state.workspaceURL.appendingPathComponent("tile_bins", isDirectory: true), kind: "metal-tile-bins")
 
@@ -741,7 +743,7 @@ public final class WorkstationModel {
             scene: scene,
             cameraRig: cameraRig,
             path: route,
-            requestedProducts: [.rgb, .depth, .visibility, .pose, .segmentation, .obstacleMask, .failureLabels, .navigationTarget],
+            requestedProducts: [.rgb, .depth, .visibility, .pose, .segmentation, .obstacleMask, .lidarScan, .failureLabels, .navigationTarget],
             labelSources: scene.roomPlanModelURL.map { [.roomPlanGeometry($0)] } ?? []
         )
         return DatasetGenerator().makeManifest(recipe: recipe, outputDirectory: state.workspaceURL)

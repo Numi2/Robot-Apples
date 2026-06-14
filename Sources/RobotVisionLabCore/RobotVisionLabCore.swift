@@ -203,6 +203,7 @@ public enum RenderProduct: String, Codable, CaseIterable, Sendable {
     case pose
     case segmentation
     case obstacleMask
+    case lidarScan
     case failureLabels
     case navigationTarget
 }
@@ -361,6 +362,10 @@ public struct DatasetExporter: Sendable {
         try RenderedFailureLabeler().writeReports(for: manifest, to: outputDirectory)
     }
 
+    public func writeRenderedLiDARScans(_ manifest: DatasetManifest, to outputDirectory: URL) throws -> [RenderedLiDARScanReport] {
+        try RenderedLiDARSimulator().writeReports(for: manifest, to: outputDirectory)
+    }
+
     private func writePose(_ frame: DatasetFrame, encoder: JSONEncoder, outputDirectory: URL) throws {
         let poseURL = outputDirectory
             .appendingPathComponent(RenderProduct.pose.rawValue, isDirectory: true)
@@ -434,7 +439,7 @@ private extension RenderProduct {
             "ppm"
         case .depth, .visibility:
             "pgm"
-        case .pose, .segmentation, .obstacleMask, .failureLabels, .navigationTarget:
+        case .pose, .segmentation, .obstacleMask, .lidarScan, .failureLabels, .navigationTarget:
             "json"
         }
     }
