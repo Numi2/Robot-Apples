@@ -81,7 +81,8 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 "Consumes captured RGB frame URLs, camera intrinsics, tracking quality, and ARKit/RoomPlan-aligned camera poses.",
                 "Consumes strict ARKit LiDAR Float32 meter depth priors when present and indexes them separately from RGB frame records.",
                 "Seeds Gaussians along quaternion-rotated camera rays and optimizes against per-splat RGB/ray/depth supervision from captured views.",
-                "Exports a Gaussian PLY asset for the native Metal renderer and .robotscene packaging."
+                "Exports a binary little-endian Gaussian PLY asset by default for the native Metal renderer and .robotscene packaging.",
+                "Writes per-epoch MLX loss metrics and SHA-256 output provenance for local Mac workstation auditability."
             ]
         )
         try JSONEncoder.robotVisionLabEncoder.encode(package).write(to: packageURL)
@@ -136,6 +137,7 @@ public struct SplatTrainingPackageBuilder: Sendable {
         #!/usr/bin/env python3
         import argparse
         import json
+        import struct
         from pathlib import Path
 
         import mlx.core as mx
@@ -327,28 +329,116 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 np.asarray(depth_weights, dtype=np.float32).reshape(-1, 1),
             )
 
-        def write_ply(path, positions, colors, opacity, scale):
+        def gaussian_rotation_from_ray(ray):
+            ray = ray / max(np.linalg.norm(ray), 1e-6)
+            forward = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+            dot = float(np.clip(np.dot(forward, ray), -1.0, 1.0))
+            if dot > 0.9999:
+                return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+            if dot < -0.9999:
+                return np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+            axis = np.cross(forward, ray)
+            axis = axis / max(np.linalg.norm(axis), 1e-6)
+            angle = np.arccos(dot)
+            s = np.sin(angle * 0.5)
+            return np.array([axis[0] * s, axis[1] * s, axis[2] * s, np.cos(angle * 0.5)], dtype=np.float32)
+
+        def write_ply(path, positions, colors, opacity, scale, rotations, ascii_output=False):
             path = Path(path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("w") as f:
-                f.write("ply\\n")
-                f.write("format ascii 1.0\\n")
-                f.write("comment Robot Scene Studio Apple MLX splat training output\\n")
-                f.write(f"element vertex {len(positions)}\\n")
-                f.write("property float x\\nproperty float y\\nproperty float z\\n")
-                f.write("property uchar red\\nproperty uchar green\\nproperty uchar blue\\n")
-                f.write("property float opacity\\n")
-                f.write("property float scale_0\\nproperty float scale_1\\nproperty float scale_2\\n")
-                f.write("property float rot_0\\nproperty float rot_1\\nproperty float rot_2\\nproperty float rot_3\\n")
-                f.write("end_header\\n")
-                for p, c, o, s in zip(positions, colors, opacity, scale):
+            header = [
+                "ply",
+                "format ascii 1.0" if ascii_output else "format binary_little_endian 1.0",
+                "comment Robot Scene Studio Apple MLX splat training output",
+                f"element vertex {len(positions)}",
+                "property float x",
+                "property float y",
+                "property float z",
+                "property uchar red",
+                "property uchar green",
+                "property uchar blue",
+                "property float opacity",
+                "property float scale_0",
+                "property float scale_1",
+                "property float scale_2",
+                "property float rot_0",
+                "property float rot_1",
+                "property float rot_2",
+                "property float rot_3",
+                "end_header",
+            ]
+            if ascii_output:
+                with path.open("w") as f:
+                    f.write("\\n".join(header) + "\\n")
+                    for p, c, o, s, r in zip(positions, colors, opacity, scale, rotations):
+                        rgb = np.clip(np.round(c * 255.0), 0, 255).astype(np.uint8)
+                        f.write(
+                            f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f} "
+                            f"{int(rgb[0])} {int(rgb[1])} {int(rgb[2])} "
+                            f"{float(o):.4f} {float(s[0]):.5f} {float(s[1]):.5f} {float(s[2]):.5f} "
+                            f"{float(r[0]):.6f} {float(r[1]):.6f} {float(r[2]):.6f} {float(r[3]):.6f}\\n"
+                        )
+                return
+            with path.open("wb") as f:
+                f.write(("\\n".join(header) + "\\n").encode("ascii"))
+                for p, c, o, s, r in zip(positions, colors, opacity, scale, rotations):
                     rgb = np.clip(np.round(c * 255.0), 0, 255).astype(np.uint8)
-                    f.write(
-                        f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f} "
-                        f"{int(rgb[0])} {int(rgb[1])} {int(rgb[2])} "
-                        f"{float(o):.4f} {float(s[0]):.5f} {float(s[1]):.5f} {float(s[2]):.5f} "
-                        "0.000000 0.000000 0.000000 1.000000\\n"
-                    )
+                    f.write(struct.pack(
+                        "<fffBBBffffffff",
+                        float(p[0]), float(p[1]), float(p[2]),
+                        int(rgb[0]), int(rgb[1]), int(rgb[2]),
+                        float(o),
+                        float(s[0]), float(s[1]), float(s[2]),
+                        float(r[0]), float(r[1]), float(r[2]), float(r[3]),
+                    ))
+
+        def write_training_metrics(path, records):
+            metrics_path = Path(path).with_suffix(".training_metrics.jsonl")
+            metrics_path.parent.mkdir(parents=True, exist_ok=True)
+            metrics_path.write_text("\\n".join(json.dumps(record, sort_keys=True) for record in records) + "\\n")
+            return metrics_path
+
+        def compute_loss_terms(position_values, color_values, opacity_values, scale_values, camera_origins, camera_rays, observed_colors, observed_depths, observed_depth_weights):
+            centroid = mx.mean(position_values, axis=0, keepdims=True)
+            origin_to_splat = position_values - camera_origins
+            projected_distance = mx.sum(origin_to_splat * camera_rays, axis=1, keepdims=True)
+            closest_on_ray = camera_origins + camera_rays * projected_distance
+            ray_alignment = mx.mean((position_values - closest_on_ray) ** 2)
+            forward_depth = mx.mean(mx.maximum(0.05 - projected_distance, 0.0) ** 2)
+            depth_prior = mx.mean(observed_depth_weights * (projected_distance - observed_depths) ** 2)
+            photometric = mx.mean((mx.clip(color_values, 0.0, 1.0) - observed_colors) ** 2)
+            spatial_reg = mx.mean((position_values - centroid) ** 2) * 0.0005
+            color_reg = mx.mean((color_values - mx.clip(color_values, 0.0, 1.0)) ** 2)
+            opacity_reg = mx.mean((mx.sigmoid(opacity_values) - 0.75) ** 2) * 0.01
+            scale_reg = mx.mean((mx.exp(scale_values) - 0.05) ** 2) * 0.01
+            total = photometric + ray_alignment * 0.05 + forward_depth * 0.05 + depth_prior * 0.15 + spatial_reg + color_reg + opacity_reg + scale_reg
+            return {
+                "total": total,
+                "photometric_rgb": photometric,
+                "camera_ray_alignment": ray_alignment,
+                "positive_depth": forward_depth,
+                "arkit_lidar_depth_prior": depth_prior,
+                "spatial_regularization": spatial_reg,
+                "color_regularization": color_reg,
+                "opacity_regularization": opacity_reg,
+                "scale_regularization": scale_reg,
+            }
+
+        def scalar_terms(terms):
+            return {key: float(value) for key, value in terms.items()}
+
+        def output_format_for_path(path, force_ascii):
+            if force_ascii:
+                return "ascii_ply"
+            return "binary_little_endian_ply"
+
+        def stable_file_checksum(path):
+            import hashlib
+            digest = hashlib.sha256()
+            with Path(path).open("rb") as f:
+                for block in iter(lambda: f.read(1024 * 1024), b""):
+                    digest.update(block)
+            return digest.hexdigest()
 
         def main():
             parser = argparse.ArgumentParser()
@@ -357,6 +447,7 @@ public struct SplatTrainingPackageBuilder: Sendable {
             parser.add_argument("--output", required=True)
             parser.add_argument("--splats-per-frame", type=int, default=24)
             parser.add_argument("--epochs", type=int, default=25)
+            parser.add_argument("--ascii-ply", action="store_true", help="Write an ASCII PLY for inspection; binary little-endian PLY is the default production format.")
             args = parser.parse_args()
 
             frames = load_jsonl(args.frames)
@@ -382,21 +473,20 @@ public struct SplatTrainingPackageBuilder: Sendable {
             learning_rate = 1e-3
 
             def loss_fn(position_values, color_values, opacity_values, scale_values):
-                centroid = mx.mean(position_values, axis=0, keepdims=True)
-                origin_to_splat = position_values - camera_origins
-                projected_distance = mx.sum(origin_to_splat * camera_rays, axis=1, keepdims=True)
-                closest_on_ray = camera_origins + camera_rays * projected_distance
-                ray_alignment = mx.mean((position_values - closest_on_ray) ** 2)
-                forward_depth = mx.mean(mx.maximum(0.05 - projected_distance, 0.0) ** 2)
-                depth_prior = mx.mean(observed_depth_weights * (projected_distance - observed_depths) ** 2)
-                photometric = mx.mean((mx.clip(color_values, 0.0, 1.0) - observed_colors) ** 2)
-                spatial_reg = mx.mean((position_values - centroid) ** 2) * 0.0005
-                color_reg = mx.mean((color_values - mx.clip(color_values, 0.0, 1.0)) ** 2)
-                opacity_reg = mx.mean((mx.sigmoid(opacity_values) - 0.75) ** 2) * 0.01
-                scale_reg = mx.mean((mx.exp(scale_values) - 0.05) ** 2) * 0.01
-                return photometric + ray_alignment * 0.05 + forward_depth * 0.05 + depth_prior * 0.15 + spatial_reg + color_reg + opacity_reg + scale_reg
+                return compute_loss_terms(
+                    position_values,
+                    color_values,
+                    opacity_values,
+                    scale_values,
+                    camera_origins,
+                    camera_rays,
+                    observed_colors,
+                    observed_depths,
+                    observed_depth_weights,
+                )["total"]
 
             grad_fn = mx.grad(loss_fn, argnums=[0, 1, 2, 3])
+            metric_records = []
             for epoch in range(args.epochs):
                 grads = grad_fn(positions, colors, opacity_logits, log_scale)
                 positions = positions - learning_rate * grads[0]
@@ -404,16 +494,34 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 opacity_logits = opacity_logits - learning_rate * grads[2]
                 log_scale = log_scale - learning_rate * grads[3]
                 mx.eval(positions, colors, opacity_logits, log_scale)
+                terms = compute_loss_terms(
+                    positions,
+                    colors,
+                    opacity_logits,
+                    log_scale,
+                    camera_origins,
+                    camera_rays,
+                    observed_colors,
+                    observed_depths,
+                    observed_depth_weights,
+                )
+                mx.eval(*terms.values())
+                metric_record = {"epoch": epoch, **scalar_terms(terms)}
+                metric_records.append(metric_record)
                 if epoch % max(args.epochs // 5, 1) == 0:
-                    print(f"epoch={epoch} loss={float(loss_fn(positions, colors, opacity_logits, log_scale)):.6f}")
+                    print(f"epoch={epoch} loss={metric_record['total']:.6f} photometric={metric_record['photometric_rgb']:.6f} depth={metric_record['arkit_lidar_depth_prior']:.6f}")
 
+            rotations = np.asarray([gaussian_rotation_from_ray(ray) for ray in source_rays], dtype=np.float32)
             write_ply(
                 args.output,
                 np.array(positions),
                 np.clip(np.array(colors), 0.0, 1.0),
                 np.array(mx.sigmoid(opacity_logits)),
                 np.array(mx.exp(log_scale)),
+                rotations,
+                ascii_output=args.ascii_ply,
             )
+            metrics_path = write_training_metrics(args.output, metric_records)
             summary = {
                 "frames": len(frames),
                 "train_frames": len([frame for frame in frames if frame.get("split") == "train"]),
@@ -423,7 +531,16 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 "depth_supervised_splats": int(np.count_nonzero(depth_weights)),
                 "splats": int(seed_positions.shape[0]),
                 "output": str(Path(args.output).resolve()),
+                "output_format": output_format_for_path(args.output, args.ascii_ply),
+                "output_sha256": stable_file_checksum(args.output),
+                "metrics": str(metrics_path.resolve()),
+                "final_metrics": metric_records[-1] if metric_records else {},
                 "runtime": "Apple MLX",
+                "trainer": {
+                    "framework": "MLX",
+                    "device_memory_model": "Apple Silicon unified memory",
+                    "output_gaussian_fields": ["position", "rgb", "opacity", "anisotropic_scale", "ray_aligned_rotation"],
+                },
                 "loss_terms": ["photometric_rgb", "camera_ray_alignment", "arkit_lidar_depth_prior", "positive_depth", "scale_opacity_regularization"],
             }
             Path(args.output).with_suffix(".training_summary.json").write_text(json.dumps(summary, indent=2))
