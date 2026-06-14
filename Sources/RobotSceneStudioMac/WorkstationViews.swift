@@ -787,6 +787,9 @@ private struct FailureMapViewer: View {
             if model.failureMarkers.isEmpty {
                 EmptyState(title: "No failure map loaded", systemImage: "map")
             } else {
+                if let summary = model.spatialReviewSummary {
+                    SpatialReviewSummaryPanel(summary: summary)
+                }
                 List {
                     ForEach(model.failureMarkers, id: \.id) { marker in
                         HStack(alignment: .top, spacing: 10) {
@@ -811,6 +814,76 @@ private struct FailureMapViewer: View {
                     }
                 }
                 .frame(minHeight: 260)
+            }
+        }
+    }
+}
+
+private struct SpatialReviewSummaryPanel: View {
+    var summary: RobotSceneSpatialReviewSummary
+
+    private var highestRiskFrames: [RobotSceneSpatialReviewFrameRisk] {
+        summary.frameRisks
+            .filter { $0.riskScore > 0 }
+            .sorted {
+                if $0.riskScore == $1.riskScore {
+                    return $0.frameIndex < $1.frameIndex
+                }
+                return $0.riskScore > $1.riskScore
+            }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Spatial Review Triage")
+                .font(.headline)
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                GridRow {
+                    MetricCell(title: "Frames", value: "\(summary.frameCount)")
+                    MetricCell(title: "Markers", value: "\(summary.markerCount)")
+                    MetricCell(title: "Model Evidence", value: "\(summary.modelEvidenceMarkerCount)")
+                }
+                GridRow {
+                    MetricCell(title: "LiDAR Evidence", value: "\(summary.lidarEvidenceMarkerCount)")
+                    MetricCell(title: "Risk Frames", value: "\(highestRiskFrames.count)")
+                    MetricCell(title: "Scene", value: summary.sceneID)
+                }
+            }
+
+            if highestRiskFrames.isEmpty {
+                Text("No elevated spatial review risk frames in this scene.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Highest-Risk Frames")
+                        .font(.subheadline.weight(.semibold))
+                    ForEach(highestRiskFrames.prefix(6), id: \.frameIndex) { frame in
+                        SpatialReviewRiskRow(frame: frame)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct SpatialReviewRiskRow: View {
+    var frame: RobotSceneSpatialReviewFrameRisk
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: frame.dominantKind?.symbol ?? "exclamationmark.triangle")
+                .foregroundStyle(frame.dominantKind?.tint ?? .secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Frame \(frame.frameIndex) · \(frame.dominantKind?.reviewLabel ?? "Mixed risk") · \(String(format: "%.0f%%", frame.riskScore * 100))")
+                    .font(.callout.weight(.semibold))
+                Text("\(frame.markerCount) markers · \(frame.modelEvidenceCount) model · \(frame.lidarEvidenceCount) LiDAR · \(frame.evidenceSources.reviewLabel)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(frame.summary)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
         }
     }

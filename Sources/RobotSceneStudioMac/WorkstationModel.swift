@@ -152,6 +152,7 @@ public final class WorkstationModel {
     public private(set) var importHealthReport: RobotCaptureImportReport?
     public private(set) var splatAsset: GaussianSplatAsset?
     public private(set) var robotSceneManifest: RobotScenePackageManifest?
+    public private(set) var spatialReviewSummary: RobotSceneSpatialReviewSummary?
     public private(set) var failureMarkers: [FailureMapMarker] = []
     public private(set) var routeAlignmentReport: RouteAlignmentReport?
     public private(set) var routeExpansionReport: RobotRouteExpansionReport?
@@ -271,6 +272,14 @@ public final class WorkstationModel {
                 from: Data(contentsOf: failureMapURL)
             )
             robotSceneManifest = manifest
+            spatialReviewSummary = try manifest.visionProReviewAsset.reviewSummaryURL.flatMap { summaryURL in
+                let resolvedURL = resolve(summaryURL, relativeTo: packageRoot)
+                guard FileManager.default.fileExists(atPath: resolvedURL.path) else { return nil }
+                return try JSONDecoder.robotVisionLabDecoder.decode(
+                    RobotSceneSpatialReviewSummary.self,
+                    from: Data(contentsOf: resolvedURL)
+                )
+            }
             failureMarkers = markers
             state.activeRobotSceneURL = packageRoot
             state.activeRobotSceneID = manifest.id
@@ -286,6 +295,12 @@ public final class WorkstationModel {
             state.failureMarkerCount = markers.count
             appendArtifact(title: "Opened Robot Scene", url: packageRoot, kind: "robotscene")
             appendArtifact(title: "Failure Map", url: failureMapURL, kind: "failure-map")
+            if let summaryURL = manifest.visionProReviewAsset.reviewSummaryURL {
+                let resolvedURL = resolve(summaryURL, relativeTo: packageRoot)
+                if FileManager.default.fileExists(atPath: resolvedURL.path) {
+                    appendArtifact(title: "Spatial Review Summary", url: resolvedURL, kind: "spatial-review-summary")
+                }
+            }
         }
     }
 
