@@ -66,7 +66,7 @@ swift run robot-vision-lab --output ./GeneratedDataset --path-mode lawnmower --p
 swift run robot-vision-lab --output ./GeneratedDataset --path-mode random --frame-count 1000 --path-seed 7 --render-preview
 swift run robot-vision-lab --output ./GeneratedDataset --render-preview --augment-dataset --augmentation-seed 42
 swift run robot-vision-lab --output ./GeneratedDataset --splat ./room.ply --render-splat-points
-swift run robot-vision-lab --output ./GeneratedDataset --splat ./Fixtures/sample_gaussian_splats.ply --render-metal-splats --metal-tile-size 16 --metal-max-splats 1000000
+swift run robot-vision-lab --output ./GeneratedDataset --splat ./Fixtures/sample_gaussian_splats.ply --render-metal-splats --metal-tile-size 16 --metal-max-splats 1000000 --metal-streaming-chunk-splats 250000
 swift run robot-vision-lab --output ./GeneratedDatasetBinaryPLY --splat ./Fixtures/sample_gaussian_splats_binary.ply --render-metal-splats
 swift run robot-vision-lab --output ./GeneratedDatasetSplat --splat ./Fixtures/sample_gaussian_splats.splat --render-metal-splats
 swift run robot-vision-lab --output ./GeneratedDataset --export-sample-capture
@@ -124,7 +124,8 @@ developer tool for exercising the native contracts.
   point discs on the GPU, and writes RGB plus dense Gaussian-footprint
   depth/visibility images, diagnostic depth/visibility summaries, and tile-bin
   products. Render-budget LOD uses deterministic uniform splat decimation across
-  the full cloud instead of file-prefix truncation.
+  the full cloud instead of file-prefix truncation, and GPU streaming chunks keep
+  per-frame Metal working sets bounded for larger scenes.
 - `MetalGaussianSplatRenderConfiguration`: controls tile size and per-frame
   splat budget for larger Apple Silicon render jobs.
 - `SplatTrainingJob`: Apple-native training plan for MLX/Create ML/Metal
@@ -179,7 +180,7 @@ developer tool for exercising the native contracts.
    - GPU-derived dense depth and visibility images are in place.
    - Tile size and per-frame splat budgets are configurable.
    - Per-frame splat budgets now use deterministic LOD decimation.
-   - Add tiled streaming for scenes larger than local Metal working-set budgets.
+   - GPU streaming chunks are in place for bounded per-frame Metal working sets.
 
 6. Build the Vision Pro reviewer.
    - Open `.robotscene`.

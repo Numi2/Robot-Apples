@@ -135,10 +135,16 @@ public struct MetalSplatRenderReportWriter: Sendable {
 public struct MetalGaussianSplatRenderConfiguration: Codable, Equatable, Sendable {
     public var tileSize: Int
     public var maxSplatsPerFrame: Int?
+    public var streamingChunkSplatCount: Int?
 
-    public init(tileSize: Int = 16, maxSplatsPerFrame: Int? = nil) {
+    public init(
+        tileSize: Int = 16,
+        maxSplatsPerFrame: Int? = nil,
+        streamingChunkSplatCount: Int? = nil
+    ) {
         self.tileSize = max(4, tileSize)
         self.maxSplatsPerFrame = maxSplatsPerFrame.map { max(1, $0) }
+        self.streamingChunkSplatCount = streamingChunkSplatCount.map { max(1, $0) }
     }
 }
 
@@ -780,6 +786,10 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         if frameSplats.count < cloud.splats.count {
             diagnostics.append("LOD decimation selected \(frameSplats.count) of \(cloud.splats.count) splats using deterministic uniform sampling.")
         }
+        if let streamingChunkSplatCount = configuration.streamingChunkSplatCount,
+           streamingChunkSplatCount < frameSplats.count {
+            diagnostics.append("GPU tiled streaming rendered splats in chunks of \(streamingChunkSplatCount) or fewer.")
+        }
         return MetalSplatRenderReport(sceneID: manifest.scene.id, frameProducts: products, diagnostics: diagnostics)
     }
 
@@ -819,23 +829,6 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             tileSize: configuration.tileSize
         )
         let cpuProjectionSeconds = Date().timeIntervalSince(cpuProjectionStart)
-        let gpuPreparationStart = Date()
-        let gpuPreparation = try prepareTileBinsOnGPU(
-            splats,
-            frame: frame,
-            cameraRig: cameraRig,
-            width: width,
-            height: height,
-            tileSize: configuration.tileSize,
-            tileColumns: prepared.tileReport.tileColumns,
-            tileRows: prepared.tileReport.tileRows
-        )
-        let gpuPreparationSeconds = Date().timeIntervalSince(gpuPreparationStart)
-        let tileReport = gpuPreparation.tileReport
-
-        guard gpuPreparation.drawCommandCount > 0 else {
-            throw MetalGaussianSplatRenderError.noVisibleSplats
-        }
 
         var uniforms = MetalCameraUniforms(
             cameraPosition: SIMD4<Float>(
@@ -869,22 +862,70 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         renderPass.colorAttachments[0].storeAction = .store
         renderPass.colorAttachments[0].clearColor = MTLClearColor(red: 0.03, green: 0.035, blue: 0.04, alpha: 1)
 
-        guard let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPass) else {
-            throw MetalGaussianSplatRenderError.commandEncodingFailed
+        let gpuPreparationStart = Date()
+        let chunks = streamingChunks(for: splats)
+        var gpuPreparationSeconds: TimeInterval = 0
+        var renderPassSeconds: TimeInterval = 0
+        var drawCommandCount = 0
+        var projectedSplatCount = 0
+        var tileReport = prepared.tileReport
+        var tileReports: [MetalTileBinReport] = []
+        var projectedBuffers: [MTLBuffer] = []
+        var didRenderChunk = false
+        for chunk in chunks {
+            let chunkPreparationStart = Date()
+            let gpuPreparation: (projectedSplatCount: Int, coveredTileReferenceCount: Int, drawCommandCount: Int, vertexBuffer: MTLBuffer, projectedBuffer: MTLBuffer, tileReport: MetalTileBinReport)
+            do {
+                gpuPreparation = try prepareTileBinsOnGPU(
+                    chunk,
+                    frame: frame,
+                    cameraRig: cameraRig,
+                    width: width,
+                    height: height,
+                    tileSize: configuration.tileSize,
+                    tileColumns: prepared.tileReport.tileColumns,
+                    tileRows: prepared.tileReport.tileRows
+                )
+            } catch MetalGaussianSplatRenderError.noVisibleSplats {
+                continue
+            }
+            gpuPreparationSeconds += Date().timeIntervalSince(chunkPreparationStart)
+            tileReport = gpuPreparation.tileReport
+            projectedSplatCount += gpuPreparation.projectedSplatCount
+            drawCommandCount += gpuPreparation.drawCommandCount
+            tileReports.append(gpuPreparation.tileReport)
+            projectedBuffers.append(gpuPreparation.projectedBuffer)
+
+            guard let commandBuffer = commandQueue.makeCommandBuffer(),
+                  let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPass) else {
+                throw MetalGaussianSplatRenderError.commandEncodingFailed
+            }
+            encoder.setRenderPipelineState(pipelineState)
+            encoder.setVertexBuffer(gpuPreparation.vertexBuffer, offset: 0, index: 0)
+            encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: gpuPreparation.drawCommandCount)
+            encoder.endEncoding()
+            let chunkRenderPassStart = Date()
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+            if let error = commandBuffer.error {
+                throw error
+            }
+            renderPassSeconds += Date().timeIntervalSince(chunkRenderPassStart)
+            didRenderChunk = true
+            renderPass.colorAttachments[0].loadAction = .load
         }
-        encoder.setRenderPipelineState(pipelineState)
-        encoder.setVertexBuffer(gpuPreparation.vertexBuffer, offset: 0, index: 0)
-        encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
-        encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: gpuPreparation.drawCommandCount)
-        encoder.endEncoding()
-        let renderPassStart = Date()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        if let error = commandBuffer.error {
-            throw error
+        _ = gpuPreparationStart
+        guard didRenderChunk else {
+            throw MetalGaussianSplatRenderError.noVisibleSplats
         }
-        let renderPassSeconds = Date().timeIntervalSince(renderPassStart)
+        tileReport = mergedTileReport(
+            frameIndex: frame.index,
+            tileSize: configuration.tileSize,
+            tileColumns: prepared.tileReport.tileColumns,
+            tileRows: prepared.tileReport.tileRows,
+            reports: tileReports
+        )
 
         let rgbURL = outputDirectory.appendingPathComponent("rgb", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_metal.ppm", frame.index))
         let depthURL = outputDirectory.appendingPathComponent("depth", isDirectory: true).appendingPathComponent(String(format: "frame_%06d_depth.json", frame.index))
@@ -900,8 +941,8 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         try readPPM(texture: colorTexture, width: width, height: height).write(to: rgbURL)
         let depthVisibilityStart = Date()
         try writeDepthVisibilityImages(
-            projectedBuffer: gpuPreparation.projectedBuffer,
-            projectedSplatCount: gpuPreparation.projectedSplatCount,
+            projectedBuffers: projectedBuffers,
+            projectedSplatCount: projectedSplatCount,
             width: width,
             height: height,
             depthURL: depthImageURL,
@@ -937,7 +978,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             visibilityImageURL: visibilityImageURL,
             tileBinURL: tileBinURL,
             visibleSplatCount: prepared.projectedSplats.count,
-            drawCommandCount: gpuPreparation.drawCommandCount,
+            drawCommandCount: drawCommandCount,
             totalSplatCount: splats.count,
             timing: timing
         )
@@ -958,6 +999,36 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             let sourceIndex = Int((Double(sampleIndex) * Double(lastIndex) / Double(denominator)).rounded())
             return splats[min(lastIndex, sourceIndex)]
         }
+    }
+
+    private func streamingChunks(for splats: [RenderableGaussianSplat]) -> [[RenderableGaussianSplat]] {
+        guard let streamingChunkSplatCount = configuration.streamingChunkSplatCount,
+              streamingChunkSplatCount < splats.count else {
+            return [splats]
+        }
+        return stride(from: 0, to: splats.count, by: streamingChunkSplatCount).map { start in
+            Array(splats[start..<min(start + streamingChunkSplatCount, splats.count)])
+        }
+    }
+
+    private func mergedTileReport(
+        frameIndex: Int,
+        tileSize: Int,
+        tileColumns: Int,
+        tileRows: Int,
+        reports: [MetalTileBinReport]
+    ) -> MetalTileBinReport {
+        MetalTileBinReport(
+            frameIndex: frameIndex,
+            tileSize: tileSize,
+            tileColumns: tileColumns,
+            tileRows: tileRows,
+            projectedSplatCount: reports.reduce(0) { $0 + $1.projectedSplatCount },
+            drawCommandCount: reports.reduce(0) { $0 + $1.drawCommandCount },
+            gpuProjectedSplatCount: reports.reduce(0) { $0 + ($1.gpuProjectedSplatCount ?? 0) },
+            gpuCoveredTileReferenceCount: reports.reduce(0) { $0 + ($1.gpuCoveredTileReferenceCount ?? 0) },
+            bins: reports.flatMap(\.bins)
+        )
     }
 
     private func prepareTileSortedSplats(
@@ -1416,7 +1487,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
     }
 
     private func writeDepthVisibilityImages(
-        projectedBuffer: MTLBuffer,
+        projectedBuffers: [MTLBuffer],
         projectedSplatCount: Int,
         width: Int,
         height: Int,
@@ -1436,20 +1507,24 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             visibilityPointer[index] = 0
         }
 
-        var imageUniforms = SIMD4<UInt32>(UInt32(width), UInt32(height), UInt32(projectedSplatCount), 0)
-        guard let imageUniformBuffer = device.makeBuffer(bytes: &imageUniforms, length: MemoryLayout<SIMD4<UInt32>>.stride, options: [.storageModeShared]) else {
-            throw MetalGaussianSplatRenderError.bufferAllocationFailed
-        }
+        for projectedBuffer in projectedBuffers {
+            let splatCount = projectedBuffer.length / MemoryLayout<MetalProjectedSplat>.stride
+            var imageUniforms = SIMD4<UInt32>(UInt32(width), UInt32(height), UInt32(splatCount), 0)
+            guard let imageUniformBuffer = device.makeBuffer(bytes: &imageUniforms, length: MemoryLayout<SIMD4<UInt32>>.stride, options: [.storageModeShared]) else {
+                throw MetalGaussianSplatRenderError.bufferAllocationFailed
+            }
 
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
-            encoder.setComputePipelineState(depthVisibilityPipelineState)
-            encoder.setBuffer(projectedBuffer, offset: 0, index: 0)
-            encoder.setBuffer(depthBuffer, offset: 0, index: 1)
-            encoder.setBuffer(visibilityBuffer, offset: 0, index: 2)
-            encoder.setBuffer(imageUniformBuffer, offset: 0, index: 3)
-            dispatchThreads(projectedSplatCount, encoder: encoder, pipelineState: depthVisibilityPipelineState)
-            encoder.endEncoding()
+            if let encoder = commandBuffer.makeComputeCommandEncoder() {
+                encoder.setComputePipelineState(depthVisibilityPipelineState)
+                encoder.setBuffer(projectedBuffer, offset: 0, index: 0)
+                encoder.setBuffer(depthBuffer, offset: 0, index: 1)
+                encoder.setBuffer(visibilityBuffer, offset: 0, index: 2)
+                encoder.setBuffer(imageUniformBuffer, offset: 0, index: 3)
+                dispatchThreads(splatCount, encoder: encoder, pipelineState: depthVisibilityPipelineState)
+                encoder.endEncoding()
+            }
         }
+        _ = projectedSplatCount
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         if let error = commandBuffer.error {
