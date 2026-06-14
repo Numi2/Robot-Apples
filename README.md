@@ -188,7 +188,8 @@ manage signing for physical iPhone, Mac, and Vision Pro deployment.
   obstacle/free-space probability, localization uncertainty, and failure-kind
   outputs.
 - `MLXTrainingPackageBuilder`: writes a local Apple Silicon MLX training package
-  with rendered-dataset loader code and Core ML export/conversion artifacts.
+  with a reusable rendered-dataset Python loader, an MLX training entrypoint,
+  and Core ML Tools export/conversion artifacts.
 - `RobotScenePackageExporter`: writes `.robotscene` packages for Vision Pro
   spatial review.
 - `SharedProjectFormatTools`: versioned `.robotcapture`/`.robotscene` helpers
@@ -198,6 +199,9 @@ manage signing for physical iPhone, Mac, and Vision Pro deployment.
   missing-view, ambiguous-view, bad-lighting, and low-texture regions, including
   calibrated markers from Core ML/MLX obstacle, free-space, uncertainty, and
   failure-kind outputs.
+- `FailureMapCalibrationReporter` and `ModelComparisonReporter`: produce
+  calibrated failure-map metrics and baseline-vs-candidate model comparison
+  reports for Core ML evaluation runs.
 
 ## Roadmap
 

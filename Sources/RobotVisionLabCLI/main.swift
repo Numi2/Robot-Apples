@@ -445,6 +445,7 @@ struct RobotVisionLabCLI {
 
         let reportURL = outputDirectory.appendingPathComponent("evaluation_report.json")
         let report: ModelEvaluationReport
+        var baselineForComparison: ModelEvaluationReport?
         if CommandLine.arguments.contains("--evaluate-coreml") {
             let modelURL = stringValue(for: "--evaluate-model").map { URL(fileURLWithPath: $0) }
             let request = ModelEvaluationRequest(
@@ -455,6 +456,17 @@ struct RobotVisionLabCLI {
             )
             report = try CoreMLDatasetEvaluator().evaluate(
                 request: request,
+                manifest: manifest,
+                generatedAt: Date(timeIntervalSince1970: 1_800_000_000)
+            )
+            let baselineRequest = ModelEvaluationRequest(
+                id: "baseline-preview-evaluation",
+                model: LocalModelReference(name: "manifest-baseline", runtime: .baseline),
+                datasetManifestURL: datasetManifestURL,
+                tasks: tasks
+            )
+            baselineForComparison = BaselineDatasetEvaluator().evaluate(
+                request: baselineRequest,
                 manifest: manifest,
                 generatedAt: Date(timeIntervalSince1970: 1_800_000_000)
             )
@@ -473,6 +485,19 @@ struct RobotVisionLabCLI {
         }
         try EvaluationReportWriter().write(report, to: reportURL)
         print("Wrote evaluation report to \(reportURL.path)")
+        let calibrationURL = outputDirectory.appendingPathComponent("failure_map_calibration_report.json")
+        let calibration = FailureMapCalibrationReporter().makeReport(from: report)
+        try FailureMapCalibrationReporter().write(calibration, to: calibrationURL)
+        print("Wrote failure-map calibration report to \(calibrationURL.path)")
+        if let baselineForComparison {
+            let baselineURL = outputDirectory.appendingPathComponent("baseline_evaluation_report.json")
+            try EvaluationReportWriter().write(baselineForComparison, to: baselineURL)
+            let comparison = ModelComparisonReporter().compare(baseline: baselineForComparison, candidate: report)
+            let comparisonURL = outputDirectory.appendingPathComponent("model_comparison_report.json")
+            try ModelComparisonReporter().write(comparison, to: comparisonURL)
+            print("Wrote baseline evaluation report to \(baselineURL.path)")
+            print("Wrote model comparison report to \(comparisonURL.path)")
+        }
     }
 
     private static func writeModelAdapterSchemas(outputDirectory: URL) throws {
@@ -502,6 +527,7 @@ struct RobotVisionLabCLI {
             outputDirectory: packageDirectory
         )
         print("Wrote Apple Silicon MLX training package to \(packageDirectory.path)")
+        print("Dataset loader: \(package.datasetLoaderURL.path)")
         print("Training script: \(package.trainScriptURL.path)")
         print("Core ML export script: \(package.exportScriptURL.path)")
     }

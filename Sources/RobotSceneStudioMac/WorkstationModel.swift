@@ -599,9 +599,13 @@ public final class WorkstationModel {
             let report = BaselineDatasetEvaluator().evaluate(request: request, manifest: manifest)
             let reportURL = state.workspaceURL.appendingPathComponent("evaluation_report.json")
             try EvaluationReportWriter().write(report, to: reportURL)
+            let calibrationURL = state.workspaceURL.appendingPathComponent("failure_map_calibration_report.json")
+            let calibration = FailureMapCalibrationReporter().makeReport(from: report)
+            try FailureMapCalibrationReporter().write(calibration, to: calibrationURL)
             evaluationReportURL = reportURL
             state.warningCount += report.summary.warningCount
             appendArtifact(title: "Evaluation Report", url: reportURL, kind: "evaluation")
+            appendArtifact(title: "Failure-Map Calibration Report", url: calibrationURL, kind: "failure-calibration")
         }
     }
 
