@@ -1,0 +1,380 @@
+import Foundation
+import simd
+
+public enum AppleDeviceRole: String, Codable, CaseIterable, Sendable {
+    case iPhoneCaptureClient
+    case macTrainingWorkstation
+    case visionProSpatialReviewer
+}
+
+public enum LocalTransferMethod: String, Codable, CaseIterable, Sendable {
+    case multipeerConnectivity
+    case finderFileSharing
+    case bonjourNetworkFramework
+    case iCloudFileProvider
+    case airDropShareSheet
+}
+
+public struct TransferPolicy: Codable, Equatable, Sendable {
+    public var primary: LocalTransferMethod
+    public var fallbacks: [LocalTransferMethod]
+    public var packageExtension: String
+    public var supportsLargeResourceTransfer: Bool
+
+    public init(
+        primary: LocalTransferMethod = .multipeerConnectivity,
+        fallbacks: [LocalTransferMethod] = [.finderFileSharing, .bonjourNetworkFramework, .iCloudFileProvider, .airDropShareSheet],
+        packageExtension: String,
+        supportsLargeResourceTransfer: Bool = true
+    ) {
+        self.primary = primary
+        self.fallbacks = fallbacks
+        self.packageExtension = packageExtension
+        self.supportsLargeResourceTransfer = supportsLargeResourceTransfer
+    }
+}
+
+public struct RobotCapturePackageManifest: Codable, Equatable, Sendable {
+    public var id: String
+    public var createdAt: Date
+    public var producerRole: AppleDeviceRole
+    public var transferPolicy: TransferPolicy
+    public var videoURL: URL?
+    public var framesJSONLURL: URL
+    public var motionJSONLURL: URL?
+    public var sessionJSONURL: URL
+    public var captureBundleURL: URL
+    public var notes: String
+
+    public init(
+        id: String,
+        createdAt: Date = Date(),
+        producerRole: AppleDeviceRole = .iPhoneCaptureClient,
+        transferPolicy: TransferPolicy = TransferPolicy(packageExtension: "robotcapture"),
+        videoURL: URL? = nil,
+        framesJSONLURL: URL,
+        motionJSONLURL: URL? = nil,
+        sessionJSONURL: URL,
+        captureBundleURL: URL,
+        notes: String = ""
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.producerRole = producerRole
+        self.transferPolicy = transferPolicy
+        self.videoURL = videoURL
+        self.framesJSONLURL = framesJSONLURL
+        self.motionJSONLURL = motionJSONLURL
+        self.sessionJSONURL = sessionJSONURL
+        self.captureBundleURL = captureBundleURL
+        self.notes = notes
+    }
+}
+
+public struct NavigationGraph: Codable, Equatable, Sendable {
+    public var nodes: [NavigationNode]
+    public var edges: [NavigationEdge]
+
+    public init(nodes: [NavigationNode], edges: [NavigationEdge]) {
+        self.nodes = nodes
+        self.edges = edges
+    }
+}
+
+public struct NavigationNode: Codable, Equatable, Sendable {
+    public var id: String
+    public var position: SIMD3<Double>
+    public var label: String?
+
+    public init(id: String, position: SIMD3<Double>, label: String? = nil) {
+        self.id = id
+        self.position = position
+        self.label = label
+    }
+}
+
+public struct NavigationEdge: Codable, Equatable, Sendable {
+    public var from: String
+    public var to: String
+    public var traversalCost: Double
+
+    public init(from: String, to: String, traversalCost: Double = 1) {
+        self.from = from
+        self.to = to
+        self.traversalCost = traversalCost
+    }
+}
+
+public enum FailureMarkerKind: String, Codable, CaseIterable, Sendable {
+    case confident
+    case uncertainLocalization
+    case blockedPrediction
+    case missingTrainingViews
+    case visualAmbiguity
+    case badLighting
+    case lowTexture
+}
+
+public struct FailureMapMarker: Codable, Equatable, Sendable {
+    public var id: String
+    public var frameIndex: Int?
+    public var position: SIMD3<Double>
+    public var kind: FailureMarkerKind
+    public var confidence: Double
+    public var note: String
+
+    public init(
+        id: String,
+        frameIndex: Int?,
+        position: SIMD3<Double>,
+        kind: FailureMarkerKind,
+        confidence: Double,
+        note: String
+    ) {
+        self.id = id
+        self.frameIndex = frameIndex
+        self.position = position
+        self.kind = kind
+        self.confidence = confidence
+        self.note = note
+    }
+}
+
+public struct VisionProReviewAsset: Codable, Equatable, Sendable {
+    public var splatSceneURL: URL?
+    public var robotRouteURL: URL
+    public var failureMapURL: URL
+    public var datasetManifestURL: URL
+    public var evaluationReportURL: URL?
+
+    public init(
+        splatSceneURL: URL? = nil,
+        robotRouteURL: URL,
+        failureMapURL: URL,
+        datasetManifestURL: URL,
+        evaluationReportURL: URL? = nil
+    ) {
+        self.splatSceneURL = splatSceneURL
+        self.robotRouteURL = robotRouteURL
+        self.failureMapURL = failureMapURL
+        self.datasetManifestURL = datasetManifestURL
+        self.evaluationReportURL = evaluationReportURL
+    }
+}
+
+public struct RobotScenePackageManifest: Codable, Equatable, Sendable {
+    public var id: String
+    public var createdAt: Date
+    public var deviceRoles: [AppleDeviceRole]
+    public var transferPolicy: TransferPolicy
+    public var capturePackageURL: URL?
+    public var splatScene: GaussianSplatScene
+    public var datasetManifestURL: URL
+    public var navigationGraphURL: URL
+    public var failureMapURL: URL
+    public var visionProReviewAsset: VisionProReviewAsset
+
+    public init(
+        id: String,
+        createdAt: Date = Date(),
+        deviceRoles: [AppleDeviceRole] = AppleDeviceRole.allCases,
+        transferPolicy: TransferPolicy = TransferPolicy(packageExtension: "robotscene"),
+        capturePackageURL: URL? = nil,
+        splatScene: GaussianSplatScene,
+        datasetManifestURL: URL,
+        navigationGraphURL: URL,
+        failureMapURL: URL,
+        visionProReviewAsset: VisionProReviewAsset
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.deviceRoles = deviceRoles
+        self.transferPolicy = transferPolicy
+        self.capturePackageURL = capturePackageURL
+        self.splatScene = splatScene
+        self.datasetManifestURL = datasetManifestURL
+        self.navigationGraphURL = navigationGraphURL
+        self.failureMapURL = failureMapURL
+        self.visionProReviewAsset = visionProReviewAsset
+    }
+}
+
+public struct RobotScenePackageExporter: Sendable {
+    public init() {}
+
+    public func writeRobotScenePackage(
+        manifest: DatasetManifest,
+        evaluationReportURL: URL? = nil,
+        capturePackageURL: URL? = nil,
+        to packageDirectory: URL
+    ) throws -> RobotScenePackageManifest {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: packageDirectory.appendingPathComponent("review", isDirectory: true), withIntermediateDirectories: true)
+
+        let datasetManifestURL = packageDirectory.appendingPathComponent("dataset.json")
+        try JSONEncoder.robotVisionLabEncoder.encode(manifest).write(to: datasetManifestURL)
+
+        let navigationGraph = makeNavigationGraph(from: manifest)
+        let navigationGraphURL = packageDirectory.appendingPathComponent("navigation_graph.json")
+        try JSONEncoder.robotVisionLabEncoder.encode(navigationGraph).write(to: navigationGraphURL)
+
+        let evaluationReport = evaluationReportURL.flatMap { try? JSONDecoder.robotVisionLabDecoder.decode(ModelEvaluationReport.self, from: Data(contentsOf: $0)) }
+        let failureMap = makeFailureMap(from: manifest, evaluationReport: evaluationReport)
+        let failureMapURL = packageDirectory.appendingPathComponent("failure_map.json")
+        try JSONEncoder.robotVisionLabEncoder.encode(failureMap).write(to: failureMapURL)
+
+        let routeURL = packageDirectory.appendingPathComponent("review/robot_route.json")
+        try JSONEncoder.robotVisionLabEncoder.encode(manifest.frames.map {
+            PoseLabel(frameIndex: $0.index, timestamp: $0.timestamp, cameraPose: $0.cameraPose)
+        }).write(to: routeURL)
+
+        let reviewAsset = VisionProReviewAsset(
+            splatSceneURL: manifest.scene.sourceURL,
+            robotRouteURL: routeURL,
+            failureMapURL: failureMapURL,
+            datasetManifestURL: datasetManifestURL,
+            evaluationReportURL: evaluationReportURL
+        )
+        let package = RobotScenePackageManifest(
+            id: "\(manifest.recipeID)-robot-scene",
+            capturePackageURL: capturePackageURL,
+            splatScene: manifest.scene,
+            datasetManifestURL: datasetManifestURL,
+            navigationGraphURL: navigationGraphURL,
+            failureMapURL: failureMapURL,
+            visionProReviewAsset: reviewAsset
+        )
+        try JSONEncoder.robotVisionLabEncoder.encode(package).write(to: packageDirectory.appendingPathComponent("robotscene.json"))
+        return package
+    }
+
+    private func makeNavigationGraph(from manifest: DatasetManifest) -> NavigationGraph {
+        let nodes = manifest.frames.map {
+            NavigationNode(id: "frame_\($0.index)", position: $0.cameraPose.position, label: $0.navigationTarget?.label)
+        }
+        let edges = zip(nodes, nodes.dropFirst()).map {
+            NavigationEdge(from: $0.id, to: $1.id, traversalCost: distance($0.position, $1.position))
+        }
+        return NavigationGraph(nodes: nodes, edges: edges)
+    }
+
+    private func makeFailureMap(from manifest: DatasetManifest, evaluationReport: ModelEvaluationReport?) -> [FailureMapMarker] {
+        let evaluationByFrame = Dictionary(uniqueKeysWithValues: (evaluationReport?.frameResults ?? []).map { ($0.frameIndex, $0) })
+        let positions = manifest.frames.map(\.cameraPose.position)
+        return manifest.frames.flatMap { frame in
+            markers(for: frame, manifest: manifest, allPositions: positions, evaluation: evaluationByFrame[frame.index])
+        }
+    }
+
+    private func markers(
+        for frame: DatasetFrame,
+        manifest: DatasetManifest,
+        allPositions: [SIMD3<Double>],
+        evaluation: FrameEvaluationResult?
+    ) -> [FailureMapMarker] {
+        var markers: [FailureMapMarker] = []
+        var markerOrdinal = 0
+
+        func append(_ kind: FailureMarkerKind, confidence: Double, note: String) {
+            markerOrdinal += 1
+            markers.append(FailureMapMarker(
+                id: "frame_\(frame.index)_\(kind.rawValue)_\(markerOrdinal)",
+                frameIndex: frame.index,
+                position: frame.cameraPose.position,
+                kind: kind,
+                confidence: confidence,
+                note: note
+            ))
+        }
+
+        if hasLightingOrImageDegradation(frame) {
+            append(.badLighting, confidence: 0.72, note: "Camera augmentation includes exposure, blur, noise, or compression degradation.")
+        }
+        if isNearSceneBoundary(frame.cameraPose.position, bounds: manifest.scene.bounds) || predictsBlocked(evaluation) {
+            append(.blockedPrediction, confidence: predictsBlocked(evaluation) ? 0.82 : 0.62, note: "Frame is near scene boundary or model/evaluator indicates blocked traversal.")
+        }
+        if hasLowConfidencePrediction(evaluation) {
+            append(.uncertainLocalization, confidence: 0.68, note: "Evaluation report contains low-confidence predictions or frame warnings.")
+        }
+        if hasMissingTrainingView(frame, allPositions: allPositions) {
+            append(.missingTrainingViews, confidence: 0.7, note: "Pose is isolated from nearby route samples; additional capture views may improve coverage.")
+        }
+        if hasVisualAmbiguity(frame, allPositions: allPositions) {
+            append(.visualAmbiguity, confidence: 0.58, note: "Nearby route samples have very similar positions, which may indicate repeated or ambiguous viewpoints.")
+        }
+        if hasLowTextureSignals(frame) {
+            append(.lowTexture, confidence: 0.6, note: "Frame lacks segmentation/manual/object label sources that would help disambiguate low-texture geometry.")
+        }
+        if markers.isEmpty {
+            append(.confident, confidence: 0.95, note: "No baseline failure marker.")
+        }
+        return markers
+    }
+
+    private func hasLightingOrImageDegradation(_ frame: DatasetFrame) -> Bool {
+        frame.augmentations.contains { augmentation in
+            if case .exposureEV = augmentation { return true }
+            if case .motionBlur = augmentation { return true }
+            if case .compressionJPEG = augmentation { return true }
+            if case .gaussianNoise = augmentation { return true }
+            return false
+        }
+    }
+
+    private func isNearSceneBoundary(_ position: SIMD3<Double>, bounds: AxisAlignedBounds) -> Bool {
+        let margin = 0.25
+        return abs(position.x - bounds.minimum.x) < margin
+            || abs(position.x - bounds.maximum.x) < margin
+            || abs(position.z - bounds.minimum.z) < margin
+            || abs(position.z - bounds.maximum.z) < margin
+    }
+
+    private func predictsBlocked(_ evaluation: FrameEvaluationResult?) -> Bool {
+        evaluation?.predictions.contains {
+            $0.task == .obstacleDetection
+                && (
+                    $0.label.localizedCaseInsensitiveContains("blocked")
+                    || $0.label.localizedCaseInsensitiveContains("not_free")
+                    || $0.label.localizedCaseInsensitiveContains("collision")
+                )
+        } ?? false
+    }
+
+    private func hasLowConfidencePrediction(_ evaluation: FrameEvaluationResult?) -> Bool {
+        guard let evaluation else { return false }
+        return !evaluation.warnings.isEmpty || evaluation.predictions.contains { $0.confidence < 0.55 }
+    }
+
+    private func hasMissingTrainingView(_ frame: DatasetFrame, allPositions: [SIMD3<Double>]) -> Bool {
+        let nearest = allPositions
+            .filter { distance($0, frame.cameraPose.position) > 0.001 }
+            .map { distance($0, frame.cameraPose.position) }
+            .min() ?? 0
+        return nearest > 1.25
+    }
+
+    private func hasVisualAmbiguity(_ frame: DatasetFrame, allPositions: [SIMD3<Double>]) -> Bool {
+        let closeCount = allPositions.filter { distance($0, frame.cameraPose.position) < 0.08 }.count
+        return closeCount >= 3
+    }
+
+    private func hasLowTextureSignals(_ frame: DatasetFrame) -> Bool {
+        let hasGeometryLabels = frame.labelSources.contains {
+            if case .roomPlanGeometry = $0 { return true }
+            if case .objectCaptureMesh = $0 { return true }
+            if case .manualAnnotations = $0 { return true }
+            return false
+        }
+        return !hasGeometryLabels || frame.productURL(for: .segmentation) == nil
+    }
+}
+
+public extension GaussianSplatScene {
+    var sourceURL: URL? {
+        switch source {
+        case .importedPLY(let url), .importedSplat(let url), .trainingOutput(let url):
+            return url
+        }
+    }
+}

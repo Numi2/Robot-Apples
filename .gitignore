@@ -1,0 +1,11 @@
+.DS_Store
+*.log
+
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserdata/
+
+GeneratedDataset/
+*.robotcapture/
+*.robotscene/
