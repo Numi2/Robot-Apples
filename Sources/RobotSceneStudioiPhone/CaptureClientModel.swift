@@ -513,14 +513,15 @@ public enum CaptureClientError: Error, LocalizedError {
     }
 }
 
-private final class CaptureTransferDelegate: RobotCaptureTransferDelegate {
-    private let handler: @MainActor (RobotCaptureTransferEvent) -> Void
+private final class CaptureTransferDelegate: RobotCaptureTransferDelegate, @unchecked Sendable {
+    private let handler: @MainActor @Sendable (RobotCaptureTransferEvent) -> Void
 
-    init(handler: @escaping @MainActor (RobotCaptureTransferEvent) -> Void) {
+    init(handler: @escaping @MainActor @Sendable (RobotCaptureTransferEvent) -> Void) {
         self.handler = handler
     }
 
     func robotCaptureTransferDidEmit(_ event: RobotCaptureTransferEvent) {
+        let handler = handler
         Task { @MainActor in
             handler(event)
         }

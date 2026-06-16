@@ -2,9 +2,9 @@ name: RobotSceneStudio
 options:
   bundleIdPrefix: com.numi
   deploymentTarget:
-    macOS: "14.0"
-    iOS: "17.0"
-    visionOS: "1.0"
+    macOS: "15.0"
+    iOS: "18.0"
+    visionOS: "26.0"
 packages:
   RobotSceneStudioPackage:
     path: .
@@ -14,7 +14,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
-    SWIFT_VERSION: "5.10"
+    SWIFT_VERSION: "6.0"
 targets:
   RobotSceneStudioMac:
     type: application
@@ -43,6 +43,8 @@ targets:
     dependencies:
       - package: RobotSceneStudioPackage
         product: RobotSceneStudioiPhone
+      - package: RobotSceneStudioPackage
+        product: RobotSceneStudioSplatViewer
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.numi.robot-scene-studio.capture
@@ -61,6 +63,8 @@ targets:
     dependencies:
       - package: RobotSceneStudioPackage
         product: RobotSceneStudioVision
+      - package: RobotSceneStudioPackage
+        product: RobotSceneStudioSplatViewer
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.numi.robot-scene-studio.vision

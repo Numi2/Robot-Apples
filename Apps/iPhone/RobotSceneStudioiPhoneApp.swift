@@ -1,5 +1,7 @@
 import RobotSceneStudioiPhone
+import RobotSceneStudioSplatViewer
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct RobotSceneStudioiPhoneApp: App {
@@ -14,6 +16,8 @@ struct RobotSceneStudioiPhoneApp: App {
 
 struct CaptureClientRootView: View {
     @Bindable var model: CaptureClientModel
+    @State private var exploratorySplatURL: URL?
+    @State private var isImportingSplat = false
 
     var body: some View {
         TabView {
@@ -33,6 +37,59 @@ struct CaptureClientRootView: View {
                 .tabItem {
                     Label("Finder", systemImage: "cable.connector")
                 }
+            SplatExplorerScreen(splatURL: $exploratorySplatURL, isImportingSplat: $isImportingSplat)
+                .tabItem {
+                    Label("Splats", systemImage: "camera.metering.matrix")
+                }
+        }
+        .fileImporter(
+            isPresented: $isImportingSplat,
+            allowedContentTypes: [.gaussianSplatPLY, .gaussianSplatAsset, .gaussianSplatSPZ],
+            allowsMultipleSelection: false
+        ) { result in
+            if let url = try? result.get().first {
+                exploratorySplatURL = url
+            }
+        }
+    }
+}
+
+extension UTType {
+    static var gaussianSplatPLY: UTType {
+        UTType(filenameExtension: "ply") ?? .data
+    }
+
+    static var gaussianSplatAsset: UTType {
+        UTType(filenameExtension: "splat") ?? .data
+    }
+
+    static var gaussianSplatSPZ: UTType {
+        UTType(filenameExtension: "spz") ?? .data
+    }
+}
+
+private struct SplatExplorerScreen: View {
+    @Binding var splatURL: URL?
+    @Binding var isImportingSplat: Bool
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                if let splatURL {
+                    MetalSplatterKitSceneView(splatURL: splatURL)
+                        .ignoresSafeArea(edges: .bottom)
+                } else {
+                    ContentUnavailableView("No splat selected", systemImage: "camera.metering.matrix")
+                }
+            }
+            .navigationTitle("Splat Explorer")
+            .toolbar {
+                Button {
+                    isImportingSplat = true
+                } label: {
+                    Image(systemName: "folder")
+                }
+            }
         }
     }
 }

@@ -126,6 +126,7 @@ public struct GaussianSplatScene: Codable, Equatable, Sendable {
 public enum SplatSource: Codable, Equatable, Sendable {
     case importedPLY(URL)
     case importedSplat(URL)
+    case importedSPZ(URL)
     case trainingOutput(URL)
 }
 

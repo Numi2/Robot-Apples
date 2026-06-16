@@ -1,13 +1,13 @@
-// swift-tools-version: 5.10
+// swift-tools-version: 6.2
 
 import PackageDescription
 
 let package = Package(
     name: "LiDARSplatRobotVisionLab",
     platforms: [
-        .macOS(.v14),
-        .iOS(.v17),
-        .visionOS(.v1)
+        .macOS(.v15),
+        .iOS(.v18),
+        .visionOS(.v26)
     ],
     products: [
         .library(
@@ -26,6 +26,10 @@ let package = Package(
             name: "RobotSceneStudioVision",
             targets: ["RobotSceneStudioVision"]
         ),
+        .library(
+            name: "RobotSceneStudioSplatViewer",
+            targets: ["RobotSceneStudioSplatViewer"]
+        ),
         .executable(
             name: "robot-scene-studio-mac",
             targets: ["RobotSceneStudioMacApp"]
@@ -35,21 +39,44 @@ let package = Package(
             targets: ["RobotVisionLabCLI"]
         )
     ],
+    dependencies: [
+        .package(url: "https://github.com/scier/MetalSplatter.git", branch: "main")
+    ],
     targets: [
         .target(
-            name: "RobotVisionLabCore"
+            name: "RobotVisionLabCore",
+            dependencies: [
+                .product(name: "SplatIO", package: "MetalSplatter")
+            ]
         ),
         .target(
             name: "RobotSceneStudioiPhone",
-            dependencies: ["RobotVisionLabCore"]
+            dependencies: [
+                "RobotVisionLabCore",
+                "RobotSceneStudioSplatViewer"
+            ]
         ),
         .target(
             name: "RobotSceneStudioMac",
-            dependencies: ["RobotVisionLabCore"]
+            dependencies: [
+                "RobotVisionLabCore",
+                "RobotSceneStudioSplatViewer"
+            ]
         ),
         .target(
             name: "RobotSceneStudioVision",
-            dependencies: ["RobotVisionLabCore"]
+            dependencies: [
+                "RobotVisionLabCore",
+                "RobotSceneStudioSplatViewer"
+            ]
+        ),
+        .target(
+            name: "RobotSceneStudioSplatViewer",
+            dependencies: [
+                "RobotVisionLabCore",
+                .product(name: "MetalSplatter", package: "MetalSplatter"),
+                .product(name: "SplatIO", package: "MetalSplatter")
+            ]
         ),
         .executableTarget(
             name: "RobotSceneStudioMacApp",
@@ -59,5 +86,6 @@ let package = Package(
             name: "RobotVisionLabCLI",
             dependencies: ["RobotVisionLabCore", "RobotSceneStudioVision"]
         )
-    ]
+    ],
+    swiftLanguageModes: [.v6]
 )

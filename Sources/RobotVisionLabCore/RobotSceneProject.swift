@@ -513,6 +513,8 @@ public struct RobotScenePackageExporter: Sendable {
             return .importedPLY(packagedURL)
         case .importedSplat:
             return .importedSplat(packagedURL)
+        case .importedSPZ:
+            return .importedSPZ(packagedURL)
         case .trainingOutput:
             return .trainingOutput(packagedURL)
         }
@@ -966,7 +968,7 @@ public struct RobotScenePackageExporter: Sendable {
 public extension GaussianSplatScene {
     var sourceURL: URL? {
         switch source {
-        case .importedPLY(let url), .importedSplat(let url), .trainingOutput(let url):
+        case .importedPLY(let url), .importedSplat(let url), .importedSPZ(let url), .trainingOutput(let url):
             return url
         }
     }

@@ -1,3 +1,5 @@
+import CompositorServices
+import RobotSceneStudioSplatViewer
 import RobotSceneStudioVision
 import SwiftUI
 import UniformTypeIdentifiers
@@ -17,12 +19,25 @@ struct RobotSceneStudioVisionApp: App {
             SpatialReviewRootView(model: model)
         }
         .defaultSize(width: 900, height: 700)
+
+        ImmersiveSpace(for: MetalSplatterImmersiveScene.self) { scene in
+            CompositorLayer(configuration: MetalSplatterContentStageConfiguration()) { layerRenderer in
+                MetalSplatterVisionSceneRenderer.startRendering(
+                    layerRenderer,
+                    splatURL: scene.wrappedValue?.splatURL
+                )
+            }
+        }
+        .immersionStyle(selection: .constant(.mixed), in: .mixed)
     }
 }
 
 struct SpatialReviewRootView: View {
     @Bindable var model: SpatialReviewModel
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @State private var isOpeningRobotScene = false
+    @State private var immersiveSpaceIsOpen = false
 
     var body: some View {
         NavigationStack {
@@ -40,6 +55,23 @@ struct SpatialReviewRootView: View {
                         LabeledContent("Graph", value: "\(summary.navigationNodeCount) nodes, \(summary.navigationEdgeCount) edges")
                         LabeledContent("Failures", value: "\(summary.failureMarkerCount)")
                         LabeledContent("Evaluated", value: "\(summary.evaluationFrameCount)")
+                        if let splatURL = summary.splatURL {
+                            Button {
+                                Task {
+                                    switch await openImmersiveSpace(value: MetalSplatterImmersiveScene(splatURL: splatURL)) {
+                                    case .opened:
+                                        immersiveSpaceIsOpen = true
+                                    case .error, .userCancelled:
+                                        break
+                                    @unknown default:
+                                        break
+                                    }
+                                }
+                            } label: {
+                                Label("Open Splat Space", systemImage: "visionpro")
+                            }
+                            .disabled(immersiveSpaceIsOpen)
+                        }
                     } else {
                         Text("Open a Robot Scene package exported from the Mac workstation.")
                             .foregroundStyle(.secondary)
@@ -74,6 +106,19 @@ struct SpatialReviewRootView: View {
                         ForEach(model.state.diagnostics, id: \.self) { diagnostic in
                             Text(diagnostic)
                                 .foregroundStyle(.red)
+                        }
+                    }
+                }
+
+                if immersiveSpaceIsOpen {
+                    Section {
+                        Button {
+                            Task {
+                                await dismissImmersiveSpace()
+                                immersiveSpaceIsOpen = false
+                            }
+                        } label: {
+                            Label("Close Splat Space", systemImage: "xmark.circle")
                         }
                     }
                 }

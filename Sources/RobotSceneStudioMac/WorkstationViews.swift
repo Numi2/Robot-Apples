@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import RobotVisionLabCore
+import RobotSceneStudioSplatViewer
 
 public extension UTType {
     static var robotCapturePackage: UTType {
@@ -17,6 +18,10 @@ public extension UTType {
 
     static var gaussianSplatAsset: UTType {
         UTType(filenameExtension: "splat") ?? .data
+    }
+
+    static var gaussianSplatSPZ: UTType {
+        UTType(filenameExtension: "spz") ?? .data
     }
 }
 
@@ -63,7 +68,7 @@ public struct WorkstationRootView: View {
         }
         .fileImporter(
             isPresented: $isImportingSplat,
-            allowedContentTypes: [.gaussianSplatPLY, .gaussianSplatAsset],
+            allowedContentTypes: [.gaussianSplatPLY, .gaussianSplatAsset, .gaussianSplatSPZ],
             allowsMultipleSelection: false
         ) { result in
             if let url = try? result.get().first {
@@ -662,6 +667,9 @@ private struct SplatInspectorPanel: View {
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
                     .foregroundStyle(.secondary)
+                MetalSplatterKitSceneView(splatURL: asset.url)
+                    .frame(minHeight: 320)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         } else {
             EmptyState(title: "No splat linked", systemImage: "cube.transparent")

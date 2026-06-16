@@ -116,7 +116,7 @@ public struct FinderFileSharingFallbackGuide: Codable, Equatable, Sendable {
 #if canImport(MultipeerConnectivity)
 import MultipeerConnectivity
 
-public final class RobotCaptureMultipeerTransfer: NSObject {
+public final class RobotCaptureMultipeerTransfer: NSObject, @unchecked Sendable {
     public static let serviceType = "robotcapture"
 
     public weak var delegate: RobotCaptureTransferDelegate?

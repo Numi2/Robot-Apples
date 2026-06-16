@@ -23,9 +23,17 @@ public struct GaussianSplatAsset: Codable, Equatable, Sendable {
     }
 
     public func makeScene(id: String, alignmentTransform: Transform3D = .identity, roomPlanModelURL: URL? = nil) -> GaussianSplatScene {
-        GaussianSplatScene(
+        let source: SplatSource = switch format {
+        case .ply:
+            .importedPLY(url)
+        case .splat:
+            .importedSplat(url)
+        case .spz:
+            .importedSPZ(url)
+        }
+        return GaussianSplatScene(
             id: id,
-            source: format == .ply ? .importedPLY(url) : .importedSplat(url),
+            source: source,
             alignmentTransform: alignmentTransform,
             bounds: bounds,
             roomPlanModelURL: roomPlanModelURL
@@ -36,6 +44,7 @@ public struct GaussianSplatAsset: Codable, Equatable, Sendable {
 public enum GaussianSplatFormat: String, Codable, Sendable {
     case ply
     case splat
+    case spz
 }
 
 public enum GaussianSplatProperty: String, Codable, CaseIterable, Sendable {
@@ -54,12 +63,22 @@ public struct GaussianSplatImporter: Sendable {
         switch url.pathExtension.lowercased() {
         case "ply", "splat":
             let cloud = try GaussianSplatCloudLoader().load(url: url)
+            let format: GaussianSplatFormat = url.pathExtension.lowercased() == "ply" ? .ply : .splat
             return GaussianSplatAsset(
                 url: url,
-                format: url.pathExtension.lowercased() == "ply" ? .ply : .splat,
+                format: format,
                 vertexCount: cloud.splats.count,
                 bounds: cloud.bounds,
                 properties: cloud.properties
+            )
+        case "spz":
+            let fileSize = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber
+            return GaussianSplatAsset(
+                url: url,
+                format: .spz,
+                vertexCount: max(0, (fileSize?.intValue ?? 0) / 64),
+                bounds: AxisAlignedBounds(minimum: SIMD3<Double>(0, 0, 0), maximum: SIMD3<Double>(0, 0, 0)),
+                properties: [.position, .color, .opacity, .scale, .rotation]
             )
         default:
             throw GaussianSplatImportError.unsupportedFormat(url.pathExtension)

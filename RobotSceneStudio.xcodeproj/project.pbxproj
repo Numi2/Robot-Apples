@@ -10,8 +10,10 @@
 		019767EB4275A940E9981DB7 /* iPhone.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6FADA4D87030FDC8FC875032 /* iPhone.xcassets */; };
 		09C3E41FF9EE3310C3544438 /* RobotSceneStudioiPhoneApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EC4BE245574746927BD03B2 /* RobotSceneStudioiPhoneApp.swift */; };
 		1200DC6F53E9B6826EDD6792 /* RobotSceneStudioMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62182D0796C8ED7834AE868F /* RobotSceneStudioMacApp.swift */; };
+		23503E364EF7D9A289191397 /* RobotSceneStudioSplatViewer in Frameworks */ = {isa = PBXBuildFile; productRef = AD6D9D2D812B1462722C9C83 /* RobotSceneStudioSplatViewer */; };
 		87310A280C5A879F7D37F775 /* RobotSceneStudioVision in Frameworks */ = {isa = PBXBuildFile; productRef = 8BBDE59AA83624A3B014F894 /* RobotSceneStudioVision */; };
 		8865A9FE5B711E8475A4E9DC /* Mac.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2FC8D63DD0EAEE7A7929F0EB /* Mac.xcassets */; };
+		A7324FD95DFE20C1BAEF68C5 /* RobotSceneStudioSplatViewer in Frameworks */ = {isa = PBXBuildFile; productRef = 4CDBF956155A68C5B285336A /* RobotSceneStudioSplatViewer */; };
 		C281D9A3A06019AFA0D3D9FB /* RobotSceneStudioVisionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F3938B95B077160A790DF29 /* RobotSceneStudioVisionApp.swift */; };
 		CB73B5BBCDE73569A4BD3C09 /* RobotSceneStudioiPhone in Frameworks */ = {isa = PBXBuildFile; productRef = E41B522B29EB6911AC986564 /* RobotSceneStudioiPhone */; };
 		E1813A0C80DBDFFF2D68DC88 /* Vision.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A18E6E7854A2F338434B23F6 /* Vision.xcassets */; };
@@ -37,6 +39,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				87310A280C5A879F7D37F775 /* RobotSceneStudioVision in Frameworks */,
+				A7324FD95DFE20C1BAEF68C5 /* RobotSceneStudioSplatViewer in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -45,6 +48,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				CB73B5BBCDE73569A4BD3C09 /* RobotSceneStudioiPhone in Frameworks */,
+				23503E364EF7D9A289191397 /* RobotSceneStudioSplatViewer in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -164,6 +168,7 @@
 			name = RobotSceneStudioVision;
 			packageProductDependencies = (
 				8BBDE59AA83624A3B014F894 /* RobotSceneStudioVision */,
+				4CDBF956155A68C5B285336A /* RobotSceneStudioSplatViewer */,
 			);
 			productName = RobotSceneStudioVision;
 			productReference = 1E97DA8B6F7FDA26170E06D0 /* RobotSceneStudioVision.app */;
@@ -184,6 +189,7 @@
 			name = RobotSceneStudioCapture;
 			packageProductDependencies = (
 				E41B522B29EB6911AC986564 /* RobotSceneStudioiPhone */,
+				AD6D9D2D812B1462722C9C83 /* RobotSceneStudioSplatViewer */,
 			);
 			productName = RobotSceneStudioCapture;
 			productReference = 8776262EA0B9EA525F11E483 /* RobotSceneStudioCapture.app */;
@@ -345,8 +351,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -354,8 +360,8 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_VERSION = 5.10;
-				XROS_DEPLOYMENT_TARGET = 1.0;
+				SWIFT_VERSION = 6.0;
+				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Debug;
 		};
@@ -500,16 +506,16 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_VERSION = 5.10;
-				XROS_DEPLOYMENT_TARGET = 1.0;
+				SWIFT_VERSION = 6.0;
+				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Release;
 		};
@@ -581,6 +587,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		4CDBF956155A68C5B285336A /* RobotSceneStudioSplatViewer */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RobotSceneStudioSplatViewer;
+		};
 		57E032CD6A1B35233708D15D /* RobotSceneStudioMac */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = RobotSceneStudioMac;
@@ -588,6 +598,10 @@
 		8BBDE59AA83624A3B014F894 /* RobotSceneStudioVision */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = RobotSceneStudioVision;
+		};
+		AD6D9D2D812B1462722C9C83 /* RobotSceneStudioSplatViewer */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RobotSceneStudioSplatViewer;
 		};
 		E41B522B29EB6911AC986564 /* RobotSceneStudioiPhone */ = {
 			isa = XCSwiftPackageProductDependency;

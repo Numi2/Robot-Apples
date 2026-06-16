@@ -64,6 +64,8 @@ The required iPhone capture output is a `.robotcapture` package containing:
 - Capture health inspection and route preparation.
 - Splat import/linking plus route-derived splat seed generation when no trained
   or imported splat is linked.
+- MetalSplatter-backed interactive splat preview for linked PLY, SPZ, and
+  `.splat` assets.
 - Manual ARKit-to-splat anchor alignment, coordinate transform editing, and
   floor/height constraints.
 - Robot-valid route generation, route variants, navigation graph editing, and
@@ -88,6 +90,8 @@ The required iPhone capture output is a `.robotcapture` package containing:
 - `.robotscene` package loading.
 - Gaussian splat scene reference, route overlays, camera frustums, navigation
   graph, and failure-map markers.
+- MetalSplatter-backed immersive Gaussian splat exploration for exported scene
+  splats on visionOS 26+.
 
 ## Core Modules
 
@@ -107,7 +111,11 @@ The required iPhone capture output is a `.robotcapture` package containing:
   a Gaussian splat PLY from captured RGB views, ARKit/RoomPlan-aligned poses,
   camera intrinsics, strict ARKit LiDAR Float32 depth priors, tracking quality,
   and deterministic train/validation splits.
-- `GaussianSplatImporter`: `.ply` and binary `.splat` inspection.
+- `GaussianSplatImporter`: `.ply`, `.spz`, and binary `.splat` inspection/linking.
+- `RobotSceneStudioSplatViewer`: shared MetalSplatter integration for iOS,
+  macOS, and visionOS. It uses MetalSplatter/SplatIO for PLY, SPZ, and `.splat`
+  loading, MetalKit preview rendering on iOS/macOS, and a visionOS compositor
+  renderer for stereo immersive review.
 - `RouteDerivedSplatSeedWriter`: valid route-derived Gaussian splat seed PLY
   generation from captured camera poses.
 - `RobotRouteAligner`, `RobotRouteExpander`, and `RouteIntelligenceAnalyzer`:
@@ -160,6 +168,9 @@ xcodebuild -project RobotSceneStudio.xcodeproj -scheme RobotSceneStudioMac -dest
 xcodebuild -project RobotSceneStudio.xcodeproj -scheme RobotSceneStudioCapture -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
 xcodebuild -project RobotSceneStudio.xcodeproj -scheme RobotSceneStudioVision -destination 'generic/platform=visionOS Simulator' CODE_SIGNING_ALLOWED=NO build
 ```
+
+The package uses Swift tools 6.2 and requires macOS 15+, iOS 18+, and
+visionOS 26+ for the immersive MetalSplatter renderer path.
 
 `project.yml` is the source of truth for the generated Xcode project. App
 configuration lives under `AppConfig/`; icon asset catalogs live under
