@@ -1,5 +1,6 @@
 import Foundation
 import simd
+import SplatIO
 
 public struct GaussianSplatAsset: Codable, Equatable, Sendable {
     public var url: URL
@@ -72,127 +73,68 @@ public struct GaussianSplatImporter: Sendable {
                 properties: cloud.properties
             )
         case "spz":
-            let fileSize = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber
+            let points = try readSplatIOPoints(url: url)
+            guard !points.isEmpty else {
+                throw GaussianSplatImportError.invalidSPZ("SPZ contains no splat points.")
+            }
+            let bounds = bounds(for: points)
             return GaussianSplatAsset(
                 url: url,
                 format: .spz,
-                vertexCount: max(0, (fileSize?.intValue ?? 0) / 64),
-                bounds: AxisAlignedBounds(minimum: SIMD3<Double>(0, 0, 0), maximum: SIMD3<Double>(0, 0, 0)),
-                properties: [.position, .color, .opacity, .scale, .rotation]
+                vertexCount: points.count,
+                bounds: bounds,
+                properties: properties(for: points)
             )
         default:
             throw GaussianSplatImportError.unsupportedFormat(url.pathExtension)
         }
     }
-}
 
-public struct RouteDerivedSplatSeedWriter: Sendable {
-    public init() {}
-
-    public func writeSeedPLY(route: RobotPath, to outputURL: URL) throws -> GaussianSplatAsset {
-        try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let points = makeSeedPoints(route: route)
-        var body = """
-        ply
-        format ascii 1.0
-        comment Robot Scene Studio route-derived Gaussian splat seed
-        element vertex \(points.count)
-        property float x
-        property float y
-        property float z
-        property uchar red
-        property uchar green
-        property uchar blue
-        property float opacity
-        property float scale_0
-        property float scale_1
-        property float scale_2
-        property float rot_0
-        property float rot_1
-        property float rot_2
-        property float rot_3
-        end_header
-
-        """
-        for point in points {
-            body += String(
-                format: "%.6f %.6f %.6f %d %d %d %.4f %.4f %.4f %.4f %.6f %.6f %.6f %.6f\n",
-                point.position.x,
-                point.position.y,
-                point.position.z,
-                point.red,
-                point.green,
-                point.blue,
-                point.opacity,
-                point.scale.x,
-                point.scale.y,
-                point.scale.z,
-                point.rotation.vector.x,
-                point.rotation.vector.y,
-                point.rotation.vector.z,
-                point.rotation.vector.w
-            )
-        }
-        try body.write(to: outputURL, atomically: true, encoding: .utf8)
-        return try GaussianSplatImporter().inspect(url: outputURL)
-    }
-
-    private func makeSeedPoints(route: RobotPath) -> [RouteSeedPoint] {
-        let keyframes = route.keyframes
-        guard !keyframes.isEmpty else {
-            return [
-                RouteSeedPoint(position: SIMD3<Double>(0, 0, 0), red: 80, green: 160, blue: 255),
-                RouteSeedPoint(position: SIMD3<Double>(0, 0.6, 0), red: 255, green: 255, blue: 255)
-            ]
-        }
-
-        var points: [RouteSeedPoint] = []
-        for (index, keyframe) in keyframes.enumerated() {
-            let position = keyframe.pose.position
-            points.append(RouteSeedPoint(position: position, red: 60, green: 180, blue: 255))
-            points.append(RouteSeedPoint(position: SIMD3<Double>(position.x, max(0, position.y - 0.62), position.z), red: 80, green: 220, blue: 120, opacity: 0.65))
-            if index > 0 {
-                let previous = keyframes[index - 1].pose.position
-                let mid = (previous + position) / 2
-                points.append(RouteSeedPoint(position: mid, red: 255, green: 200, blue: 80, opacity: 0.55))
+    private func readSplatIOPoints(url: URL) throws -> [SplatPoint] {
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = SplatIOReadBox()
+        Task.detached {
+            do {
+                let reader = try AutodetectSceneReader(url)
+                box.result = .success(try await reader.readAll())
+            } catch {
+                box.result = .failure(error)
             }
+            semaphore.signal()
         }
-        return points
+        semaphore.wait()
+        return try box.result?.get() ?? []
+    }
+
+    private func bounds(for points: [SplatPoint]) -> AxisAlignedBounds {
+        var minimum = SIMD3<Double>(Double.greatestFiniteMagnitude, Double.greatestFiniteMagnitude, Double.greatestFiniteMagnitude)
+        var maximum = SIMD3<Double>(-Double.greatestFiniteMagnitude, -Double.greatestFiniteMagnitude, -Double.greatestFiniteMagnitude)
+        for point in points {
+            let position = SIMD3<Double>(Double(point.position.x), Double(point.position.y), Double(point.position.z))
+            minimum = min(minimum, position)
+            maximum = max(maximum, position)
+        }
+        return AxisAlignedBounds(minimum: minimum, maximum: maximum)
+    }
+
+    private func properties(for points: [SplatPoint]) -> Set<GaussianSplatProperty> {
+        var properties: Set<GaussianSplatProperty> = [.position, .color, .opacity, .scale, .rotation]
+        if points.contains(where: { $0.color.shDegree > .sh0 }) {
+            properties.insert(.sphericalHarmonics)
+        }
+        return properties
     }
 }
 
-private struct RouteSeedPoint {
-    var position: SIMD3<Double>
-    var red: Int
-    var green: Int
-    var blue: Int
-    var opacity: Double
-    var scale: SIMD3<Double>
-    var rotation: simd_quatd
-
-    init(
-        position: SIMD3<Double>,
-        red: Int,
-        green: Int,
-        blue: Int,
-        opacity: Double = 0.85,
-        scale: SIMD3<Double> = SIMD3<Double>(0.08, 0.08, 0.08),
-        rotation: simd_quatd = simd_quatd(angle: 0, axis: SIMD3<Double>(0, 1, 0))
-    ) {
-        self.position = position
-        self.red = red
-        self.green = green
-        self.blue = blue
-        self.opacity = opacity
-        self.scale = scale
-        self.rotation = rotation
-    }
+private final class SplatIOReadBox: @unchecked Sendable {
+    var result: Result<[SplatPoint], Error>?
 }
 
 public enum GaussianSplatImportError: Error, Equatable, LocalizedError {
     case unsupportedFormat(String)
     case invalidPLY(String)
     case invalidSplat(String)
+    case invalidSPZ(String)
 
     public var errorDescription: String? {
         switch self {
@@ -202,6 +144,8 @@ public enum GaussianSplatImportError: Error, Equatable, LocalizedError {
             "Invalid PLY Gaussian splat: \(message)"
         case .invalidSplat(let message):
             "Invalid binary splat: \(message)"
+        case .invalidSPZ(let message):
+            "Invalid SPZ Gaussian splat: \(message)"
         }
     }
 }

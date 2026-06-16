@@ -426,10 +426,10 @@ public struct GaussianSplatCloudLoader: Sendable {
                 scale2Index.flatMap { Float(scaleComponent: values[$0]) } ?? scale0Index.flatMap { Float(scaleComponent: values[$0]) } ?? 0.015
             )
             let rotation = SIMD4<Float>(
-                rot0Index.flatMap { Float(values[$0]) } ?? 0,
                 rot1Index.flatMap { Float(values[$0]) } ?? 0,
                 rot2Index.flatMap { Float(values[$0]) } ?? 0,
-                rot3Index.flatMap { Float(values[$0]) } ?? 1
+                rot3Index.flatMap { Float(values[$0]) } ?? 0,
+                rot0Index.flatMap { Float(values[$0]) } ?? 1
             )
             let position = SIMD3<Float>(x, y, z)
             splats.append(RenderableGaussianSplat(
@@ -522,10 +522,10 @@ public struct GaussianSplatCloudLoader: Sendable {
                 try scale2Property.map { try expClamped(readFloat(data, base: base, property: $0)) } ?? scale0Property.map { try expClamped(readFloat(data, base: base, property: $0)) } ?? 0.015
             )
             let rotation = SIMD4<Float>(
-                try rot0Property.map { try readFloat(data, base: base, property: $0) } ?? 0,
                 try rot1Property.map { try readFloat(data, base: base, property: $0) } ?? 0,
                 try rot2Property.map { try readFloat(data, base: base, property: $0) } ?? 0,
-                try rot3Property.map { try readFloat(data, base: base, property: $0) } ?? 1
+                try rot3Property.map { try readFloat(data, base: base, property: $0) } ?? 0,
+                try rot0Property.map { try readFloat(data, base: base, property: $0) } ?? 1
             )
             splats.append(RenderableGaussianSplat(position: position, color: color, scale: scale, rotation: rotation))
             minimum = min(minimum, SIMD3<Double>(Double(position.x), Double(position.y), Double(position.z)))
@@ -794,6 +794,9 @@ private struct MetalTileReference {
 
 private struct MetalCameraUniforms {
     var cameraPosition: SIMD4<Float>
+    var worldToCameraRow0: SIMD4<Float>
+    var worldToCameraRow1: SIMD4<Float>
+    var worldToCameraRow2: SIMD4<Float>
     var focalPrincipal: SIMD4<Float>
     var viewport: SIMD4<Float>
 }
@@ -925,21 +928,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         )
         let cpuProjectionSeconds = Date().timeIntervalSince(cpuProjectionStart)
 
-        var uniforms = MetalCameraUniforms(
-            cameraPosition: SIMD4<Float>(
-                Float(frame.cameraPose.position.x),
-                Float(frame.cameraPose.position.y),
-                Float(frame.cameraPose.position.z),
-                1
-            ),
-            focalPrincipal: SIMD4<Float>(
-                Float(cameraRig.intrinsics.focalLengthPixels.x),
-                Float(cameraRig.intrinsics.focalLengthPixels.y),
-                Float(cameraRig.intrinsics.principalPointPixels.x),
-                Float(cameraRig.intrinsics.principalPointPixels.y)
-            ),
-            viewport: SIMD4<Float>(Float(width), Float(height), 0, 0)
-        )
+        var uniforms = cameraUniforms(frame: frame, cameraRig: cameraRig, width: width, height: height)
         guard let uniformBuffer = device.makeBuffer(
             bytes: &uniforms,
             length: MemoryLayout<MetalCameraUniforms>.stride,
@@ -1036,8 +1025,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         try readPPM(texture: colorTexture, width: width, height: height).write(to: rgbURL)
         let depthVisibilityStart = Date()
         let metricDepth = try writeDepthVisibilityImages(
-            projectedBuffers: projectedBuffers,
-            projectedSplatCount: projectedSplatCount,
+            projectedSplats: prepared.projectedSplats,
             width: width,
             height: height,
             depthURL: depthImageURL,
@@ -1186,6 +1174,38 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         return (projected, drawSplats, report)
     }
 
+    private func cameraUniforms(
+        frame: DatasetFrame,
+        cameraRig: RobotCameraRig,
+        width: Int,
+        height: Int
+    ) -> MetalCameraUniforms {
+        let worldToCamera = worldToCameraMatrix(for: frame.cameraPose)
+        return MetalCameraUniforms(
+            cameraPosition: SIMD4<Float>(
+                Float(frame.cameraPose.position.x),
+                Float(frame.cameraPose.position.y),
+                Float(frame.cameraPose.position.z),
+                1
+            ),
+            worldToCameraRow0: SIMD4<Float>(worldToCamera.columns.0.x, worldToCamera.columns.1.x, worldToCamera.columns.2.x, 0),
+            worldToCameraRow1: SIMD4<Float>(worldToCamera.columns.0.y, worldToCamera.columns.1.y, worldToCamera.columns.2.y, 0),
+            worldToCameraRow2: SIMD4<Float>(worldToCamera.columns.0.z, worldToCamera.columns.1.z, worldToCamera.columns.2.z, 0),
+            focalPrincipal: SIMD4<Float>(
+                Float(cameraRig.intrinsics.focalLengthPixels.x),
+                Float(cameraRig.intrinsics.focalLengthPixels.y),
+                Float(cameraRig.intrinsics.principalPointPixels.x),
+                Float(cameraRig.intrinsics.principalPointPixels.y)
+            ),
+            viewport: SIMD4<Float>(Float(width), Float(height), 0, 0)
+        )
+    }
+
+    private func worldToCameraMatrix(for pose: Pose3D) -> simd_float3x3 {
+        let q = pose.orientation.value.inverse.vector
+        return simd_float3x3(simd_quatf(ix: Float(q.x), iy: Float(q.y), iz: Float(q.z), r: Float(q.w)))
+    }
+
     private func project(
         splat: RenderableGaussianSplat,
         splatIndex: Int,
@@ -1197,11 +1217,13 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         tileColumns: Int,
         tileRows: Int
     ) -> ProjectedGaussianSplat? {
-        let cameraSpace = SIMD3<Float>(
+        let worldToCamera = worldToCameraMatrix(for: frame.cameraPose)
+        let worldDelta = SIMD3<Float>(
             splat.position.x - Float(frame.cameraPose.position.x),
             splat.position.y - Float(frame.cameraPose.position.y),
             splat.position.z - Float(frame.cameraPose.position.z)
         )
+        let cameraSpace = worldToCamera * worldDelta
         let depth = -cameraSpace.z
         guard depth > 0.01 else { return nil }
 
@@ -1214,7 +1236,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             -cameraSpace.y * fy / depth + cy
         )
 
-        let covariance3D = covarianceMatrix(scale: splat.scale, rotation: splat.rotation)
+        let covariance3D = worldToCamera * covarianceMatrix(scale: splat.scale, rotation: splat.rotation) * worldToCamera.transpose
         let covariance2DMatrix = projectCovariance2D(covariance3D, cameraSpace: cameraSpace, fx: fx, fy: fy)
         let covariance2D = regularizedCovariance(covariance2DMatrix)
         let radii = eigenRadii(covariance2D)
@@ -1345,21 +1367,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         }
         memset(countersBuffer.contents(), 0, MemoryLayout<UInt32>.stride * 2)
 
-        var cameraUniforms = MetalCameraUniforms(
-            cameraPosition: SIMD4<Float>(
-                Float(frame.cameraPose.position.x),
-                Float(frame.cameraPose.position.y),
-                Float(frame.cameraPose.position.z),
-                1
-            ),
-            focalPrincipal: SIMD4<Float>(
-                Float(cameraRig.intrinsics.focalLengthPixels.x),
-                Float(cameraRig.intrinsics.focalLengthPixels.y),
-                Float(cameraRig.intrinsics.principalPointPixels.x),
-                Float(cameraRig.intrinsics.principalPointPixels.y)
-            ),
-            viewport: SIMD4<Float>(Float(width), Float(height), 0, 0)
-        )
+        var gpuCameraUniforms = cameraUniforms(frame: frame, cameraRig: cameraRig, width: width, height: height)
         var tileUniforms = MetalTileUniforms(
             tileLayout: SIMD4<UInt32>(UInt32(tileSize), UInt32(tileColumns), UInt32(tileRows), 0),
             splatCount: UInt32(rawSplats.count),
@@ -1367,7 +1375,7 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
             reserved1: 0,
             reserved2: 0
         )
-        guard let cameraBuffer = device.makeBuffer(bytes: &cameraUniforms, length: MemoryLayout<MetalCameraUniforms>.stride, options: [.storageModeShared]),
+        guard let cameraBuffer = device.makeBuffer(bytes: &gpuCameraUniforms, length: MemoryLayout<MetalCameraUniforms>.stride, options: [.storageModeShared]),
               let tileUniformBuffer = device.makeBuffer(bytes: &tileUniforms, length: MemoryLayout<MetalTileUniforms>.stride, options: [.storageModeShared]),
               let commandBuffer = commandQueue.makeCommandBuffer() else {
             throw MetalGaussianSplatRenderError.bufferAllocationFailed
@@ -1584,62 +1592,66 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
     }
 
     private func writeDepthVisibilityImages(
-        projectedBuffers: [MTLBuffer],
-        projectedSplatCount: Int,
+        projectedSplats: [ProjectedGaussianSplat],
         width: Int,
         height: Int,
         depthURL: URL,
         visibilityURL: URL
     ) throws -> MetricDepthProductMetadata {
         let pixelCount = max(1, width * height)
-        guard let depthBuffer = device.makeBuffer(length: MemoryLayout<Float>.stride * pixelCount, options: [.storageModeShared]),
-              let visibilityBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride * pixelCount, options: [.storageModeShared]),
-              let commandBuffer = commandQueue.makeCommandBuffer() else {
-            throw MetalGaussianSplatRenderError.bufferAllocationFailed
+        var depthPixels = Array(repeating: Float.greatestFiniteMagnitude, count: pixelCount)
+        var visibilityPixels = Array(repeating: UInt32(0), count: pixelCount)
+        for splat in projectedSplats where splat.depthMeters > 0 {
+            let radius = min(max(splat.majorRadiusPixels, 1), 128)
+            let minX = max(0, Int(floor(splat.centerPixels.x - radius)))
+            let minY = max(0, Int(floor(splat.centerPixels.y - radius)))
+            let maxX = min(width - 1, Int(ceil(splat.centerPixels.x + radius)))
+            let maxY = min(height - 1, Int(ceil(splat.centerPixels.y + radius)))
+            guard maxX >= minX, maxY >= minY else { continue }
+            let inverse = inverseCovariancePayload(splat.covariance2D)
+            for y in minY...maxY {
+                for x in minX...maxX {
+                    let offset = SIMD2<Float>(
+                        Float(x) + 0.5 - splat.centerPixels.x,
+                        Float(y) + 0.5 - splat.centerPixels.y
+                    )
+                    let xTerm = inverse.x * offset.x * offset.x
+                    let xyTerm = 2 * inverse.y * offset.x * offset.y
+                    let yTerm = inverse.z * offset.y * offset.y
+                    let mahalanobis = xTerm + xyTerm + yTerm
+                    guard mahalanobis <= 16 else { continue }
+                    let weight = exp(-0.5 * mahalanobis)
+                    guard weight > 0.03 else { continue }
+                    let pixelIndex = y * width + x
+                    depthPixels[pixelIndex] = min(depthPixels[pixelIndex], splat.depthMeters)
+                    let visibilityIncrement = UInt32(max(1, Int((weight * 255).rounded())))
+                    let addition = visibilityPixels[pixelIndex].addingReportingOverflow(visibilityIncrement)
+                    visibilityPixels[pixelIndex] = addition.overflow ? UInt32.max : addition.partialValue
+                }
+            }
         }
-        let depthPointer = depthBuffer.contents().bindMemory(to: Float.self, capacity: pixelCount)
-        let visibilityPointer = visibilityBuffer.contents().bindMemory(to: UInt32.self, capacity: pixelCount)
         for index in 0..<pixelCount {
-            depthPointer[index] = Float.greatestFiniteMagnitude
-            visibilityPointer[index] = 0
-        }
-
-        for projectedBuffer in projectedBuffers {
-            let splatCount = projectedBuffer.length / MemoryLayout<MetalProjectedSplat>.stride
-            var imageUniforms = SIMD4<UInt32>(UInt32(width), UInt32(height), UInt32(splatCount), 0)
-            guard let imageUniformBuffer = device.makeBuffer(bytes: &imageUniforms, length: MemoryLayout<SIMD4<UInt32>>.stride, options: [.storageModeShared]) else {
-                throw MetalGaussianSplatRenderError.bufferAllocationFailed
+            if !depthPixels[index].isFinite {
+                depthPixels[index] = Float.greatestFiniteMagnitude
             }
-
-            if let encoder = commandBuffer.makeComputeCommandEncoder() {
-                encoder.setComputePipelineState(depthVisibilityPipelineState)
-                encoder.setBuffer(projectedBuffer, offset: 0, index: 0)
-                encoder.setBuffer(depthBuffer, offset: 0, index: 1)
-                encoder.setBuffer(visibilityBuffer, offset: 0, index: 2)
-                encoder.setBuffer(imageUniformBuffer, offset: 0, index: 3)
-                dispatchThreads(splatCount, encoder: encoder, pipelineState: depthVisibilityPipelineState)
-                encoder.endEncoding()
-            }
-        }
-        _ = projectedSplatCount
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        if let error = commandBuffer.error {
-            throw error
         }
 
         try FileManager.default.createDirectory(at: depthURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: visibilityURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try makeDepthPGM(depthPointer: depthPointer, pixelCount: pixelCount, width: width, height: height).write(to: depthURL)
-        let metricDepth = try MetricDepthProductIO.write(
-            depthPointer: depthPointer,
-            pixelCount: pixelCount,
-            width: width,
-            height: height,
-            visualizationURL: depthURL
-        )
-        try makeVisibilityPGM(visibilityPointer: visibilityPointer, pixelCount: pixelCount, width: width, height: height).write(to: visibilityURL)
-        return metricDepth
+        return try depthPixels.withUnsafeBufferPointer { depthPointer in
+            try makeDepthPGM(depthPointer: depthPointer.baseAddress!, pixelCount: pixelCount, width: width, height: height).write(to: depthURL)
+            let metricDepth = try MetricDepthProductIO.write(
+                depthPointer: depthPointer.baseAddress!,
+                pixelCount: pixelCount,
+                width: width,
+                height: height,
+                visualizationURL: depthURL
+            )
+            try visibilityPixels.withUnsafeBufferPointer { visibilityPointer in
+                try makeVisibilityPGM(visibilityPointer: visibilityPointer.baseAddress!, pixelCount: pixelCount, width: width, height: height).write(to: visibilityURL)
+            }
+            return metricDepth
+        }
     }
 
     private func makeDepthPGM(depthPointer: UnsafePointer<Float>, pixelCount: Int, width: Int, height: Int) -> Data {
@@ -1799,6 +1811,9 @@ struct ProjectedSplat {
 
 struct CameraUniforms {
     float4 cameraPosition;
+    float4 worldToCameraRow0;
+    float4 worldToCameraRow1;
+    float4 worldToCameraRow2;
     float4 focalPrincipal;
     float4 viewport;
 };
@@ -1844,11 +1859,38 @@ float3x3 covariance3d_from_scale_rotation(float3 scale, float4 rotation) {
     return r * diagonal * transpose(r);
 }
 
-float4 covariance_payload(float3 scale, float4 rotation, float3 cameraSpace, float fx, float fy) {
+float3 world_to_camera(constant CameraUniforms &camera, float3 worldDelta) {
+    return float3(
+        dot(camera.worldToCameraRow0.xyz, worldDelta),
+        dot(camera.worldToCameraRow1.xyz, worldDelta),
+        dot(camera.worldToCameraRow2.xyz, worldDelta)
+    );
+}
+
+float3x3 camera_covariance_from_world(constant CameraUniforms &camera, float3x3 covarianceWorld) {
+    float3 r0 = camera.worldToCameraRow0.xyz;
+    float3 r1 = camera.worldToCameraRow1.xyz;
+    float3 r2 = camera.worldToCameraRow2.xyz;
+    float c00 = dot(r0, covarianceWorld * r0);
+    float c01 = dot(r0, covarianceWorld * r1);
+    float c02 = dot(r0, covarianceWorld * r2);
+    float c11 = dot(r1, covarianceWorld * r1);
+    float c12 = dot(r1, covarianceWorld * r2);
+    float c22 = dot(r2, covarianceWorld * r2);
+    return float3x3(
+        float3(c00, c01, c02),
+        float3(c01, c11, c12),
+        float3(c02, c12, c22)
+    );
+}
+
+float4 covariance_payload(float3 scale, float4 rotation, float3 cameraSpace, constant CameraUniforms &camera) {
     float z = max(-cameraSpace.z, 0.001);
+    float fx = camera.focalPrincipal.x;
+    float fy = camera.focalPrincipal.y;
     float3 rowU = float3(fx / z, 0.0, fx * cameraSpace.x / (z * z));
     float3 rowV = float3(0.0, -fy / z, -fy * cameraSpace.y / (z * z));
-    float3x3 covariance3D = covariance3d_from_scale_rotation(scale, rotation);
+    float3x3 covariance3D = camera_covariance_from_world(camera, covariance3d_from_scale_rotation(scale, rotation));
     float a = max(dot(rowU, covariance3D * rowU), 0.25);
     float b = dot(rowU, covariance3D * rowV);
     float d = max(dot(rowV, covariance3D * rowV), 0.25);
@@ -1876,7 +1918,7 @@ kernel void robot_project_splats(
         return;
     }
     RawSplat splat = rawSplats[id];
-    float3 cameraSpace = splat.position.xyz - camera.cameraPosition.xyz;
+    float3 cameraSpace = world_to_camera(camera, splat.position.xyz - camera.cameraPosition.xyz);
     float depth = -cameraSpace.z;
     if (depth <= 0.01) {
         projectedSplats[id].centerDepth = float4(0, 0, -1, 0);
@@ -1887,7 +1929,7 @@ kernel void robot_project_splats(
     float v = (-cameraSpace.y * camera.focalPrincipal.y / depth) + camera.focalPrincipal.w;
     float3 scale = splat.scaleRotation.xyz;
     float4 rotation = float4(splat.scaleRotation.w, splat.rotationW.x, splat.rotationW.y, splat.rotationW.z);
-    float4 covariance = covariance_payload(scale, rotation, cameraSpace, camera.focalPrincipal.x, camera.focalPrincipal.y);
+    float4 covariance = covariance_payload(scale, rotation, cameraSpace, camera);
     float majorRadius = covariance.w;
 
     uint tileSize = max(tiles.tileLayout.x, 1u);

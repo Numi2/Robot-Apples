@@ -53,6 +53,7 @@ public struct SplatTrainingPackageBuilder: Sendable {
         outputDirectory: URL
     ) throws -> SplatTrainingPackageManifest {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        try validateTrainingInputs(job.manifest, relativeTo: manifestURL.deletingLastPathComponent())
         let frameIndexURL = outputDirectory.appendingPathComponent("capture_splat_frames.jsonl")
         let depthPriorIndexURL = outputDirectory.appendingPathComponent("capture_lidar_depth_priors.jsonl")
         let trainScriptURL = outputDirectory.appendingPathComponent("train_capture_splat_mlx.py")
@@ -87,6 +88,51 @@ public struct SplatTrainingPackageBuilder: Sendable {
         )
         try JSONEncoder.robotVisionLabEncoder.encode(package).write(to: packageURL)
         return package
+    }
+
+    private func validateTrainingInputs(_ manifest: SplatTrainingManifest, relativeTo manifestRoot: URL) throws {
+        var issues: [String] = []
+        if manifest.imageFrames.isEmpty {
+            issues.append("Splat training manifest has no RGB image frames.")
+        }
+        for (index, frame) in manifest.imageFrames.enumerated() {
+            let imageURL = resolve(frame.imageURL, relativeTo: manifestRoot)
+            if !isSupportedTrainingImageURL(imageURL) {
+                issues.append("Training frame \(index) references \(frame.imageURL.lastPathComponent), which is not a supported still image.")
+                continue
+            }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: imageURL.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+                issues.append("Training frame \(index) image is missing: \(frame.imageURL.path).")
+                continue
+            }
+            let byteCount = (try? FileManager.default.attributesOfItem(atPath: imageURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+            if byteCount <= 0 {
+                issues.append("Training frame \(index) image is empty: \(frame.imageURL.lastPathComponent).")
+            }
+            if frame.calibration?.intrinsics == nil {
+                issues.append("Training frame \(index) is missing camera intrinsics.")
+            }
+        }
+        if !issues.isEmpty {
+            throw SplatTrainingPackageBuildError.invalidTrainingInputs(issues)
+        }
+    }
+
+    private func resolve(_ url: URL, relativeTo root: URL) -> URL {
+        if url.isFileURL && FileManager.default.fileExists(atPath: url.path) {
+            return url
+        }
+        return root.appendingPathComponent(url.relativePath)
+    }
+
+    private func isSupportedTrainingImageURL(_ url: URL) -> Bool {
+        switch url.pathExtension.lowercased() {
+        case "jpg", "jpeg", "png", "heic", "heif", "tif", "tiff":
+            return true
+        default:
+            return false
+        }
     }
 
     private func writeFrameIndex(_ manifest: SplatTrainingManifest, to outputURL: URL) throws {
@@ -151,21 +197,25 @@ public struct SplatTrainingPackageBuilder: Sendable {
         def load_jsonl(path):
             return [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
 
-        def average_rgb(path):
-            if Image is None:
-                return np.array([0.75, 0.78, 0.82], dtype=np.float32)
+        def image_path_or_raise(path):
             image_path = Path(path.replace("file://", ""))
             if not image_path.exists():
-                return np.array([0.75, 0.78, 0.82], dtype=np.float32)
+                raise FileNotFoundError(f"RGB training image is missing: {image_path}")
+            if image_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".heic", ".heif", ".tif", ".tiff"}:
+                raise ValueError(f"RGB training frame must be a still image, got: {image_path}")
+            return image_path
+
+        def average_rgb(path):
+            if Image is None:
+                raise RuntimeError("Pillow is required to read RGB training images.")
+            image_path = image_path_or_raise(path)
             image = Image.open(image_path).convert("RGB").resize((32, 32))
             return np.asarray(image, dtype=np.float32).reshape(-1, 3).mean(axis=0) / 255.0
 
         def load_rgb_image(path):
             if Image is None:
-                return None
-            image_path = Path(path.replace("file://", ""))
-            if not image_path.exists():
-                return None
+                raise RuntimeError("Pillow is required to read RGB training images.")
+            image_path = image_path_or_raise(path)
             return np.asarray(Image.open(image_path).convert("RGB"), dtype=np.float32) / 255.0
 
         def file_path(path):
@@ -234,8 +284,6 @@ public struct SplatTrainingPackageBuilder: Sendable {
 
         def sample_rgb(frame, u, v):
             image = load_rgb_image(frame["imageURL"])
-            if image is None:
-                return average_rgb(frame["imageURL"])
             height, width = image.shape[:2]
             x = int(np.clip(round(u / max(frame_intrinsics(frame)[0], 1) * width), 0, width - 1))
             y = int(np.clip(round(v / max(frame_intrinsics(frame)[1], 1) * height), 0, height - 1))
@@ -343,6 +391,13 @@ public struct SplatTrainingPackageBuilder: Sendable {
             s = np.sin(angle * 0.5)
             return np.array([axis[0] * s, axis[1] * s, axis[2] * s, np.cos(angle * 0.5)], dtype=np.float32)
 
+        def logit(value):
+            value = np.clip(value, 1e-4, 1.0 - 1e-4)
+            return np.log(value / (1.0 - value))
+
+        def log_scale(value):
+            return np.log(np.clip(value, 1e-4, 2.0))
+
         def write_ply(path, positions, colors, opacity, scale, rotations, ascii_output=False):
             path = Path(path)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -375,8 +430,8 @@ public struct SplatTrainingPackageBuilder: Sendable {
                         f.write(
                             f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f} "
                             f"{int(rgb[0])} {int(rgb[1])} {int(rgb[2])} "
-                            f"{float(o):.4f} {float(s[0]):.5f} {float(s[1]):.5f} {float(s[2]):.5f} "
-                            f"{float(r[0]):.6f} {float(r[1]):.6f} {float(r[2]):.6f} {float(r[3]):.6f}\\n"
+                            f"{float(logit(o)):.4f} {float(log_scale(s[0])):.5f} {float(log_scale(s[1])):.5f} {float(log_scale(s[2])):.5f} "
+                            f"{float(r[3]):.6f} {float(r[0]):.6f} {float(r[1]):.6f} {float(r[2]):.6f}\\n"
                         )
                 return
             with path.open("wb") as f:
@@ -387,9 +442,9 @@ public struct SplatTrainingPackageBuilder: Sendable {
                         "<fffBBBffffffff",
                         float(p[0]), float(p[1]), float(p[2]),
                         int(rgb[0]), int(rgb[1]), int(rgb[2]),
-                        float(o),
-                        float(s[0]), float(s[1]), float(s[2]),
-                        float(r[0]), float(r[1]), float(r[2]), float(r[3]),
+                        float(logit(o)),
+                        float(log_scale(s[0])), float(log_scale(s[1])), float(log_scale(s[2])),
+                        float(r[3]), float(r[0]), float(r[1]), float(r[2]),
                     ))
 
         def write_training_metrics(path, records):
@@ -539,7 +594,7 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 "trainer": {
                     "framework": "MLX",
                     "device_memory_model": "Apple Silicon unified memory",
-                    "output_gaussian_fields": ["position", "rgb", "opacity", "anisotropic_scale", "ray_aligned_rotation"],
+                    "output_gaussian_fields": ["position", "rgb", "logit_opacity", "log_anisotropic_scale", "wxyz_ray_aligned_rotation"],
                 },
                 "loss_terms": ["photometric_rgb", "camera_ray_alignment", "arkit_lidar_depth_prior", "positive_depth", "scale_opacity_regularization"],
             }
@@ -572,6 +627,21 @@ private struct SplatTrainingDepthPriorRecord: Codable {
     var timestamp: TimeInterval
     var position: SIMD3<Double>
     var orientation: SIMD4<Double>
+}
+
+public enum SplatTrainingPackageBuildError: Error, LocalizedError, CustomStringConvertible {
+    case invalidTrainingInputs([String])
+
+    public var errorDescription: String? {
+        description
+    }
+
+    public var description: String {
+        switch self {
+        case .invalidTrainingInputs(let issues):
+            return "Splat training inputs are not usable:\n- \(issues.joined(separator: "\n- "))"
+        }
+    }
 }
 
 private struct SplatTrainingFrameSplit {

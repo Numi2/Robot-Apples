@@ -7,6 +7,7 @@ public enum WorkstationStage: String, Codable, CaseIterable, Sendable {
     case idle
     case importingCapture
     case preparingCapture
+    case reconstructingObjectCapture
     case linkingSplat
     case buildingDataset
     case planningMetalRender
@@ -150,6 +151,7 @@ public enum WorkstationPaths {
 public final class WorkstationModel {
     public private(set) var state: WorkstationState
     public private(set) var importHealthReport: RobotCaptureImportReport?
+    public private(set) var objectCaptureReconstructionReports: [ObjectCaptureReconstructionReport] = []
     public private(set) var splatAsset: GaussianSplatAsset?
     public private(set) var robotSceneManifest: RobotScenePackageManifest?
     public private(set) var spatialReviewSummary: RobotSceneSpatialReviewSummary?
@@ -243,6 +245,48 @@ public final class WorkstationModel {
             appendArtifact(title: "Training Manifest", url: output.report.splatTrainingManifestURL, kind: "splat-training")
             appendArtifact(title: "Evaluation Split", url: output.report.splitURL, kind: "capture-split")
             appendArtifact(title: "Structured Geometry Report", url: output.report.structuredGeometryReportURL, kind: "structured-geometry")
+        }
+    }
+
+    public func reconstructObjectCaptureImageSets() async {
+        await performAsync(stage: .reconstructingObjectCapture) {
+            guard var importedCapture else {
+                throw WorkstationError.missingCapture
+            }
+            let reconstructionDirectory = state.workspaceURL.appendingPathComponent("ObjectCaptureReconstruction", isDirectory: true)
+            let requests = ObjectCaptureReconstructionPlanner().makeRequests(
+                for: importedCapture,
+                outputDirectory: reconstructionDirectory
+            )
+            guard !requests.isEmpty else {
+                appendDiagnostic("No Object Capture image sets are linked in the imported package.")
+                return
+            }
+
+            var reports: [ObjectCaptureReconstructionReport] = []
+            for request in requests {
+                let report = try await ObjectCaptureReconstructor().reconstruct(request)
+                reports.append(report)
+                importedCapture.captureBundle.objectCaptureAssetURLs.append(report.outputURL)
+                appendArtifact(
+                    title: "Object Capture \(report.label ?? report.imageSetID)",
+                    url: report.outputURL,
+                    kind: "object-capture-geometry"
+                )
+                state.warningCount += report.warnings.count
+                state.diagnostics.append(contentsOf: report.warnings)
+            }
+
+            let reportURL = state.workspaceURL.appendingPathComponent("object_capture_reconstruction_report.json")
+            try JSONEncoder.robotVisionLabEncoder.encode(reports).write(to: reportURL)
+            self.importedCapture = importedCapture
+            objectCaptureReconstructionReports = reports
+            if var importHealthReport {
+                importHealthReport.objectCaptureAssetCount = importedCapture.captureBundle.objectCaptureAssetURLs.count
+                self.importHealthReport = importHealthReport
+            }
+            appendArtifact(title: "Object Capture Reconstruction Report", url: reportURL, kind: "object-capture-reconstruction")
+            appendDiagnostic("Object Capture reconstruction complete: \(reports.count) model(s).")
         }
     }
 
@@ -792,6 +836,13 @@ public final class WorkstationModel {
     public func exportRobotScene() {
         perform(stage: .exportingRobotScene) {
             let manifest = try ensureDatasetManifest()
+            let readiness = NativeRenderProductValidator().validate(manifest)
+            let readinessURL = state.workspaceURL.appendingPathComponent("robot_scene_export_readiness.json")
+            try JSONEncoder.robotVisionLabEncoder.encode(readiness).write(to: readinessURL)
+            appendArtifact(title: "Robot Scene Export Readiness", url: readinessURL, kind: "render-readiness")
+            guard readiness.isReady else {
+                throw WorkstationError.nativeRenderProductsNotReady(readinessURL)
+            }
             let packageURL = state.workspaceURL.appendingPathComponent("Project.robotscene", isDirectory: true)
             _ = try RobotScenePackageExporter().writeRobotScenePackage(
                 manifest: manifest,
@@ -817,7 +868,11 @@ public final class WorkstationModel {
         buildDatasetManifest()
         guard state.stage != .failed else { return }
         planMetalRender()
+        guard state.stage != .failed else { return }
+        renderMetalSplats()
+        guard state.stage != .failed else { return }
         planTraining()
+        guard state.stage != .failed else { return }
         exportRobotScene()
     }
 
@@ -841,6 +896,17 @@ public final class WorkstationModel {
         state.stage = stage
         do {
             try work()
+            state.stage = .complete
+        } catch {
+            state.stage = .failed
+            appendDiagnostic(error.localizedDescription)
+        }
+    }
+
+    private func performAsync(stage: WorkstationStage, _ work: () async throws -> Void) async {
+        state.stage = stage
+        do {
+            try await work()
             state.stage = .complete
         } catch {
             state.stage = .failed
@@ -1011,18 +1077,8 @@ public final class WorkstationModel {
                 roomPlanModelURL: importedCapture?.captureBundle.roomPlanModelURL
             )
         }
-
-        let seedURL = state.workspaceURL.appendingPathComponent("splats/capture_route_seed.ply")
-        let seedAsset = try RouteDerivedSplatSeedWriter().writeSeedPLY(route: route, to: seedURL)
-        splatAsset = seedAsset
-        state.activeSplatURL = seedURL
-        appendArtifact(title: "Route-Derived Splat Seed", url: seedURL, kind: "splat-seed")
-        return GaussianSplatScene(
-            id: "capture-route-splat-seed",
-            source: .importedPLY(seedURL),
-            bounds: seedAsset.bounds,
-            roomPlanModelURL: importedCapture?.captureBundle.roomPlanModelURL
-        )
+        _ = route
+        throw WorkstationError.missingSplat
     }
 
     private func bounds(from route: RobotPath) -> AxisAlignedBounds {
@@ -1155,7 +1211,7 @@ public enum WorkstationError: Error, LocalizedError {
         case .missingPreparedCapture:
             "Prepare a capture package before running this workstation step."
         case .missingSplat:
-            "Link a .ply or .splat scene before rendering Metal splats."
+            "Link an imported .ply/.spz/.splat scene or run capture splat training before building/exporting a Robot Scene."
         case .nativeRenderProductsNotReady(let url):
             "Native render products are not ready for MLX training. Render Metal splats first and inspect \(url.path)."
         case .trainingFailed(let url):

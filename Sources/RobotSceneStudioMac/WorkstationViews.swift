@@ -93,6 +93,21 @@ public struct WorkstationRootView: View {
                 model.importFinderCopiedCapture(at: url)
             }
         }
+        .onOpenURL { url in
+            switch url.pathExtension.lowercased() {
+            case "robotscene", "json":
+                if FileManager.default.fileExists(atPath: url.appendingPathComponent("robotscene.json").path)
+                    || url.lastPathComponent == "robotscene.json" {
+                    model.openRobotScene(at: url)
+                }
+            case "robotcapture":
+                model.importFinderCopiedCapture(at: url)
+            case "ply", "splat", "spz":
+                model.linkSplat(at: url)
+            default:
+                break
+            }
+        }
     }
 }
 
@@ -248,6 +263,15 @@ private struct CaptureControlPanel: View {
                     Label("Prepare Capture", systemImage: "point.3.connected.trianglepath.dotted")
                 }
                 .disabled(model.state.activeCaptureURL == nil)
+
+                Button {
+                    Task {
+                        await model.reconstructObjectCaptureImageSets()
+                    }
+                } label: {
+                    Label("Reconstruct Objects", systemImage: "cube")
+                }
+                .disabled((model.importHealthReport?.objectCaptureImageSetCount ?? 0) == 0)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -636,8 +660,13 @@ private struct ImportHealthPanel: View {
                     }
                     GridRow {
                         MetricCell(title: "Objects", value: "\(report.objectCaptureAssetCount)")
-                        MetricCell(title: "Transfer", value: report.primaryTransferMethod.rawValue)
+                        MetricCell(title: "Object Shots", value: "\(report.objectCaptureImageSetCount)")
                         MetricCell(title: "Warnings", value: "\(report.warnings.count)")
+                    }
+                    GridRow {
+                        MetricCell(title: "Reconstructed", value: "\(model.objectCaptureReconstructionReports.count)")
+                        MetricCell(title: "Transfer", value: report.primaryTransferMethod.rawValue)
+                        MetricCell(title: "Method", value: "Photogrammetry")
                     }
                 }
                 DiagnosticsList(messages: report.warnings)
@@ -1214,6 +1243,7 @@ private extension WorkstationStage {
         case .idle: "Idle"
         case .importingCapture: "Importing Capture"
         case .preparingCapture: "Preparing Capture"
+        case .reconstructingObjectCapture: "Reconstructing Objects"
         case .linkingSplat: "Linking Splat"
         case .buildingDataset: "Building Dataset"
         case .planningMetalRender: "Planning Metal Render"

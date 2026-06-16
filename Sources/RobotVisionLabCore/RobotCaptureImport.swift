@@ -36,6 +36,7 @@ public struct RobotCaptureImportReport: Codable, Equatable, Sendable {
     public var hasVideo: Bool
     public var hasRoomPlanModel: Bool
     public var objectCaptureAssetCount: Int
+    public var objectCaptureImageSetCount: Int
     public var primaryTransferMethod: LocalTransferMethod
     public var warnings: [String]
 
@@ -50,6 +51,7 @@ public struct RobotCaptureImportReport: Codable, Equatable, Sendable {
         hasVideo: Bool,
         hasRoomPlanModel: Bool,
         objectCaptureAssetCount: Int,
+        objectCaptureImageSetCount: Int = 0,
         primaryTransferMethod: LocalTransferMethod,
         warnings: [String]
     ) {
@@ -63,8 +65,42 @@ public struct RobotCaptureImportReport: Codable, Equatable, Sendable {
         self.hasVideo = hasVideo
         self.hasRoomPlanModel = hasRoomPlanModel
         self.objectCaptureAssetCount = objectCaptureAssetCount
+        self.objectCaptureImageSetCount = objectCaptureImageSetCount
         self.primaryTransferMethod = primaryTransferMethod
         self.warnings = warnings
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case packageURL
+        case importedAt
+        case manifestID
+        case sessionID
+        case frameCount
+        case motionSampleCount
+        case lidarFrameCount
+        case hasVideo
+        case hasRoomPlanModel
+        case objectCaptureAssetCount
+        case objectCaptureImageSetCount
+        case primaryTransferMethod
+        case warnings
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        packageURL = try container.decode(URL.self, forKey: .packageURL)
+        importedAt = try container.decode(Date.self, forKey: .importedAt)
+        manifestID = try container.decode(String.self, forKey: .manifestID)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        frameCount = try container.decode(Int.self, forKey: .frameCount)
+        motionSampleCount = try container.decode(Int.self, forKey: .motionSampleCount)
+        lidarFrameCount = try container.decode(Int.self, forKey: .lidarFrameCount)
+        hasVideo = try container.decode(Bool.self, forKey: .hasVideo)
+        hasRoomPlanModel = try container.decode(Bool.self, forKey: .hasRoomPlanModel)
+        objectCaptureAssetCount = try container.decode(Int.self, forKey: .objectCaptureAssetCount)
+        objectCaptureImageSetCount = try container.decodeIfPresent(Int.self, forKey: .objectCaptureImageSetCount) ?? 0
+        primaryTransferMethod = try container.decode(LocalTransferMethod.self, forKey: .primaryTransferMethod)
+        warnings = try container.decode([String].self, forKey: .warnings)
     }
 }
 
@@ -87,7 +123,7 @@ public struct RobotCaptureImporter: Sendable {
         let motion: [RobotCaptureMotionRecord] = try motionURL.map { try decodeJSONLines(at: $0) } ?? []
         let captureBundle = try decoder.decode(CaptureBundleManifest.self, from: Data(contentsOf: captureBundleURL))
 
-        return RobotCaptureImport(
+        let importedPackage = RobotCaptureImport(
             packageRoot: packageRoot,
             manifest: manifest,
             session: session,
@@ -95,6 +131,8 @@ public struct RobotCaptureImporter: Sendable {
             motion: motion,
             captureBundle: captureBundle
         )
+        try assertPipelineReady(importedPackage)
+        return importedPackage
     }
 
     public func makeReport(
@@ -125,6 +163,7 @@ public struct RobotCaptureImporter: Sendable {
         if importedPackage.frames.contains(where: { $0.intrinsics == nil }) {
             warnings.append("One or more frame records are missing camera intrinsics.")
         }
+        warnings.append(contentsOf: frameImageWarnings(importedPackage: importedPackage, packageRoot: packageRoot))
         if importedPackage.motion.isEmpty {
             warnings.append("motion.jsonl contains no Core Motion samples.")
         }
@@ -158,6 +197,7 @@ public struct RobotCaptureImporter: Sendable {
                 warnings.append("Object Capture asset is referenced but missing: \(assetURL.lastPathComponent)")
             }
         }
+        warnings.append(contentsOf: objectCaptureImageSetWarnings(importedPackage: importedPackage, packageRoot: packageRoot))
 
         return RobotCaptureImportReport(
             packageURL: packageURL,
@@ -170,6 +210,7 @@ public struct RobotCaptureImporter: Sendable {
             hasVideo: hasVideo,
             hasRoomPlanModel: hasRoomPlanModel,
             objectCaptureAssetCount: importedPackage.captureBundle.objectCaptureAssetURLs.count,
+            objectCaptureImageSetCount: importedPackage.captureBundle.objectCaptureImageSets.count,
             primaryTransferMethod: manifest.transferPolicy.primary,
             warnings: warnings
         )
@@ -187,10 +228,121 @@ public struct RobotCaptureImporter: Sendable {
     }
 
     private func resolve(_ url: URL, relativeTo packageRoot: URL) -> URL {
-        if url.isFileURL && url.path.hasPrefix("/") {
+        if url.isFileURL && FileManager.default.fileExists(atPath: url.path) {
             return url
         }
         return packageRoot.appendingPathComponent(url.relativePath)
+    }
+
+    private func assertPipelineReady(_ importedPackage: RobotCaptureImport) throws {
+        let packageRoot = importedPackage.packageRoot
+        var issues: [String] = []
+        let validation = SharedProjectFormatTools().validate(
+            packageID: importedPackage.manifest.id,
+            packageKind: "robotcapture",
+            schemaVersion: importedPackage.manifest.schemaVersion,
+            artifacts: importedPackage.manifest.artifacts,
+            policy: importedPackage.manifest.artifactPolicy,
+            packageRoot: packageRoot
+        )
+        issues.append(contentsOf: validation.issues
+            .filter { $0.severity == .error }
+            .map(\.message))
+
+        if importedPackage.frames.isEmpty {
+            issues.append("frames.jsonl contains no RGB frame records.")
+        }
+        if importedPackage.session.id != importedPackage.captureBundle.scanSession.id {
+            issues.append("session.json id does not match capture_bundle.json scan session id.")
+        }
+        if importedPackage.frames.count != importedPackage.captureBundle.rgbFrames.count {
+            issues.append("frames.jsonl count does not match capture_bundle.json RGB frame count.")
+        }
+        for frame in importedPackage.frames {
+            if frame.intrinsics == nil {
+                issues.append("Frame \(frame.index) is missing camera intrinsics.")
+            }
+            let imageURL = resolve(frame.imageURL, relativeTo: packageRoot)
+            if !isSupportedTrainingImageURL(imageURL) {
+                issues.append("Frame \(frame.index) references \(frame.imageURL.lastPathComponent), which is not a supported still image for splat training.")
+                continue
+            }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: imageURL.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+                issues.append("Frame \(frame.index) image is missing: \(frame.imageURL.path).")
+                continue
+            }
+            let byteCount = (try? FileManager.default.attributesOfItem(atPath: imageURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+            if byteCount <= 0 {
+                issues.append("Frame \(frame.index) image is empty: \(frame.imageURL.lastPathComponent).")
+            }
+        }
+        if !issues.isEmpty {
+            throw RobotCaptureImportError.packageNotPipelineReady(issues)
+        }
+    }
+
+    private func frameImageWarnings(importedPackage: RobotCaptureImport, packageRoot: URL) -> [String] {
+        importedPackage.frames.flatMap { frame -> [String] in
+            let imageURL = resolve(frame.imageURL, relativeTo: packageRoot)
+            var warnings: [String] = []
+            if !isSupportedTrainingImageURL(imageURL) {
+                warnings.append("Frame \(frame.index) does not reference a supported still image: \(frame.imageURL.lastPathComponent).")
+            }
+            if !FileManager.default.fileExists(atPath: imageURL.path) {
+                warnings.append("Frame \(frame.index) image is missing: \(frame.imageURL.path).")
+            }
+            return warnings
+        }
+    }
+
+    private func isSupportedTrainingImageURL(_ url: URL) -> Bool {
+        switch url.pathExtension.lowercased() {
+        case "jpg", "jpeg", "png", "heic", "heif", "tif", "tiff":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func objectCaptureImageSetWarnings(importedPackage: RobotCaptureImport, packageRoot: URL) -> [String] {
+        importedPackage.captureBundle.objectCaptureImageSets.flatMap { imageSet -> [String] in
+            let imagesDirectoryURL = resolve(imageSet.imagesDirectoryURL, relativeTo: packageRoot)
+            var isDirectory: ObjCBool = false
+            var warnings: [String] = []
+            guard FileManager.default.fileExists(atPath: imagesDirectoryURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                return ["Object Capture image set \(imageSet.id) is referenced but missing: \(imageSet.imagesDirectoryURL.path)"]
+            }
+
+            let imageCount = countSupportedStillImages(in: imagesDirectoryURL)
+            if imageCount == 0 {
+                warnings.append("Object Capture image set \(imageSet.id) contains no supported still images.")
+            }
+            if imageSet.imageCount > 0, imageCount != imageSet.imageCount {
+                warnings.append("Object Capture image set \(imageSet.id) reports \(imageSet.imageCount) images but contains \(imageCount).")
+            }
+            if let checkpointURL = imageSet.checkpointDirectoryURL.map({ resolve($0, relativeTo: packageRoot) }),
+               !FileManager.default.fileExists(atPath: checkpointURL.path) {
+                warnings.append("Object Capture checkpoint for image set \(imageSet.id) is referenced but missing: \(imageSet.checkpointDirectoryURL?.path ?? "")")
+            }
+            return warnings
+        }
+    }
+
+    private func countSupportedStillImages(in directoryURL: URL) -> Int {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directoryURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+        return enumerator.compactMap { item -> URL? in
+            guard let url = item as? URL else { return nil }
+            guard isSupportedTrainingImageURL(url) else { return nil }
+            let isRegularFile = (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false
+            return isRegularFile ? url : nil
+        }.count
     }
 
     private func decodeJSONLines<T: Decodable>(at url: URL) throws -> [T] {
@@ -252,13 +404,20 @@ public struct RobotCaptureImporter: Sendable {
     }
 }
 
-public enum RobotCaptureImportError: Error, CustomStringConvertible {
+public enum RobotCaptureImportError: Error, LocalizedError, CustomStringConvertible {
     case invalidJSONLine(url: URL, line: Int, underlying: Error)
+    case packageNotPipelineReady([String])
 
     public var description: String {
         switch self {
         case .invalidJSONLine(let url, let line, let underlying):
             return "Invalid JSONL record at \(url.path):\(line): \(underlying)"
+        case .packageNotPipelineReady(let issues):
+            return "Robot capture package is not ready for preparation:\n- \(issues.joined(separator: "\n- "))"
         }
+    }
+
+    public var errorDescription: String? {
+        description
     }
 }

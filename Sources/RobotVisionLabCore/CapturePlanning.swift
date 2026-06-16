@@ -47,6 +47,7 @@ public enum CaptureMode: String, Codable, CaseIterable, Sendable {
     case roomPlan
     case objectCapture
     case rgbVideo
+    case coreMotion
     case lidarDepth
 }
 
@@ -70,7 +71,7 @@ public struct ObjectCaptureOptions: Codable, Equatable, Sendable {
     }
 }
 
-public enum ObjectCaptureDetail: String, Codable, Sendable {
+public enum ObjectCaptureDetail: String, Codable, Equatable, Sendable {
     case preview
     case reduced
     case medium
@@ -128,4 +129,3 @@ public enum CapturePlanError: Error, Equatable, LocalizedError {
         }
     }
 }
-

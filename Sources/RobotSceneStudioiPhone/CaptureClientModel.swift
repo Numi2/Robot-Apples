@@ -164,6 +164,12 @@ public final class CaptureClientModel {
     public private(set) var isBrowsingForMac = false
     public private(set) var documentsURL: URL
 
+    #if os(iOS)
+    public var previewCaptureSession: AVCaptureSession? {
+        (captureSession as? AppleDeviceCaptureSession)?.previewCaptureSession
+    }
+    #endif
+
     private var captureSession: DeviceCaptureSessionControlling?
     private var sender: RobotCaptureMultipeerTransfer?
     private var senderDelegate: CaptureTransferDelegate?
@@ -302,6 +308,114 @@ public final class CaptureClientModel {
         state.latestMessage = "Selected \(url.lastPathComponent)."
     }
 
+    @discardableResult
+    public func attachObjectCaptureImageSet(
+        label: String,
+        imagesDirectoryURL: URL,
+        checkpointDirectoryURL: URL? = nil,
+        createdAt: Date = Date()
+    ) throws -> ObjectCaptureImageSet {
+        guard let packageURL = state.selectedPackageURL ?? state.packageURL else {
+            throw CaptureClientError.noSelectedPackage
+        }
+        let imageCount = countSupportedStillImages(in: imagesDirectoryURL)
+        guard imageCount > 0 else {
+            throw CaptureClientError.emptyObjectCaptureImageSet(imagesDirectoryURL)
+        }
+
+        let captureBundleURL = packageURL.appendingPathComponent("capture_bundle.json")
+        let packageManifestURL = packageURL.appendingPathComponent("robotcapture.json")
+        var captureBundle = try JSONDecoder.robotVisionLabDecoder.decode(
+            CaptureBundleManifest.self,
+            from: Data(contentsOf: captureBundleURL)
+        )
+        var packageManifest = try JSONDecoder.robotVisionLabDecoder.decode(
+            RobotCapturePackageManifest.self,
+            from: Data(contentsOf: packageManifestURL)
+        )
+
+        let imageSetID = uniqueObjectCaptureImageSetID(label: label, existing: captureBundle.objectCaptureImageSets)
+        let imageSetRootURL = packageURL
+            .appendingPathComponent("object-capture/image-sets", isDirectory: true)
+            .appendingPathComponent(imageSetID, isDirectory: true)
+        let packagedImagesURL = imageSetRootURL.appendingPathComponent("images", isDirectory: true)
+        let packagedCheckpointURL = checkpointDirectoryURL.map { _ in
+            imageSetRootURL.appendingPathComponent("checkpoint", isDirectory: true)
+        }
+
+        try copyDirectoryReplacingExisting(from: imagesDirectoryURL, to: packagedImagesURL)
+        if let checkpointDirectoryURL, let packagedCheckpointURL {
+            try copyDirectoryReplacingExisting(from: checkpointDirectoryURL, to: packagedCheckpointURL)
+        }
+
+        let imageSet = ObjectCaptureImageSet(
+            id: imageSetID,
+            label: label.isEmpty ? nil : label,
+            imagesDirectoryURL: packagedImagesURL,
+            checkpointDirectoryURL: packagedCheckpointURL,
+            imageCount: imageCount,
+            createdAt: createdAt,
+            notes: "Captured with iPhone ObjectCaptureSession."
+        )
+        captureBundle.objectCaptureImageSets.append(imageSet)
+        captureBundle.scanSession.objectCaptureImageSets = captureBundle.objectCaptureImageSets
+        captureBundle.capturePlan = capturePlanByAddingObjectCapture(
+            to: captureBundle.capturePlan,
+            id: captureBundle.scanSession.id,
+            label: imageSet.label ?? imageSet.id
+        )
+
+        try JSONEncoder.robotVisionLabEncoder.encode(captureBundle).write(to: captureBundleURL)
+
+        let tools = SharedProjectFormatTools()
+        upsertArtifact(
+            role: "capture-bundle",
+            url: captureBundleURL,
+            packageRoot: packageURL,
+            manifest: &packageManifest,
+            tools: tools
+        )
+        upsertArtifact(
+            role: "object-capture-image-set",
+            url: packagedImagesURL,
+            packageRoot: packageURL,
+            manifest: &packageManifest,
+            tools: tools
+        )
+        if let packagedCheckpointURL {
+            upsertArtifact(
+                role: "object-capture-checkpoint",
+                url: packagedCheckpointURL,
+                packageRoot: packageURL,
+                manifest: &packageManifest,
+                tools: tools
+            )
+        }
+        let report = tools.validate(
+            packageID: packageManifest.id,
+            packageKind: "robotcapture",
+            schemaVersion: packageManifest.schemaVersion,
+            artifacts: packageManifest.artifacts,
+            policy: packageManifest.artifactPolicy,
+            packageRoot: packageURL
+        )
+        let reportURLs = try tools.writeReports(report, to: packageURL, title: ".robotcapture Project Report")
+        packageManifest.validationReportURL = reportURLs.json
+        packageManifest.humanReportURL = reportURLs.markdown
+        try JSONEncoder.robotVisionLabEncoder.encode(packageManifest).write(to: packageManifestURL)
+
+        refreshPackageBrowser()
+        selectPackage(packageURL)
+        transferEvents.insert(
+            CaptureTransferEvent(
+                title: "Object Capture Attached",
+                detail: "\(imageSet.label ?? imageSet.id), \(imageCount) images"
+            ),
+            at: 0
+        )
+        return imageSet
+    }
+
     public func startMacDiscovery() {
         do {
             let delegate = CaptureTransferDelegate { [weak self] event in
@@ -391,6 +505,9 @@ public final class CaptureClientModel {
         if configuration.recordsRoomPlan {
             modes.insert(.roomPlan)
         }
+        if configuration.recordsCoreMotion {
+            modes.insert(.coreMotion)
+        }
         return CapturePlan(
             id: id,
             captureModes: modes,
@@ -474,11 +591,36 @@ public final class CaptureClientModel {
         state.deviceCaptureState = captureSession.state
         let frameCount = captureSession.state.rgbFrameCount
         let lidarCount = captureSession.state.lidarFrameCount
+        let trackingLevel: CaptureQualityLevel
+        switch captureSession.state.lastTrackingQuality {
+        case .normal:
+            trackingLevel = .good
+        case .limited:
+            trackingLevel = .warning
+        case .notAvailable:
+            trackingLevel = .bad
+        case nil:
+            trackingLevel = frameCount > 0 ? .good : .warning
+        }
+        let lightingLevel: CaptureQualityLevel
+        if let ambientIntensity = captureSession.state.lastAmbientIntensity {
+            if ambientIntensity >= 180 {
+                lightingLevel = .good
+            } else if ambientIntensity >= 80 {
+                lightingLevel = .warning
+            } else {
+                lightingLevel = .bad
+            }
+        } else {
+            lightingLevel = frameCount > 10 ? .good : .unknown
+        }
+        let trackingText = captureSession.state.lastTrackingQuality?.rawValue ?? "warming-up"
+        let lightingText = captureSession.state.lastAmbientIntensity.map { "\(Int($0.rounded())) ambient" } ?? "no light estimate"
         quality = CaptureQualityState(
-            tracking: frameCount > 0 ? .good : .warning,
-            lighting: frameCount > 10 ? .good : .unknown,
+            tracking: trackingLevel,
+            lighting: lightingLevel,
             motion: permissions.motion == .granted ? .good : .warning,
-            message: "\(frameCount) pose frames, \(lidarCount) LiDAR frames."
+            message: "\(frameCount) pose frames, \(lidarCount) LiDAR frames, tracking \(trackingText), \(lightingText)."
         )
     }
 
@@ -493,6 +635,91 @@ public final class CaptureClientModel {
         state.latestMessage = message
         transferEvents.insert(CaptureTransferEvent(title: "Error", detail: message), at: 0)
     }
+
+    private func capturePlanByAddingObjectCapture(to plan: CapturePlan?, id: String, label: String) -> CapturePlan {
+        var next = plan ?? CapturePlan(id: id, captureModes: [])
+        next.captureModes.insert(.objectCapture)
+        if var objectCapture = next.objectCapture {
+            if !objectCapture.objectLabels.contains(label) {
+                objectCapture.objectLabels.append(label)
+            }
+            next.objectCapture = objectCapture
+        } else {
+            next.objectCapture = ObjectCaptureOptions(objectLabels: [label])
+        }
+        return next
+    }
+
+    private func uniqueObjectCaptureImageSetID(label: String, existing: [ObjectCaptureImageSet]) -> String {
+        let base = safeFileComponent(label.isEmpty ? "object" : label)
+        let existingIDs = Set(existing.map(\.id))
+        if !existingIDs.contains(base) {
+            return base
+        }
+        var suffix = 2
+        while existingIDs.contains("\(base)-\(suffix)") {
+            suffix += 1
+        }
+        return "\(base)-\(suffix)"
+    }
+
+    private func safeFileComponent(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let characters = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
+        let sanitized = String(characters).trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        return sanitized.isEmpty ? "object" : sanitized
+    }
+
+    private func copyDirectoryReplacingExisting(from sourceURL: URL, to destinationURL: URL) throws {
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw CaptureClientError.missingObjectCaptureImageSet(sourceURL)
+        }
+        try fileManager.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    private func upsertArtifact(
+        role: String,
+        url: URL,
+        packageRoot: URL,
+        manifest: inout RobotCapturePackageManifest,
+        tools: SharedProjectFormatTools
+    ) {
+        let record = tools.artifactRecord(role: role, url: url, packageRoot: packageRoot)
+        manifest.artifacts.removeAll {
+            $0.role == role && $0.url.standardizedFileURL.path == url.standardizedFileURL.path
+        }
+        manifest.artifacts.append(record)
+    }
+
+    private func countSupportedStillImages(in directoryURL: URL) -> Int {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directoryURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+        return enumerator.compactMap { item -> URL? in
+            guard let url = item as? URL, isSupportedStillImage(url) else { return nil }
+            let isRegularFile = (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false
+            return isRegularFile ? url : nil
+        }.count
+    }
+
+    private func isSupportedStillImage(_ url: URL) -> Bool {
+        switch url.pathExtension.lowercased() {
+        case "jpg", "jpeg", "png", "heic", "heif", "tif", "tiff":
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 public enum CaptureClientPaths {
@@ -504,11 +731,20 @@ public enum CaptureClientPaths {
 
 public enum CaptureClientError: Error, LocalizedError {
     case iOSRequired
+    case noSelectedPackage
+    case missingObjectCaptureImageSet(URL)
+    case emptyObjectCaptureImageSet(URL)
 
     public var errorDescription: String? {
         switch self {
         case .iOSRequired:
             "AppleDeviceCaptureSession requires iOS."
+        case .noSelectedPackage:
+            "Select a .robotcapture package before attaching Object Capture images."
+        case .missingObjectCaptureImageSet(let url):
+            "Object Capture image directory is missing: \(url.path)"
+        case .emptyObjectCaptureImageSet(let url):
+            "Object Capture image directory contains no supported still images: \(url.path)"
         }
     }
 }

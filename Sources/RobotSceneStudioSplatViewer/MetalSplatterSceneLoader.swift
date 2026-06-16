@@ -40,6 +40,25 @@ public enum MetalSplatterViewerConstants {
     public static let fieldOfViewYRadians: Float = 65 * .pi / 180
 }
 
+public let metalSplatterIdentityMatrixPayload: [Float] = [
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1
+]
+
+public func metalSplatterMatrix(from payload: [Float]) -> simd_float4x4 {
+    guard payload.count == 16 else {
+        return matrix_identity_float4x4
+    }
+    return simd_float4x4(columns: (
+        SIMD4<Float>(payload[0], payload[1], payload[2], payload[3]),
+        SIMD4<Float>(payload[4], payload[5], payload[6], payload[7]),
+        SIMD4<Float>(payload[8], payload[9], payload[10], payload[11]),
+        SIMD4<Float>(payload[12], payload[13], payload[14], payload[15])
+    ))
+}
+
 public func metalSplatterRotationMatrix(radians: Float, axis: SIMD3<Float>) -> simd_float4x4 {
     let axisLength = max(sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z), .leastNonzeroMagnitude)
     let unitAxis = axis / axisLength
@@ -83,12 +102,37 @@ public func metalSplatterPerspectiveMatrix(
     ))
 }
 
-public func metalSplatterDefaultModelViewMatrix(rotationRadians: Float) -> simd_float4x4 {
+public func metalSplatterDefaultModelViewMatrix(rotationRadians: Float, sceneTransform: simd_float4x4 = matrix_identity_float4x4) -> simd_float4x4 {
     let rotation = metalSplatterRotationMatrix(
         radians: rotationRadians,
         axis: MetalSplatterViewerConstants.rotationAxis
     )
     let translation = metalSplatterTranslationMatrix(0, 0, MetalSplatterViewerConstants.modelCenterZ)
     let commonUpCalibration = metalSplatterRotationMatrix(radians: Float.pi, axis: SIMD3<Float>(0, 0, 1))
-    return translation * rotation * commonUpCalibration
+    return translation * rotation * commonUpCalibration * sceneTransform
+}
+
+public func metalSplatterInteractiveModelViewMatrix(
+    autoRotationRadians: Float,
+    yawRadians: Float,
+    pitchRadians: Float,
+    distanceScale: Float,
+    sceneTransform: simd_float4x4 = matrix_identity_float4x4
+) -> simd_float4x4 {
+    let clampedDistance = min(max(distanceScale, 0.35), 4)
+    let translation = metalSplatterTranslationMatrix(
+        0,
+        0,
+        MetalSplatterViewerConstants.modelCenterZ * clampedDistance
+    )
+    let yaw = metalSplatterRotationMatrix(
+        radians: autoRotationRadians + yawRadians,
+        axis: SIMD3<Float>(0, 1, 0)
+    )
+    let pitch = metalSplatterRotationMatrix(
+        radians: min(max(pitchRadians, -1.2), 1.2),
+        axis: SIMD3<Float>(1, 0, 0)
+    )
+    let commonUpCalibration = metalSplatterRotationMatrix(radians: Float.pi, axis: SIMD3<Float>(0, 0, 1))
+    return translation * pitch * yaw * commonUpCalibration * sceneTransform
 }

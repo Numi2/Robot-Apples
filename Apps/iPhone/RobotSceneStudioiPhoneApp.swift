@@ -2,12 +2,14 @@ import RobotSceneStudioiPhone
 import RobotSceneStudioSplatViewer
 import SwiftUI
 import UniformTypeIdentifiers
+import AVFoundation
+@preconcurrency import _RealityKit_SwiftUI
 
 @main
 struct RobotSceneStudioiPhoneApp: App {
     @State private var model = CaptureClientModel()
 
-    var body: some Scene {
+    var body: some SwiftUI.Scene {
         WindowGroup {
             CaptureClientRootView(model: model)
         }
@@ -24,6 +26,10 @@ struct CaptureClientRootView: View {
             CaptureScreen(model: model)
                 .tabItem {
                     Label("Capture", systemImage: "camera.viewfinder")
+                }
+            ObjectCaptureScreen(model: model)
+                .tabItem {
+                    Label("Objects", systemImage: "cube.viewfinder")
                 }
             PackageBrowserScreen(model: model)
                 .tabItem {
@@ -51,6 +57,258 @@ struct CaptureClientRootView: View {
                 exploratorySplatURL = url
             }
         }
+    }
+}
+
+private struct ObjectCaptureScreen: View {
+    @Bindable var model: CaptureClientModel
+    @State private var session = ObjectCaptureSession()
+    @State private var objectLabel = "object"
+    @State private var draft: ObjectCaptureDraft?
+    @State private var captureStateTitle = "Ready"
+    @State private var feedbackTitle = "No feedback"
+    @State private var trackingTitle = "Unknown"
+    @State private var canCaptureImage = false
+    @State private var shotsTaken = 0
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    if ObjectCaptureSession.isSupported {
+                        ObjectCaptureView(session: session)
+                            .frame(height: 340)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .listRowInsets(EdgeInsets())
+                    } else {
+                        ContentUnavailableView("Object Capture unavailable", systemImage: "cube.viewfinder")
+                    }
+                }
+
+                Section("Object") {
+                    TextField("Label", text: $objectLabel)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    LabeledContent("Package", value: model.state.selectedPackageURL?.lastPathComponent ?? "None")
+                    LabeledContent("State", value: captureStateTitle)
+                    LabeledContent("Tracking", value: trackingTitle)
+                    LabeledContent("Shots", value: "\(shotsTaken)")
+                    Text(feedbackTitle)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Capture") {
+                    if session.state.isInitialOrCompleted {
+                        Button {
+                            startObjectCapture()
+                        } label: {
+                            Label("Start Object Capture", systemImage: "cube.viewfinder")
+                        }
+                        .disabled(!ObjectCaptureSession.isSupported)
+                    }
+                    if session.state.isReady {
+                        Button {
+                            _ = session.startDetecting()
+                        } label: {
+                            Label("Detect Object", systemImage: "viewfinder")
+                        }
+                    }
+                    if session.state.isDetecting {
+                        Button {
+                            session.startCapturing()
+                        } label: {
+                            Label("Begin Scan Pass", systemImage: "camera.aperture")
+                        }
+                    }
+                    if session.state.isCapturing {
+                        Button {
+                            session.requestImageCapture()
+                        } label: {
+                            Label("Capture Shot", systemImage: "camera")
+                        }
+                        .disabled(!canCaptureImage)
+
+                        HStack {
+                            Button {
+                                session.beginNewScanPass()
+                            } label: {
+                                Label("New Pass", systemImage: "arrow.triangle.2.circlepath")
+                            }
+
+                            Button {
+                                session.beginNewScanPassAfterFlip()
+                            } label: {
+                                Label("Flip Pass", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                            }
+                        }
+
+                        Button(role: .destructive) {
+                            session.finish()
+                        } label: {
+                            Label("Finish Object", systemImage: "checkmark.circle")
+                        }
+                    }
+                    if session.state.isCompleted {
+                        Button {
+                            attachObjectCapture()
+                        } label: {
+                            Label("Attach to Package", systemImage: "shippingbox.and.arrow.backward")
+                        }
+                        .disabled(model.state.selectedPackageURL == nil)
+                    }
+                    if session.state.isActive {
+                        Button(role: .destructive) {
+                            session.cancel()
+                            resetSession()
+                        } label: {
+                            Label("Cancel Object", systemImage: "xmark.circle")
+                        }
+                    }
+                }
+
+                if let errorMessage {
+                    Section("Error") {
+                        Text(errorMessage)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("Object Capture")
+            .task(id: session.id) {
+                await observeSessionState()
+            }
+            .task(id: session.id) {
+                await observeSessionFeedback()
+            }
+            .task(id: session.id) {
+                await observeSessionTracking()
+            }
+            .task(id: session.id) {
+                await observeCaptureAvailability()
+            }
+            .task(id: session.id) {
+                await observeShotCount()
+            }
+        }
+    }
+
+    private func startObjectCapture() {
+        do {
+            let nextDraft = try ObjectCaptureDraft.make(label: objectLabel, documentsURL: model.documentsURL)
+            var configuration = ObjectCaptureSession.Configuration()
+            configuration.checkpointDirectory = nextDraft.checkpointDirectoryURL
+            configuration.isOverCaptureEnabled = true
+            session = ObjectCaptureSession()
+            draft = nextDraft
+            errorMessage = nil
+            shotsTaken = 0
+            canCaptureImage = false
+            captureStateTitle = "Initializing"
+            session.start(imagesDirectory: nextDraft.imagesDirectoryURL, configuration: configuration)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func attachObjectCapture() {
+        guard let draft else { return }
+        do {
+            _ = try model.attachObjectCaptureImageSet(
+                label: draft.label,
+                imagesDirectoryURL: draft.imagesDirectoryURL,
+                checkpointDirectoryURL: draft.checkpointDirectoryURL,
+                createdAt: draft.createdAt
+            )
+            errorMessage = nil
+            resetSession()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func resetSession() {
+        session = ObjectCaptureSession()
+        draft = nil
+        captureStateTitle = "Ready"
+        feedbackTitle = "No feedback"
+        trackingTitle = "Unknown"
+        canCaptureImage = false
+        shotsTaken = 0
+    }
+
+    private func observeSessionState() async {
+        captureStateTitle = session.state.title
+        for await state in session.stateUpdates {
+            captureStateTitle = state.title
+            if case .failed(let error) = state {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func observeSessionFeedback() async {
+        feedbackTitle = session.feedback.feedbackTitle
+        for await feedback in session.feedbackUpdates {
+            feedbackTitle = feedback.feedbackTitle
+        }
+    }
+
+    private func observeSessionTracking() async {
+        trackingTitle = session.cameraTracking.title
+        for await tracking in session.cameraTrackingUpdates {
+            trackingTitle = tracking.title
+        }
+    }
+
+    private func observeCaptureAvailability() async {
+        canCaptureImage = session.canRequestImageCapture
+        for await canRequest in session.canRequestImageCaptureUpdates {
+            canCaptureImage = canRequest
+        }
+    }
+
+    private func observeShotCount() async {
+        shotsTaken = session.numberOfShotsTaken
+        for await count in session.numberOfShotsTakenUpdates {
+            shotsTaken = count
+        }
+    }
+}
+
+private struct ObjectCaptureDraft: Equatable {
+    var label: String
+    var imagesDirectoryURL: URL
+    var checkpointDirectoryURL: URL
+    var createdAt: Date
+
+    static func make(label: String, documentsURL: URL) throws -> ObjectCaptureDraft {
+        let cleanedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeLabel = safeFileComponent(cleanedLabel.isEmpty ? "object" : cleanedLabel)
+        let createdAt = Date()
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let timestamp = formatter.string(from: createdAt).replacingOccurrences(of: ":", with: "-")
+        let rootURL = documentsURL
+            .appendingPathComponent("ObjectCaptureDrafts", isDirectory: true)
+            .appendingPathComponent("\(timestamp)-\(safeLabel)", isDirectory: true)
+        let imagesURL = rootURL.appendingPathComponent("images", isDirectory: true)
+        let checkpointURL = rootURL.appendingPathComponent("checkpoint", isDirectory: true)
+        try FileManager.default.createDirectory(at: imagesURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: checkpointURL, withIntermediateDirectories: true)
+        return ObjectCaptureDraft(
+            label: cleanedLabel.isEmpty ? safeLabel : cleanedLabel,
+            imagesDirectoryURL: imagesURL,
+            checkpointDirectoryURL: checkpointURL,
+            createdAt: createdAt
+        )
+    }
+
+    private static func safeFileComponent(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let characters = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
+        let sanitized = String(characters).trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        return sanitized.isEmpty ? "object" : sanitized
     }
 }
 
@@ -102,6 +360,15 @@ private struct CaptureScreen: View {
             List {
                 Section {
                     StatusHeader(model: model)
+                }
+
+                if let previewCaptureSession = model.previewCaptureSession {
+                    Section {
+                        CameraPreviewView(session: previewCaptureSession)
+                            .frame(height: 260)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .listRowInsets(EdgeInsets())
                 }
 
                 Section("Permissions") {
@@ -159,6 +426,33 @@ private struct CaptureScreen: View {
                     Image(systemName: "arrow.clockwise")
                 }
             }
+        }
+    }
+}
+
+private struct CameraPreviewView: UIViewRepresentable {
+    var session: AVCaptureSession
+
+    func makeUIView(context: Context) -> PreviewSurface {
+        let view = PreviewSurface()
+        view.previewLayer.videoGravity = .resizeAspectFill
+        view.previewLayer.session = session
+        return view
+    }
+
+    func updateUIView(_ view: PreviewSurface, context: Context) {
+        if view.previewLayer.session !== session {
+            view.previewLayer.session = session
+        }
+    }
+
+    final class PreviewSurface: UIView {
+        override class var layerClass: AnyClass {
+            AVCaptureVideoPreviewLayer.self
+        }
+
+        var previewLayer: AVCaptureVideoPreviewLayer {
+            layer as! AVCaptureVideoPreviewLayer
         }
     }
 }
@@ -462,6 +756,110 @@ private extension CaptureQualityLevel {
         case .warning: .yellow
         case .bad: .red
         case .unknown: .secondary
+        }
+    }
+}
+
+private extension ObjectCaptureSession.CaptureState {
+    var title: String {
+        switch self {
+        case .initializing: "Initializing"
+        case .ready: "Ready"
+        case .detecting: "Detecting"
+        case .capturing: "Capturing"
+        case .finishing: "Finishing"
+        case .completed: "Completed"
+        case .failed: "Failed"
+        @unknown default: "Unknown"
+        }
+    }
+
+    var isInitialOrCompleted: Bool {
+        switch self {
+        case .initializing, .completed, .failed:
+            return true
+        case .ready, .detecting, .capturing, .finishing:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    var isReady: Bool {
+        if case .ready = self { return true }
+        return false
+    }
+
+    var isDetecting: Bool {
+        if case .detecting = self { return true }
+        return false
+    }
+
+    var isCapturing: Bool {
+        if case .capturing = self { return true }
+        return false
+    }
+
+    var isCompleted: Bool {
+        if case .completed = self { return true }
+        return false
+    }
+
+    var isActive: Bool {
+        switch self {
+        case .ready, .detecting, .capturing, .finishing:
+            return true
+        case .initializing, .completed, .failed:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+}
+
+private extension Set where Element == ObjectCaptureSession.Feedback {
+    var feedbackTitle: String {
+        guard !isEmpty else { return "No feedback" }
+        return map(\.title).sorted().joined(separator: ", ")
+    }
+}
+
+private extension ObjectCaptureSession.Feedback {
+    var title: String {
+        switch self {
+        case .objectTooClose: "Object too close"
+        case .objectTooFar: "Object too far"
+        case .movingTooFast: "Moving too fast"
+        case .environmentLowLight: "Low light"
+        case .environmentTooDark: "Too dark"
+        case .outOfFieldOfView: "Out of view"
+        case .objectNotFlippable: "Not flippable"
+        case .overCapturing: "Over capture"
+        case .objectNotDetected: "Object not detected"
+        @unknown default: "Unknown feedback"
+        }
+    }
+}
+
+private extension ObjectCaptureSession.Tracking {
+    var title: String {
+        switch self {
+        case .notAvailable: "Unavailable"
+        case .normal: "Normal"
+        case .limited(let reason): "Limited: \(reason.title)"
+        @unknown default: "Unknown"
+        }
+    }
+}
+
+private extension ObjectCaptureSession.Tracking.Reason {
+    var title: String {
+        switch self {
+        case .initializing: "initializing"
+        case .relocalizing: "relocalizing"
+        case .excessiveMotion: "excessive motion"
+        case .insufficientFeatures: "insufficient features"
+        @unknown default: "unknown"
         }
     }
 }

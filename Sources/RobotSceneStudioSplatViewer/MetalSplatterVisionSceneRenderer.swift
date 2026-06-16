@@ -9,9 +9,17 @@ import SwiftUI
 
 public struct MetalSplatterImmersiveScene: Codable, Hashable, Sendable {
     public var splatURL: URL
+    public var modelTransform: [Float]
+    public var spatialOverlay: MetalSplatterSpatialOverlayPayload
 
-    public init(splatURL: URL) {
+    public init(
+        splatURL: URL,
+        modelTransform: [Float] = metalSplatterIdentityMatrixPayload,
+        spatialOverlay: MetalSplatterSpatialOverlayPayload = .empty
+    ) {
         self.splatURL = splatURL
+        self.modelTransform = modelTransform
+        self.spatialOverlay = spatialOverlay
     }
 }
 
@@ -47,6 +55,9 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
     private let inFlightSemaphore = DispatchSemaphore(value: MetalSplatterViewerConstants.maxSimultaneousRenders)
 
     private var modelRenderer: (any MetalSplatterModelRendering)?
+    private var overlayRenderer: MetalSplatterSpatialOverlayRenderer?
+    private var spatialOverlay: MetalSplatterSpatialOverlayPayload = .empty
+    private var modelTransform: simd_float4x4 = matrix_identity_float4x4
     private var lastRotationUpdateTimestamp: Date?
     private var rotationRadians: Float = 0
 
@@ -60,10 +71,26 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
             fatalError("Unable to create a Metal command queue for visionOS splat rendering.")
         }
         self.commandQueue = commandQueue
+        do {
+            self.overlayRenderer = try MetalSplatterSpatialOverlayRenderer(
+                device: device,
+                colorFormat: layerRenderer.configuration.colorFormat,
+                depthFormat: layerRenderer.configuration.depthFormat
+            )
+        } catch {
+            Self.log.error("Unable to create spatial overlay renderer: \(error.localizedDescription)")
+        }
     }
 
-    public static func startRendering(_ layerRenderer: LayerRenderer, splatURL: URL?) {
+    public static func startRendering(
+        _ layerRenderer: LayerRenderer,
+        splatURL: URL?,
+        modelTransform: [Float] = metalSplatterIdentityMatrixPayload,
+        spatialOverlay: MetalSplatterSpatialOverlayPayload = .empty
+    ) {
         let renderer = MetalSplatterVisionSceneRenderer(layerRenderer)
+        renderer.modelTransform = metalSplatterMatrix(from: modelTransform)
+        renderer.spatialOverlay = spatialOverlay
         Task {
             do {
                 try await renderer.load(splatURL)
@@ -162,10 +189,28 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
             }
 
             do {
+                let splatViewports = viewports(
+                    drawable: drawable,
+                    deviceAnchor: deviceAnchor,
+                    sceneTransform: modelTransform
+                )
                 _ = try modelRenderer.render(
-                    viewports: viewports(drawable: drawable, deviceAnchor: deviceAnchor),
+                    viewports: splatViewports,
                     colorTexture: drawable.colorTextures[0],
                     colorStoreAction: .store,
+                    depthTexture: drawable.depthTextures[0],
+                    rasterizationRateMap: drawable.rasterizationRateMaps.first,
+                    renderTargetArrayLength: layerRenderer.configuration.layout == .layered ? drawable.views.count : 1,
+                    to: commandBuffer
+                )
+                try overlayRenderer?.render(
+                    payload: spatialOverlay,
+                    viewports: viewports(
+                        drawable: drawable,
+                        deviceAnchor: deviceAnchor,
+                        sceneTransform: matrix_identity_float4x4
+                    ),
+                    colorTexture: drawable.colorTextures[0],
                     depthTexture: drawable.depthTextures[0],
                     rasterizationRateMap: drawable.rasterizationRateMaps.first,
                     renderTargetArrayLength: layerRenderer.configuration.layout == .layered ? drawable.views.count : 1,
@@ -182,9 +227,13 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
         frame.endSubmission()
     }
 
-    private func viewports(drawable: LayerRenderer.Drawable, deviceAnchor: DeviceAnchor?) -> [MetalSplatterViewportDescriptor] {
+    private func viewports(
+        drawable: LayerRenderer.Drawable,
+        deviceAnchor: DeviceAnchor?,
+        sceneTransform: simd_float4x4
+    ) -> [MetalSplatterViewportDescriptor] {
         let simdDeviceAnchor = deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4
-        let modelView = metalSplatterDefaultModelViewMatrix(rotationRadians: rotationRadians)
+        let modelView = metalSplatterDefaultModelViewMatrix(rotationRadians: rotationRadians, sceneTransform: sceneTransform)
         return drawable.views.enumerated().map { index, view in
             let userViewpoint = (simdDeviceAnchor * view.transform).inverse
             let projection = drawable.computeProjection(viewIndex: index)
@@ -207,6 +256,129 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
         guard let lastRotationUpdateTimestamp else { return }
         rotationRadians += MetalSplatterViewerConstants.rotationRadiansPerSecond * Float(now.timeIntervalSince(lastRotationUpdateTimestamp))
     }
+}
+
+private final class MetalSplatterSpatialOverlayRenderer {
+    private let pipelineState: MTLRenderPipelineState
+    private let depthStencilState: MTLDepthStencilState?
+    private let device: MTLDevice
+
+    init(device: MTLDevice, colorFormat: MTLPixelFormat, depthFormat: MTLPixelFormat) throws {
+        self.device = device
+        let library = try device.makeLibrary(source: MetalSplatterSpatialOverlayShaders.lineOverlay, options: nil)
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = library.makeFunction(name: "robot_spatial_overlay_vertex")
+        descriptor.fragmentFunction = library.makeFunction(name: "robot_spatial_overlay_fragment")
+        descriptor.inputPrimitiveTopology = .line
+        descriptor.colorAttachments[0].pixelFormat = colorFormat
+        descriptor.colorAttachments[0].isBlendingEnabled = true
+        descriptor.colorAttachments[0].rgbBlendOperation = .add
+        descriptor.colorAttachments[0].alphaBlendOperation = .add
+        descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        descriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+        descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        descriptor.depthAttachmentPixelFormat = depthFormat
+        pipelineState = try device.makeRenderPipelineState(descriptor: descriptor)
+
+        let depthDescriptor = MTLDepthStencilDescriptor()
+        depthDescriptor.depthCompareFunction = .lessEqual
+        depthDescriptor.isDepthWriteEnabled = false
+        depthStencilState = device.makeDepthStencilState(descriptor: depthDescriptor)
+    }
+
+    func render(
+        payload: MetalSplatterSpatialOverlayPayload,
+        viewports: [MetalSplatterViewportDescriptor],
+        colorTexture: MTLTexture,
+        depthTexture: MTLTexture?,
+        rasterizationRateMap: MTLRasterizationRateMap?,
+        renderTargetArrayLength: Int,
+        to commandBuffer: MTLCommandBuffer
+    ) throws {
+        guard !payload.isEmpty, !viewports.isEmpty else { return }
+        let vertices = makeVertices(payload: payload)
+        guard !vertices.isEmpty else { return }
+        guard let vertexBuffer = device.makeBuffer(
+            bytes: vertices,
+            length: MemoryLayout<OverlayVertex>.stride * vertices.count
+        ) else {
+            return
+        }
+
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = colorTexture
+        descriptor.colorAttachments[0].loadAction = .load
+        descriptor.colorAttachments[0].storeAction = .store
+        if let depthTexture {
+            descriptor.depthAttachment.texture = depthTexture
+            descriptor.depthAttachment.loadAction = .load
+            descriptor.depthAttachment.storeAction = .store
+        }
+        descriptor.rasterizationRateMap = rasterizationRateMap
+        descriptor.renderTargetArrayLength = max(renderTargetArrayLength, 1)
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+            return
+        }
+        encoder.setRenderPipelineState(pipelineState)
+        if let depthStencilState {
+            encoder.setDepthStencilState(depthStencilState)
+        }
+        encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+        for (index, viewport) in viewports.enumerated() {
+            var uniforms = OverlayUniforms(
+                viewProjectionMatrix: viewport.projectionMatrix * viewport.viewMatrix,
+                renderTargetArrayIndex: UInt32(index)
+            )
+            encoder.setViewport(viewport.viewport)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 1)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: vertices.count)
+        }
+        encoder.endEncoding()
+    }
+
+    private func makeVertices(payload: MetalSplatterSpatialOverlayPayload) -> [OverlayVertex] {
+        var vertices: [OverlayVertex] = []
+        vertices.reserveCapacity(payload.lineSegments.count * 2 + payload.pointMarkers.count * 6)
+        for segment in payload.lineSegments {
+            vertices.append(OverlayVertex(position: SIMD4<Float>(segment.start, 1), color: segment.color))
+            vertices.append(OverlayVertex(position: SIMD4<Float>(segment.end, 1), color: segment.color))
+        }
+        for marker in payload.pointMarkers {
+            let radius = max(marker.radius, 0.01)
+            appendCross(center: marker.position, radius: radius, color: marker.color, to: &vertices)
+        }
+        return vertices
+    }
+
+    private func appendCross(
+        center: SIMD3<Float>,
+        radius: Float,
+        color: SIMD4<Float>,
+        to vertices: inout [OverlayVertex]
+    ) {
+        let axes = [
+            SIMD3<Float>(radius, 0, 0),
+            SIMD3<Float>(0, radius, 0),
+            SIMD3<Float>(0, 0, radius)
+        ]
+        for axis in axes {
+            vertices.append(OverlayVertex(position: SIMD4<Float>(center - axis, 1), color: color))
+            vertices.append(OverlayVertex(position: SIMD4<Float>(center + axis, 1), color: color))
+        }
+    }
+
+    private struct OverlayVertex {
+        var position: SIMD4<Float>
+        var color: SIMD4<Float>
+    }
+
+    private struct OverlayUniforms {
+        var viewProjectionMatrix: simd_float4x4
+        var renderTargetArrayIndex: UInt32
+    }
+
 }
 
 public final class MetalSplatterRendererTaskExecutor: TaskExecutor {

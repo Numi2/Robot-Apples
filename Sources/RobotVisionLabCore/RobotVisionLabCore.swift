@@ -9,6 +9,7 @@ public struct ScanSession: Codable, Equatable, Sendable {
     public var lidarFrames: [CapturedLiDARFrame]
     public var roomPlanModelURL: URL?
     public var objectCaptureAssetURLs: [URL]
+    public var objectCaptureImageSets: [ObjectCaptureImageSet]
 
     public init(
         id: String,
@@ -17,7 +18,8 @@ public struct ScanSession: Codable, Equatable, Sendable {
         rgbFrames: [CapturedRGBFrame] = [],
         lidarFrames: [CapturedLiDARFrame] = [],
         roomPlanModelURL: URL? = nil,
-        objectCaptureAssetURLs: [URL] = []
+        objectCaptureAssetURLs: [URL] = [],
+        objectCaptureImageSets: [ObjectCaptureImageSet] = []
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -26,6 +28,58 @@ public struct ScanSession: Codable, Equatable, Sendable {
         self.lidarFrames = lidarFrames
         self.roomPlanModelURL = roomPlanModelURL
         self.objectCaptureAssetURLs = objectCaptureAssetURLs
+        self.objectCaptureImageSets = objectCaptureImageSets
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case createdAt
+        case worldUnit
+        case rgbFrames
+        case lidarFrames
+        case roomPlanModelURL
+        case objectCaptureAssetURLs
+        case objectCaptureImageSets
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        worldUnit = try container.decodeIfPresent(WorldUnit.self, forKey: .worldUnit) ?? .meters
+        rgbFrames = try container.decodeIfPresent([CapturedRGBFrame].self, forKey: .rgbFrames) ?? []
+        lidarFrames = try container.decodeIfPresent([CapturedLiDARFrame].self, forKey: .lidarFrames) ?? []
+        roomPlanModelURL = try container.decodeIfPresent(URL.self, forKey: .roomPlanModelURL)
+        objectCaptureAssetURLs = try container.decodeIfPresent([URL].self, forKey: .objectCaptureAssetURLs) ?? []
+        objectCaptureImageSets = try container.decodeIfPresent([ObjectCaptureImageSet].self, forKey: .objectCaptureImageSets) ?? []
+    }
+}
+
+public struct ObjectCaptureImageSet: Codable, Equatable, Sendable {
+    public var id: String
+    public var label: String?
+    public var imagesDirectoryURL: URL
+    public var checkpointDirectoryURL: URL?
+    public var imageCount: Int
+    public var createdAt: Date
+    public var notes: String
+
+    public init(
+        id: String,
+        label: String? = nil,
+        imagesDirectoryURL: URL,
+        checkpointDirectoryURL: URL? = nil,
+        imageCount: Int,
+        createdAt: Date = Date(),
+        notes: String = ""
+    ) {
+        self.id = id
+        self.label = label
+        self.imagesDirectoryURL = imagesDirectoryURL
+        self.checkpointDirectoryURL = checkpointDirectoryURL
+        self.imageCount = imageCount
+        self.createdAt = createdAt
+        self.notes = notes
     }
 }
 

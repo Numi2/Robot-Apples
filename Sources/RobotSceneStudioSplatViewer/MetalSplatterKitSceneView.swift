@@ -6,8 +6,10 @@ import os
 import SwiftUI
 
 #if os(macOS)
+import AppKit
 private typealias PlatformViewRepresentable = NSViewRepresentable
 #else
+import UIKit
 private typealias PlatformViewRepresentable = UIViewRepresentable
 #endif
 
@@ -18,8 +20,49 @@ public struct MetalSplatterKitSceneView: PlatformViewRepresentable {
         self.splatURL = splatURL
     }
 
-    public final class Coordinator {
+    @MainActor
+    public final class Coordinator: NSObject {
         var renderer: MetalSplatterKitSceneRenderer?
+
+        #if os(iOS)
+        @objc func handlePan(_ recognizer: UIPanGestureRecognizer) {
+            guard recognizer.state == .began || recognizer.state == .changed else { return }
+            let translation = recognizer.translation(in: recognizer.view)
+            renderer?.orbit(deltaX: Float(translation.x), deltaY: Float(translation.y))
+            recognizer.setTranslation(.zero, in: recognizer.view)
+        }
+
+        @objc func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
+            guard recognizer.state == .began || recognizer.state == .changed else { return }
+            let scale = max(Float(recognizer.scale), 0.05)
+            renderer?.zoom(by: 1 / scale)
+            recognizer.scale = 1
+        }
+
+        @objc func handleDoubleTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended else { return }
+            renderer?.resetCamera()
+        }
+        #else
+        @objc func handlePan(_ recognizer: NSPanGestureRecognizer) {
+            guard recognizer.state == .began || recognizer.state == .changed else { return }
+            let translation = recognizer.translation(in: recognizer.view)
+            renderer?.orbit(deltaX: Float(translation.x), deltaY: Float(translation.y))
+            recognizer.setTranslation(.zero, in: recognizer.view)
+        }
+
+        @objc func handleMagnification(_ recognizer: NSMagnificationGestureRecognizer) {
+            guard recognizer.state == .began || recognizer.state == .changed else { return }
+            let scale = max(1 + Float(recognizer.magnification), 0.05)
+            renderer?.zoom(by: 1 / scale)
+            recognizer.magnification = 0
+        }
+
+        @objc func handleDoubleClick(_ recognizer: NSClickGestureRecognizer) {
+            guard recognizer.state == .ended else { return }
+            renderer?.resetCamera()
+        }
+        #endif
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -54,6 +97,7 @@ public struct MetalSplatterKitSceneView: PlatformViewRepresentable {
         let renderer = MetalSplatterKitSceneRenderer(view)
         coordinator.renderer = renderer
         view.delegate = renderer
+        installGestures(on: view, coordinator: coordinator)
         updateView(coordinator)
         return view
     }
@@ -68,6 +112,29 @@ public struct MetalSplatterKitSceneView: PlatformViewRepresentable {
             }
         }
     }
+
+    #if os(iOS)
+    private func installGestures(on view: MTKView, coordinator: Coordinator) {
+        view.isMultipleTouchEnabled = true
+        let pan = UIPanGestureRecognizer(target: coordinator, action: #selector(Coordinator.handlePan(_:)))
+        let pinch = UIPinchGestureRecognizer(target: coordinator, action: #selector(Coordinator.handlePinch(_:)))
+        let doubleTap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        view.addGestureRecognizer(pan)
+        view.addGestureRecognizer(pinch)
+        view.addGestureRecognizer(doubleTap)
+    }
+    #else
+    private func installGestures(on view: MTKView, coordinator: Coordinator) {
+        let pan = NSPanGestureRecognizer(target: coordinator, action: #selector(Coordinator.handlePan(_:)))
+        let magnification = NSMagnificationGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleMagnification(_:)))
+        let doubleClick = NSClickGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleDoubleClick(_:)))
+        doubleClick.numberOfClicksRequired = 2
+        view.addGestureRecognizer(pan)
+        view.addGestureRecognizer(magnification)
+        view.addGestureRecognizer(doubleClick)
+    }
+    #endif
 }
 
 @MainActor
@@ -83,6 +150,10 @@ public final class MetalSplatterKitSceneRenderer: NSObject, MTKViewDelegate {
     private var modelRenderer: (any MetalSplatterModelRendering)?
     private var lastRotationUpdateTimestamp: Date?
     private var rotationRadians: Float = 0
+    private var orbitYawRadians: Float = 0
+    private var orbitPitchRadians: Float = 0
+    private var distanceScale: Float = 1
+    private var automaticRotationEnabled = true
     private var drawableSize: CGSize = .zero
 
     public init?(_ view: MTKView) {
@@ -120,6 +191,26 @@ public final class MetalSplatterKitSceneRenderer: NSObject, MTKViewDelegate {
 
     public func recordLoadFailure(_ error: Error) {
         Self.log.error("Unable to load Gaussian splat: \(error.localizedDescription)")
+    }
+
+    public func orbit(deltaX: Float, deltaY: Float) {
+        automaticRotationEnabled = false
+        orbitYawRadians += deltaX * 0.006
+        orbitPitchRadians = min(max(orbitPitchRadians + deltaY * 0.006, -1.2), 1.2)
+    }
+
+    public func zoom(by scale: Float) {
+        automaticRotationEnabled = false
+        distanceScale = min(max(distanceScale * scale, 0.35), 4)
+    }
+
+    public func resetCamera() {
+        rotationRadians = 0
+        orbitYawRadians = 0
+        orbitPitchRadians = 0
+        distanceScale = 1
+        automaticRotationEnabled = true
+        lastRotationUpdateTimestamp = nil
     }
 
     public func draw(in view: MTKView) {
@@ -174,12 +265,18 @@ public final class MetalSplatterKitSceneRenderer: NSObject, MTKViewDelegate {
         return MetalSplatterViewportDescriptor(
             viewport: MTLViewport(originX: 0, originY: 0, width: width, height: height, znear: 0, zfar: 1),
             projectionMatrix: projection,
-            viewMatrix: metalSplatterDefaultModelViewMatrix(rotationRadians: rotationRadians),
+            viewMatrix: metalSplatterInteractiveModelViewMatrix(
+                autoRotationRadians: rotationRadians,
+                yawRadians: orbitYawRadians,
+                pitchRadians: orbitPitchRadians,
+                distanceScale: distanceScale
+            ),
             screenSize: SIMD2(x: Int(width), y: Int(height))
         )
     }
 
     private func updateRotation() {
+        guard automaticRotationEnabled else { return }
         let now = Date()
         defer { lastRotationUpdateTimestamp = now }
         guard let lastRotationUpdateTimestamp else { return }
@@ -188,4 +285,3 @@ public final class MetalSplatterKitSceneRenderer: NSObject, MTKViewDelegate {
 }
 
 #endif
-

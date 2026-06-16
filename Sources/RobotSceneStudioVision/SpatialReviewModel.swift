@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import RobotSceneStudioSplatViewer
 import RobotVisionLabCore
 import simd
 
@@ -40,6 +41,7 @@ public struct SpatialReviewState: Codable, Equatable, Sendable {
 public struct SpatialReviewSceneSummary: Codable, Equatable, Sendable {
     public var sceneID: String
     public var splatURL: URL?
+    public var splatModelTransform: [Float]
     public var frameCount: Int
     public var routePoseCount: Int
     public var navigationNodeCount: Int
@@ -52,6 +54,7 @@ public struct SpatialReviewSceneSummary: Codable, Equatable, Sendable {
     public init(
         sceneID: String,
         splatURL: URL?,
+        splatModelTransform: [Float] = SpatialReviewSceneSummary.identityMatrixPayload,
         frameCount: Int,
         routePoseCount: Int,
         navigationNodeCount: Int,
@@ -63,6 +66,7 @@ public struct SpatialReviewSceneSummary: Codable, Equatable, Sendable {
     ) {
         self.sceneID = sceneID
         self.splatURL = splatURL
+        self.splatModelTransform = splatModelTransform
         self.frameCount = frameCount
         self.routePoseCount = routePoseCount
         self.navigationNodeCount = navigationNodeCount
@@ -72,6 +76,13 @@ public struct SpatialReviewSceneSummary: Codable, Equatable, Sendable {
         self.evaluationFrameCount = evaluationFrameCount
         self.availableLayers = availableLayers
     }
+
+    public static let identityMatrixPayload: [Float] = [
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ]
 }
 
 public struct SpatialReviewOverlay: Codable, Equatable, Sendable {
@@ -256,6 +267,7 @@ public final class SpatialReviewModel {
         state.summary = SpatialReviewSceneSummary(
             sceneID: manifest.id,
             splatURL: splatURL,
+            splatModelTransform: matrixPayload(for: manifest.splatScene.alignmentTransform),
             frameCount: dataset?.frames.count ?? 0,
             routePoseCount: routeLabels.count,
             navigationNodeCount: graph?.nodes.count ?? 0,
@@ -316,6 +328,30 @@ public final class SpatialReviewModel {
             } ?? []
     }
 
+    public func immersiveOverlayPayload() -> MetalSplatterSpatialOverlayPayload {
+        guard let overlay = state.overlay else {
+            return .empty
+        }
+        var lines: [MetalSplatterSpatialOverlayLineSegment] = []
+        var points: [MetalSplatterSpatialOverlayPointMarker] = []
+        if state.enabledLayers.contains(.robotRoutes) {
+            appendRouteLines(overlay.route, to: &lines)
+        }
+        if state.enabledLayers.contains(.cameraFrustums) {
+            appendCameraFrustums(overlay.cameraFrustums, selectedFrameIndex: state.selectedFrameIndex, to: &lines)
+        }
+        if state.enabledLayers.contains(.navigationGraph) {
+            appendNavigationGraph(overlay, to: &lines, points: &points)
+        }
+        if state.enabledLayers.contains(.failureMap) {
+            appendFailureMarkers(overlay.failureMarkers, selectedFrameIndex: state.selectedFrameIndex, to: &points)
+        }
+        if state.enabledLayers.contains(.predictions) {
+            appendPredictionMarkers(overlay.frameRisks, selectedFrameIndex: state.selectedFrameIndex, to: &points)
+        }
+        return MetalSplatterSpatialOverlayPayload(lineSegments: lines, pointMarkers: points)
+    }
+
     private func decodeIfPresent<T: Decodable>(_ type: T.Type, _ url: URL, relativeTo root: URL) throws -> T? {
         let resolved = resolve(url, relativeTo: root)
         guard FileManager.default.fileExists(atPath: resolved.path) else {
@@ -339,10 +375,34 @@ public final class SpatialReviewModel {
     }
 
     private func resolve(_ url: URL, relativeTo root: URL) -> URL {
-        if url.isFileURL && url.path.hasPrefix("/") {
+        if url.isFileURL && FileManager.default.fileExists(atPath: url.path) {
             return url
         }
         return root.appendingPathComponent(url.relativePath)
+    }
+
+    private func matrixPayload(for transform: Transform3D) -> [Float] {
+        let rotation = simd_float4x4(simd_quatf(ix: Float(transform.rotation.vector.x), iy: Float(transform.rotation.vector.y), iz: Float(transform.rotation.vector.z), r: Float(transform.rotation.vector.w)))
+        let scale = simd_float4x4(diagonal: SIMD4<Float>(
+            Float(transform.scale.x),
+            Float(transform.scale.y),
+            Float(transform.scale.z),
+            1
+        ))
+        var translation = matrix_identity_float4x4
+        translation.columns.3 = SIMD4<Float>(
+            Float(transform.translation.x),
+            Float(transform.translation.y),
+            Float(transform.translation.z),
+            1
+        )
+        let matrix = translation * rotation * scale
+        return [
+            matrix.columns.0.x, matrix.columns.0.y, matrix.columns.0.z, matrix.columns.0.w,
+            matrix.columns.1.x, matrix.columns.1.y, matrix.columns.1.z, matrix.columns.1.w,
+            matrix.columns.2.x, matrix.columns.2.y, matrix.columns.2.z, matrix.columns.2.w,
+            matrix.columns.3.x, matrix.columns.3.y, matrix.columns.3.z, matrix.columns.3.w
+        ]
     }
 
     private func failureMarkerCountsBySource(_ markers: [FailureMapMarker]) -> [FailureEvidenceSource: Int] {
@@ -455,6 +515,145 @@ public final class SpatialReviewModel {
         let q = SIMD3<Double>(quaternion.x, quaternion.y, quaternion.z)
         let t = 2 * simd_cross(q, vector)
         return vector + quaternion.w * t + simd_cross(q, t)
+    }
+
+    private func appendRouteLines(
+        _ route: [SpatialReviewRoutePose],
+        to lines: inout [MetalSplatterSpatialOverlayLineSegment]
+    ) {
+        guard route.count > 1 else { return }
+        let sortedRoute = route.sorted { $0.frameIndex < $1.frameIndex }
+        for pair in zip(sortedRoute, sortedRoute.dropFirst()) {
+            lines.append(MetalSplatterSpatialOverlayLineSegment(
+                start: float3(pair.0.pose.position),
+                end: float3(pair.1.pose.position),
+                color: SIMD4<Float>(0.0, 0.75, 1.0, 0.95),
+                layer: .robotRoutes
+            ))
+        }
+    }
+
+    private func appendCameraFrustums(
+        _ frustums: [SpatialReviewCameraFrustum],
+        selectedFrameIndex: Int?,
+        to lines: inout [MetalSplatterSpatialOverlayLineSegment]
+    ) {
+        for frustum in frustums {
+            guard selectedFrameIndex == nil || selectedFrameIndex == frustum.frameIndex else { continue }
+            let origin = frustum.origin
+            let far = max(frustum.farMeters, frustum.nearMeters)
+            let center = origin + frustum.forward * far
+            let halfWidth = far * 0.34
+            let halfHeight = far * 0.22
+            let right = frustum.right * halfWidth
+            let up = frustum.up * halfHeight
+            let corners = [
+                center - right - up,
+                center + right - up,
+                center + right + up,
+                center - right + up
+            ]
+            let color = selectedFrameIndex == frustum.frameIndex
+                ? SIMD4<Float>(1.0, 1.0, 1.0, 1.0)
+                : SIMD4<Float>(0.75, 0.84, 1.0, 0.62)
+            for corner in corners {
+                appendLine(start: origin, end: corner, color: color, layer: .cameraFrustums, to: &lines)
+            }
+            for index in corners.indices {
+                appendLine(
+                    start: corners[index],
+                    end: corners[(index + 1) % corners.count],
+                    color: color,
+                    layer: .cameraFrustums,
+                    to: &lines
+                )
+            }
+        }
+    }
+
+    private func appendNavigationGraph(
+        _ overlay: SpatialReviewOverlay,
+        to lines: inout [MetalSplatterSpatialOverlayLineSegment],
+        points: inout [MetalSplatterSpatialOverlayPointMarker]
+    ) {
+        var nodesByID: [String: SIMD3<Double>] = [:]
+        for node in overlay.navigationNodes where nodesByID[node.id] == nil {
+            nodesByID[node.id] = node.position
+        }
+        for edge in overlay.navigationEdges {
+            guard let start = nodesByID[edge.from], let end = nodesByID[edge.to] else { continue }
+            appendLine(
+                start: start,
+                end: end,
+                color: SIMD4<Float>(0.08, 0.95, 0.45, 0.76),
+                layer: .navigationGraph,
+                to: &lines
+            )
+        }
+        for node in overlay.navigationNodes {
+            points.append(MetalSplatterSpatialOverlayPointMarker(
+                position: float3(node.position),
+                color: SIMD4<Float>(0.08, 1.0, 0.55, 0.95),
+                radius: 0.045,
+                layer: .navigationGraph
+            ))
+        }
+    }
+
+    private func appendFailureMarkers(
+        _ markers: [SpatialReviewFailureMarker],
+        selectedFrameIndex: Int?,
+        to points: inout [MetalSplatterSpatialOverlayPointMarker]
+    ) {
+        for marker in markers {
+            guard selectedFrameIndex == nil || marker.frameIndex == nil || marker.frameIndex == selectedFrameIndex else { continue }
+            points.append(MetalSplatterSpatialOverlayPointMarker(
+                position: float3(marker.position),
+                color: SIMD4<Float>(
+                    Float(marker.displayColor.x),
+                    Float(marker.displayColor.y),
+                    Float(marker.displayColor.z),
+                    1.0
+                ),
+                radius: Float(0.06 + min(max(marker.confidence, 0), 1) * 0.08),
+                layer: .failureMap
+            ))
+        }
+    }
+
+    private func appendPredictionMarkers(
+        _ risks: [SpatialReviewFrameRisk],
+        selectedFrameIndex: Int?,
+        to points: inout [MetalSplatterSpatialOverlayPointMarker]
+    ) {
+        for risk in risks where risk.riskScore > 0 {
+            guard selectedFrameIndex == nil || selectedFrameIndex == risk.frameIndex else { continue }
+            points.append(MetalSplatterSpatialOverlayPointMarker(
+                position: float3(risk.position),
+                color: SIMD4<Float>(1.0, 0.28, 0.82, min(1.0, Float(0.45 + risk.riskScore * 0.55))),
+                radius: Float(0.04 + min(max(risk.riskScore, 0), 1) * 0.09),
+                layer: .predictions
+            ))
+        }
+    }
+
+    private func appendLine(
+        start: SIMD3<Double>,
+        end: SIMD3<Double>,
+        color: SIMD4<Float>,
+        layer: MetalSplatterSpatialOverlayLayer,
+        to lines: inout [MetalSplatterSpatialOverlayLineSegment]
+    ) {
+        lines.append(MetalSplatterSpatialOverlayLineSegment(
+            start: float3(start),
+            end: float3(end),
+            color: color,
+            layer: layer
+        ))
+    }
+
+    private func float3(_ value: SIMD3<Double>) -> SIMD3<Float> {
+        SIMD3<Float>(Float(value.x), Float(value.y), Float(value.z))
     }
 }
 

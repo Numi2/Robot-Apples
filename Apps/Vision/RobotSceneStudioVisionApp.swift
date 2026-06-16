@@ -24,7 +24,9 @@ struct RobotSceneStudioVisionApp: App {
             CompositorLayer(configuration: MetalSplatterContentStageConfiguration()) { layerRenderer in
                 MetalSplatterVisionSceneRenderer.startRendering(
                     layerRenderer,
-                    splatURL: scene.wrappedValue?.splatURL
+                    splatURL: scene.wrappedValue?.splatURL,
+                    modelTransform: scene.wrappedValue?.modelTransform ?? metalSplatterIdentityMatrixPayload,
+                    spatialOverlay: scene.wrappedValue?.spatialOverlay ?? .empty
                 )
             }
         }
@@ -58,7 +60,11 @@ struct SpatialReviewRootView: View {
                         if let splatURL = summary.splatURL {
                             Button {
                                 Task {
-                                    switch await openImmersiveSpace(value: MetalSplatterImmersiveScene(splatURL: splatURL)) {
+                                    switch await openImmersiveSpace(value: MetalSplatterImmersiveScene(
+                                        splatURL: splatURL,
+                                        modelTransform: summary.splatModelTransform,
+                                        spatialOverlay: model.immersiveOverlayPayload()
+                                    )) {
                                     case .opened:
                                         immersiveSpaceIsOpen = true
                                     case .error, .userCancelled:
@@ -131,6 +137,14 @@ struct SpatialReviewRootView: View {
             allowsMultipleSelection: false
         ) { result in
             if let url = try? result.get().first {
+                model.openRobotSceneReportingErrors(at: url)
+            }
+        }
+        .onOpenURL { url in
+            let isRobotScenePackage = url.pathExtension.lowercased() == "robotscene"
+                || FileManager.default.fileExists(atPath: url.appendingPathComponent("robotscene.json").path)
+            let isRobotSceneManifest = url.lastPathComponent == "robotscene.json"
+            if isRobotScenePackage || isRobotSceneManifest {
                 model.openRobotSceneReportingErrors(at: url)
             }
         }

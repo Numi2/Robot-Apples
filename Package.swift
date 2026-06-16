@@ -85,6 +85,15 @@ let package = Package(
         .executableTarget(
             name: "RobotVisionLabCLI",
             dependencies: ["RobotVisionLabCore", "RobotSceneStudioVision"]
+        ),
+        .testTarget(
+            name: "RobotVisionLabCoreTests",
+            dependencies: [
+                "RobotVisionLabCore",
+                "RobotSceneStudioiPhone",
+                "RobotSceneStudioVision",
+                "RobotSceneStudioSplatViewer"
+            ]
         )
     ],
     swiftLanguageModes: [.v6]

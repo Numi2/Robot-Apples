@@ -7,6 +7,7 @@ public struct CaptureBundleManifest: Codable, Equatable, Sendable {
     public var lidarFrames: [CapturedLiDARFrame]
     public var roomPlanModelURL: URL?
     public var objectCaptureAssetURLs: [URL]
+    public var objectCaptureImageSets: [ObjectCaptureImageSet]
     public var splatTrainingManifestURL: URL
 
     public init(
@@ -16,6 +17,7 @@ public struct CaptureBundleManifest: Codable, Equatable, Sendable {
         lidarFrames: [CapturedLiDARFrame],
         roomPlanModelURL: URL?,
         objectCaptureAssetURLs: [URL],
+        objectCaptureImageSets: [ObjectCaptureImageSet] = [],
         splatTrainingManifestURL: URL
     ) {
         self.scanSession = scanSession
@@ -24,7 +26,34 @@ public struct CaptureBundleManifest: Codable, Equatable, Sendable {
         self.lidarFrames = lidarFrames
         self.roomPlanModelURL = roomPlanModelURL
         self.objectCaptureAssetURLs = objectCaptureAssetURLs
+        self.objectCaptureImageSets = objectCaptureImageSets
         self.splatTrainingManifestURL = splatTrainingManifestURL
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case scanSession
+        case capturePlan
+        case rgbFrames
+        case lidarFrames
+        case roomPlanModelURL
+        case objectCaptureAssetURLs
+        case objectCaptureImageSets
+        case splatTrainingManifestURL
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        scanSession = try container.decode(ScanSession.self, forKey: .scanSession)
+        capturePlan = try container.decodeIfPresent(CapturePlan.self, forKey: .capturePlan)
+        rgbFrames = try container.decodeIfPresent([CapturedRGBFrame].self, forKey: .rgbFrames) ?? scanSession.rgbFrames
+        lidarFrames = try container.decodeIfPresent([CapturedLiDARFrame].self, forKey: .lidarFrames) ?? scanSession.lidarFrames
+        roomPlanModelURL = try container.decodeIfPresent(URL.self, forKey: .roomPlanModelURL) ?? scanSession.roomPlanModelURL
+        objectCaptureAssetURLs = try container.decodeIfPresent([URL].self, forKey: .objectCaptureAssetURLs) ?? scanSession.objectCaptureAssetURLs
+        objectCaptureImageSets = try container.decodeIfPresent([ObjectCaptureImageSet].self, forKey: .objectCaptureImageSets) ?? scanSession.objectCaptureImageSets
+        if scanSession.objectCaptureImageSets.isEmpty, !objectCaptureImageSets.isEmpty {
+            scanSession.objectCaptureImageSets = objectCaptureImageSets
+        }
+        splatTrainingManifestURL = try container.decode(URL.self, forKey: .splatTrainingManifestURL)
     }
 }
 
@@ -190,6 +219,21 @@ public struct SplatTrainingOutput: Codable, Equatable, Sendable {
     }
 }
 
+public enum CaptureBundleExportError: Error, LocalizedError, CustomStringConvertible {
+    case missingSourceAsset(role: String, url: URL)
+
+    public var errorDescription: String? {
+        description
+    }
+
+    public var description: String {
+        switch self {
+        case .missingSourceAsset(let role, let url):
+            return "\(role) source asset is missing and cannot be packaged: \(url.path)"
+        }
+    }
+}
+
 public struct CaptureBundleExporter: Sendable {
     public init() {}
 
@@ -208,8 +252,13 @@ public struct CaptureBundleExporter: Sendable {
         try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("lidar", isDirectory: true), withIntermediateDirectories: true)
         try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("roomplan", isDirectory: true), withIntermediateDirectories: true)
         try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("object-capture", isDirectory: true), withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: outputDirectory.appendingPathComponent("object-capture/image-sets", isDirectory: true),
+            withIntermediateDirectories: true
+        )
         try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("splats", isDirectory: true), withIntermediateDirectories: true)
         let packagedScanSession = rebase(scanSession, into: outputDirectory)
+        try copyReferencedAssets(from: scanSession, to: packagedScanSession)
 
         let intrinsics = capturePlan?.rgbVideo.map {
             CameraIntrinsics(
@@ -259,6 +308,7 @@ public struct CaptureBundleExporter: Sendable {
             lidarFrames: packagedScanSession.lidarFrames,
             roomPlanModelURL: packagedScanSession.roomPlanModelURL,
             objectCaptureAssetURLs: packagedScanSession.objectCaptureAssetURLs,
+            objectCaptureImageSets: packagedScanSession.objectCaptureImageSets,
             splatTrainingManifestURL: trainingManifestURL
         )
         try JSONEncoder.robotVisionLabEncoder.encode(bundle).write(to: outputDirectory.appendingPathComponent("capture_bundle.json"))
@@ -306,13 +356,23 @@ public struct CaptureBundleExporter: Sendable {
         let structuredGeometryArtifactURLs: [(String, URL)] =
             [packagedScanSession.roomPlanModelURL.map { ("roomplan-geometry", $0) }].compactMap { $0 }
             + packagedScanSession.objectCaptureAssetURLs.map { ("object-capture-geometry", $0) }
+        let objectCaptureImageSetArtifactURLs = packagedScanSession.objectCaptureImageSets.flatMap { imageSet in
+            [
+                ("object-capture-image-set", imageSet.imagesDirectoryURL),
+                imageSet.checkpointDirectoryURL.map { ("object-capture-checkpoint", $0) }
+            ].compactMap { $0 }
+        }
         let artifactURLs: [(String, URL)] = [
+            ("rgb-directory", outputDirectory.appendingPathComponent("rgb", isDirectory: true)),
             ("frames", framesJSONLURL),
             ("motion", motionJSONLURL),
             ("session", sessionJSONURL),
             ("capture-bundle", outputDirectory.appendingPathComponent("capture_bundle.json")),
             ("splat-training-manifest", trainingManifestURL)
-        ] + [packageVideoURL.map { ("video", $0) }].compactMap { $0 } + lidarArtifactURLs + structuredGeometryArtifactURLs
+        ] + [packageVideoURL.map { ("video", $0) }].compactMap { $0 }
+            + lidarArtifactURLs
+            + structuredGeometryArtifactURLs
+            + objectCaptureImageSetArtifactURLs
         let artifacts = artifactURLs.map { tools.artifactRecord(role: $0.0, url: $0.1, packageRoot: outputDirectory) }
         let report = tools.validate(
             packageID: "\(packagedScanSession.id)-robot-capture",
@@ -380,8 +440,104 @@ public struct CaptureBundleExporter: Sendable {
                 outputDirectory
                     .appendingPathComponent("object-capture", isDirectory: true)
                     .appendingPathComponent($0.lastPathComponent)
+            },
+            objectCaptureImageSets: scanSession.objectCaptureImageSets.enumerated().map { index, imageSet in
+                let imageSetRoot = outputDirectory
+                    .appendingPathComponent("object-capture/image-sets", isDirectory: true)
+                    .appendingPathComponent(safeObjectCaptureImageSetDirectoryName(for: imageSet, index: index), isDirectory: true)
+                return ObjectCaptureImageSet(
+                    id: imageSet.id,
+                    label: imageSet.label,
+                    imagesDirectoryURL: imageSetRoot.appendingPathComponent("images", isDirectory: true),
+                    checkpointDirectoryURL: imageSet.checkpointDirectoryURL.map { _ in
+                        imageSetRoot.appendingPathComponent("checkpoint", isDirectory: true)
+                    },
+                    imageCount: imageSet.imageCount,
+                    createdAt: imageSet.createdAt,
+                    notes: imageSet.notes
+                )
             }
         )
+    }
+
+    private func copyReferencedAssets(from source: ScanSession, to destination: ScanSession) throws {
+        for (sourceFrame, destinationFrame) in zip(source.rgbFrames, destination.rgbFrames) {
+            try copyRequiredFile(from: sourceFrame.imageURL, to: destinationFrame.imageURL, role: "RGB frame")
+        }
+        for (sourceFrame, destinationFrame) in zip(source.lidarFrames, destination.lidarFrames) {
+            try copyRequiredFile(from: sourceFrame.depthURL, to: destinationFrame.depthURL, role: "LiDAR depth")
+            try copyRequiredFile(from: sourceFrame.metadataURL, to: destinationFrame.metadataURL, role: "LiDAR metadata")
+            if let sourceConfidenceURL = sourceFrame.confidenceURL, let destinationConfidenceURL = destinationFrame.confidenceURL {
+                try copyRequiredFile(from: sourceConfidenceURL, to: destinationConfidenceURL, role: "LiDAR confidence")
+            }
+        }
+        if let sourceRoomPlanURL = source.roomPlanModelURL, let destinationRoomPlanURL = destination.roomPlanModelURL {
+            try copyRequiredFile(from: sourceRoomPlanURL, to: destinationRoomPlanURL, role: "RoomPlan geometry")
+        }
+        for (sourceURL, destinationURL) in zip(source.objectCaptureAssetURLs, destination.objectCaptureAssetURLs) {
+            try copyRequiredFile(from: sourceURL, to: destinationURL, role: "Object Capture geometry")
+        }
+        for (sourceImageSet, destinationImageSet) in zip(source.objectCaptureImageSets, destination.objectCaptureImageSets) {
+            try copyRequiredDirectory(
+                from: sourceImageSet.imagesDirectoryURL,
+                to: destinationImageSet.imagesDirectoryURL,
+                role: "Object Capture image set"
+            )
+            if let sourceCheckpointURL = sourceImageSet.checkpointDirectoryURL,
+               let destinationCheckpointURL = destinationImageSet.checkpointDirectoryURL {
+                try copyRequiredDirectory(
+                    from: sourceCheckpointURL,
+                    to: destinationCheckpointURL,
+                    role: "Object Capture checkpoint"
+                )
+            }
+        }
+    }
+
+    private func copyRequiredFile(from sourceURL: URL, to destinationURL: URL, role: String) throws {
+        let fileManager = FileManager.default
+        if sourceURL.standardizedFileURL.path == destinationURL.standardizedFileURL.path {
+            guard fileManager.fileExists(atPath: destinationURL.path) else {
+                throw CaptureBundleExportError.missingSourceAsset(role: role, url: sourceURL)
+            }
+            return
+        }
+        guard fileManager.fileExists(atPath: sourceURL.path) else {
+            throw CaptureBundleExportError.missingSourceAsset(role: role, url: sourceURL)
+        }
+        try fileManager.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    private func copyRequiredDirectory(from sourceURL: URL, to destinationURL: URL, role: String) throws {
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+        if sourceURL.standardizedFileURL.path == destinationURL.standardizedFileURL.path {
+            guard fileManager.fileExists(atPath: destinationURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                throw CaptureBundleExportError.missingSourceAsset(role: role, url: sourceURL)
+            }
+            return
+        }
+        guard fileManager.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw CaptureBundleExportError.missingSourceAsset(role: role, url: sourceURL)
+        }
+        try fileManager.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    private func safeObjectCaptureImageSetDirectoryName(for imageSet: ObjectCaptureImageSet, index: Int) -> String {
+        let fallback = "object-\(index + 1)"
+        let rawName = imageSet.id.isEmpty ? fallback : imageSet.id
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let scalars = rawName.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
+        let sanitized = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        return sanitized.isEmpty ? fallback : sanitized
     }
 
     private func writeJSONLines<T: Encodable>(_ records: [T], to url: URL) throws {

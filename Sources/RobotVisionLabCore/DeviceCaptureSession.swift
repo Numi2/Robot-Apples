@@ -14,6 +14,8 @@ public struct DeviceCaptureState: Codable, Equatable, Sendable {
     public var lidarFrameCount: Int
     public var hasRoomPlanModel: Bool
     public var objectCaptureAssetCount: Int
+    public var lastTrackingQuality: TrackingQuality?
+    public var lastAmbientIntensity: Double?
     public var lastErrorDescription: String?
 
     public init(
@@ -22,6 +24,8 @@ public struct DeviceCaptureState: Codable, Equatable, Sendable {
         lidarFrameCount: Int = 0,
         hasRoomPlanModel: Bool = false,
         objectCaptureAssetCount: Int = 0,
+        lastTrackingQuality: TrackingQuality? = nil,
+        lastAmbientIntensity: Double? = nil,
         lastErrorDescription: String? = nil
     ) {
         self.phase = phase
@@ -29,6 +33,8 @@ public struct DeviceCaptureState: Codable, Equatable, Sendable {
         self.lidarFrameCount = lidarFrameCount
         self.hasRoomPlanModel = hasRoomPlanModel
         self.objectCaptureAssetCount = objectCaptureAssetCount
+        self.lastTrackingQuality = lastTrackingQuality
+        self.lastAmbientIntensity = lastAmbientIntensity
         self.lastErrorDescription = lastErrorDescription
     }
 }
@@ -37,7 +43,7 @@ public enum DeviceCaptureEvent: Equatable, Sendable {
     case start
     case pause
     case resume
-    case appendRGBFrame
+    case appendRGBFrame(TrackingQuality, Double?)
     case appendLiDARFrame
     case setRoomPlanModel
     case appendObjectCaptureAsset
@@ -62,9 +68,11 @@ public struct DeviceCaptureReducer: Sendable {
             if state.phase == .paused {
                 next.phase = .capturing
             }
-        case .appendRGBFrame:
+        case .appendRGBFrame(let trackingQuality, let ambientIntensity):
             if state.phase == .capturing {
                 next.rgbFrameCount += 1
+                next.lastTrackingQuality = trackingQuality
+                next.lastAmbientIntensity = ambientIntensity
             }
         case .appendLiDARFrame:
             if state.phase == .capturing {
@@ -95,34 +103,44 @@ public protocol DeviceCaptureSessionControlling: AnyObject {
 #if os(iOS)
 import ARKit
 import AVFoundation
+import CoreImage
 import CoreMotion
+import Darwin
 import RoomPlan
 import UIKit
 
 @available(iOS 17.0, *)
 public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionControlling, ARSessionDelegate, AVCaptureFileOutputRecordingDelegate, RoomCaptureSessionDelegate {
     public private(set) var state = DeviceCaptureState()
+    public var previewCaptureSession: AVCaptureSession {
+        captureSession
+    }
 
     private let reducer = DeviceCaptureReducer()
     private let arSession = ARSession()
     private let captureSession = AVCaptureSession()
     private let movieOutput = AVCaptureMovieFileOutput()
+    private let imageContext = CIContext(options: [.cacheIntermediates: false])
     private let motionManager = CMMotionManager()
     private let motionQueue = OperationQueue()
     private let roomCaptureSession = RoomCaptureSession()
     private var plan: CapturePlan?
     private var outputDirectory: URL?
     private var rgbFrames: [CapturedRGBFrame] = []
+    private var capturedFrameRecords: [RobotCaptureFrameRecord] = []
     private var lidarFrames: [CapturedLiDARFrame] = []
     private var roomPlanModelURL: URL?
     private var objectCaptureAssetURLs: [URL] = []
-    private var videoURL: URL?
+    private var videoSegmentURLs: [URL] = []
     private var framesJSONLURL: URL?
     private var motionJSONLURL: URL?
     private var sessionJSONURL: URL?
     private var frameRecordIndex = 0
+    private var lastRGBFrameTimestamp: TimeInterval?
     private var framesJSONLHandle: FileHandle?
     private var motionJSONLHandle: FileHandle?
+    private var movieRecordingDidFinish = true
+    private var movieRecordingError: Error?
 
     public override init() {
         super.init()
@@ -133,15 +151,21 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
 
     public func start(plan: CapturePlan, outputDirectory: URL) throws {
         try plan.validate()
+        if plan.captureModes.contains(.objectCapture) {
+            throw AppleDeviceCaptureError.objectCaptureRequiresDedicatedSession
+        }
         self.plan = plan
         self.outputDirectory = outputDirectory
         try createCaptureDirectories(at: outputDirectory)
         try openMetadataStreams(at: outputDirectory)
         frameRecordIndex = 0
+        lastRGBFrameTimestamp = nil
         rgbFrames.removeAll()
+        capturedFrameRecords.removeAll()
         lidarFrames.removeAll()
         roomPlanModelURL = nil
         objectCaptureAssetURLs.removeAll()
+        videoSegmentURLs.removeAll()
         state = reducer.reduce(state, event: .start)
 
         if plan.captureModes.contains(.rgbVideo) || plan.captureModes.contains(.lidarDepth) {
@@ -154,7 +178,9 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         if plan.captureModes.contains(.rgbVideo) {
             try startMovieCapture(plan: plan, outputDirectory: outputDirectory)
         }
-        startMotionCapture()
+        if plan.captureModes.contains(.coreMotion) {
+            startMotionCapture()
+        }
         if plan.captureModes.contains(.roomPlan) {
             roomCaptureSession.run(configuration: RoomCaptureSession.Configuration())
         }
@@ -171,14 +197,38 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
     }
 
     public func resume() {
-        guard let plan, let outputDirectory else { return }
-        try? start(plan: plan, outputDirectory: outputDirectory)
+        guard state.phase == .paused, let plan, let outputDirectory else { return }
+        if plan.captureModes.contains(.rgbVideo) || plan.captureModes.contains(.lidarDepth) {
+            let configuration = ARWorldTrackingConfiguration()
+            if plan.captureModes.contains(.lidarDepth), ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+                configuration.frameSemantics.insert(.sceneDepth)
+            }
+            arSession.run(configuration)
+        }
+        do {
+            if plan.captureModes.contains(.rgbVideo), !movieOutput.isRecording {
+                try startMovieCapture(plan: plan, outputDirectory: outputDirectory, replaceExistingPrimaryMovie: false)
+            }
+            if plan.captureModes.contains(.coreMotion) {
+                startMotionCapture()
+            }
+            if plan.captureModes.contains(.roomPlan) {
+                roomCaptureSession.run(configuration: RoomCaptureSession.Configuration())
+            }
+            state = reducer.reduce(state, event: .resume)
+        } catch {
+            state = reducer.reduce(state, event: .fail(error.localizedDescription))
+        }
     }
 
     public func finish() throws -> ScanSession {
         arSession.pause()
         if movieOutput.isRecording {
             movieOutput.stopRecording()
+            try waitForMovieRecordingToFinish()
+        }
+        if let movieRecordingError {
+            throw movieRecordingError
         }
         motionManager.stopDeviceMotionUpdates()
         roomCaptureSession.stop()
@@ -204,14 +254,31 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         let pose = Pose3D(matrix: frame.camera.transform)
         let timestamp = frame.timestamp
 
-        if plan?.captureModes.contains(.rgbVideo) == true {
-            let frameURL = videoURL ?? outputDirectory.appendingPathComponent("video.mov")
-            rgbFrames.append(CapturedRGBFrame(imageURL: frameURL, pose: pose, timestamp: timestamp))
-            writeFrameRecord(frame: frame, pose: pose, imageURL: frameURL)
-            state = reducer.reduce(state, event: .appendRGBFrame)
+        if plan?.captureModes.contains(.rgbVideo) == true, shouldWriteRGBFrame(timestamp: timestamp) {
+            do {
+                let index = frameRecordIndex
+                let frameURL = outputDirectory
+                    .appendingPathComponent("rgb", isDirectory: true)
+                    .appendingPathComponent(String(format: "frame_%06d.jpg", index))
+                try writeRGBFrameImage(frame.capturedImage, to: frameURL)
+                let record = makeFrameRecord(index: index, frame: frame, pose: pose, imageURL: frameURL)
+                rgbFrames.append(CapturedRGBFrame(imageURL: frameURL, pose: pose, timestamp: timestamp))
+                capturedFrameRecords.append(record)
+                writeJSONLine(record, to: framesJSONLHandle)
+                frameRecordIndex += 1
+                lastRGBFrameTimestamp = timestamp
+                state = reducer.reduce(
+                    state,
+                    event: .appendRGBFrame(record.trackingQuality, frame.lightEstimate.map { Double($0.ambientIntensity) })
+                )
+            } catch {
+                state = reducer.reduce(state, event: .fail(error.localizedDescription))
+            }
         }
 
-        if plan?.captureModes.contains(.lidarDepth) == true, let sceneDepth = frame.sceneDepth {
+        if plan?.captureModes.contains(.lidarDepth) == true,
+           plan?.lidar?.saveDepth != false,
+           let sceneDepth = frame.sceneDepth {
             if let lidarFrame = try? writeLiDARFrameArtifacts(
                 sceneDepth: sceneDepth,
                 frame: frame,
@@ -232,8 +299,10 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         error: Error?
     ) {
         if let error {
+            movieRecordingError = error
             state = reducer.reduce(state, event: .fail(error.localizedDescription))
         }
+        movieRecordingDidFinish = true
     }
 
     public func captureSession(_ session: RoomCaptureSession, didEndWith data: CapturedRoomData, error: Error?) {
@@ -274,7 +343,7 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let timestampMilliseconds = Int((timestamp * 1000).rounded())
         let depthURL = directory.appendingPathComponent(String(format: "depth_%06d.f32", timestampMilliseconds))
-        let confidenceURL = sceneDepth.confidenceMap.map { _ in
+        let confidenceURL = (plan?.lidar?.saveConfidence != false ? sceneDepth.confidenceMap : nil).map { _ in
             directory.appendingPathComponent(String(format: "confidence_%06d.bin", timestampMilliseconds))
         }
         let metadataURL = directory.appendingPathComponent(String(format: "depth_%06d.json", timestampMilliseconds))
@@ -293,7 +362,9 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
             intrinsics: CameraIntrinsics(matrix: frame.camera.intrinsics, resolution: frame.camera.imageResolution),
             depthURL: depthURL,
             confidenceURL: confidenceURL,
-            notes: "ARKit sceneDepth.depthMap captured as Float32 meters without PNG quantization."
+            notes: plan?.lidar?.alignToRGB == false
+                ? "ARKit sceneDepth.depthMap captured as Float32 meters in ARKit depth resolution without PNG quantization."
+                : "ARKit sceneDepth.depthMap captured as Float32 meters and indexed against the synchronized ARFrame RGB image."
         )
         try JSONEncoder.robotVisionLabEncoder.encode(metadata).write(to: metadataURL)
         return CapturedLiDARFrame(
@@ -343,7 +414,11 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         try data.write(to: url, options: .atomic)
     }
 
-    private func startMovieCapture(plan: CapturePlan, outputDirectory: URL) throws {
+    private func startMovieCapture(
+        plan: CapturePlan,
+        outputDirectory: URL,
+        replaceExistingPrimaryMovie: Bool = true
+    ) throws {
         if captureSession.isRunning {
             captureSession.stopRunning()
         }
@@ -376,13 +451,30 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
             device.unlockForConfiguration()
         }
 
-        let url = outputDirectory.appendingPathComponent("video.mov")
-        if FileManager.default.fileExists(atPath: url.path) {
+        let url = movieSegmentURL(in: outputDirectory, replaceExistingPrimaryMovie: replaceExistingPrimaryMovie)
+        if replaceExistingPrimaryMovie, FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
-        videoURL = url
+        movieRecordingDidFinish = false
+        movieRecordingError = nil
+        videoSegmentURLs.append(url)
         captureSession.startRunning()
         movieOutput.startRecording(to: url, recordingDelegate: self)
+    }
+
+    private func movieSegmentURL(in outputDirectory: URL, replaceExistingPrimaryMovie: Bool) -> URL {
+        let primaryURL = outputDirectory.appendingPathComponent("video.mov")
+        if replaceExistingPrimaryMovie || !FileManager.default.fileExists(atPath: primaryURL.path) {
+            return primaryURL
+        }
+        var index = 1
+        while true {
+            let candidate = outputDirectory.appendingPathComponent(String(format: "video_%03d.mov", index))
+            if !FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+            index += 1
+        }
     }
 
     private func sessionPreset(for resolution: Resolution?) -> AVCaptureSession.Preset {
@@ -411,18 +503,33 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         motionJSONLHandle = nil
     }
 
-    private func writeFrameRecord(frame: ARFrame, pose: Pose3D, imageURL: URL) {
+    private func shouldWriteRGBFrame(timestamp: TimeInterval) -> Bool {
+        guard let targetFPS = plan?.rgbVideo?.targetFPS, targetFPS > 0 else {
+            return true
+        }
+        guard let lastRGBFrameTimestamp else {
+            return true
+        }
+        let minimumInterval = 1.0 / Double(targetFPS)
+        return timestamp - lastRGBFrameTimestamp >= minimumInterval * 0.92
+    }
+
+    private func writeRGBFrameImage(_ pixelBuffer: CVPixelBuffer, to url: URL) throws {
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        try imageContext.writeJPEGRepresentation(of: image, to: url, colorSpace: colorSpace)
+    }
+
+    private func makeFrameRecord(index: Int, frame: ARFrame, pose: Pose3D, imageURL: URL) -> RobotCaptureFrameRecord {
         let intrinsics = CameraIntrinsics(matrix: frame.camera.intrinsics, resolution: frame.camera.imageResolution)
-        let record = RobotCaptureFrameRecord(
-            index: frameRecordIndex,
+        return RobotCaptureFrameRecord(
+            index: index,
             timestamp: frame.timestamp,
             imageURL: imageURL,
             cameraTransform: Transform3D(translation: pose.position, rotation: pose.orientation.value),
             intrinsics: intrinsics,
             trackingQuality: TrackingQuality(frame.camera.trackingState)
         )
-        frameRecordIndex += 1
-        writeJSONLine(record, to: framesJSONLHandle)
     }
 
     private func startMotionCapture() {
@@ -435,16 +542,30 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         }
     }
 
+    private func waitForMovieRecordingToFinish(timeout: TimeInterval = 20) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !movieRecordingDidFinish, Date() < deadline {
+            if Thread.isMainThread {
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+            } else {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+        if !movieRecordingDidFinish {
+            throw AppleDeviceCaptureError.movieFinalizationTimedOut
+        }
+    }
+
     private func writeSessionMetadata(to outputDirectory: URL) throws {
         let metadata = RobotCaptureSessionMetadata(
             id: outputDirectory.lastPathComponent,
             createdAt: Date(),
-            deviceModel: UIDevice.current.model,
-            operatingSystem: "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)",
-            lensDescription: "AVCaptureDevice builtInWideAngleCamera back",
+            deviceModel: currentDeviceModelDescription(),
+            operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
+            lensDescription: "AVCaptureDevice builtInWideAngleCamera back with ARFrame capturedImage JPEG frame index",
             resolution: plan?.rgbVideo?.targetResolution,
             targetFPS: plan?.rgbVideo?.targetFPS,
-            notes: "Recorded with AVFoundation video.mov, ARKit camera pose/intrinsics frames.jsonl, and Core Motion motion.jsonl."
+            notes: "Recorded with ARKit-synchronized RGB frame JPEGs, camera pose/intrinsics frames.jsonl, optional AVFoundation video segments, and optional Core Motion motion.jsonl."
         )
         try JSONEncoder.robotVisionLabEncoder.encode(metadata).write(to: outputDirectory.appendingPathComponent("session.json"))
     }
@@ -460,14 +581,17 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         let structuredGeometryArtifactURLs: [(String, URL)] =
             [roomPlanModelURL.map { ("roomplan-geometry", $0) }].compactMap { $0 }
             + objectCaptureAssetURLs.map { ("object-capture-geometry", $0) }
+        let videoArtifactURLs = videoSegmentURLs.enumerated().map { index, url in
+            (index == 0 ? "video" : "video-segment", url)
+        }
         let artifactURLs: [(String, URL)] = [
-            ("video", outputDirectory.appendingPathComponent("video.mov")),
+            ("rgb-directory", outputDirectory.appendingPathComponent("rgb", isDirectory: true)),
             ("frames", outputDirectory.appendingPathComponent("frames.jsonl")),
             ("motion", outputDirectory.appendingPathComponent("motion.jsonl")),
             ("session", outputDirectory.appendingPathComponent("session.json")),
             ("capture-bundle", outputDirectory.appendingPathComponent("capture_bundle.json")),
             ("splat-training-manifest", outputDirectory.appendingPathComponent("splat_training_manifest.json"))
-        ] + lidarArtifactURLs + structuredGeometryArtifactURLs
+        ] + videoArtifactURLs + lidarArtifactURLs + structuredGeometryArtifactURLs
         let artifacts = artifactURLs.map { tools.artifactRecord(role: $0.0, url: $0.1, packageRoot: outputDirectory) }
         let report = tools.validate(
             packageID: "\(outputDirectory.lastPathComponent)-robot-capture",
@@ -484,7 +608,7 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
             artifacts: artifacts,
             validationReportURL: reportURLs.json,
             humanReportURL: reportURLs.markdown,
-            videoURL: outputDirectory.appendingPathComponent("video.mov"),
+            videoURL: videoSegmentURLs.first,
             framesJSONLURL: outputDirectory.appendingPathComponent("frames.jsonl"),
             motionJSONLURL: outputDirectory.appendingPathComponent("motion.jsonl"),
             sessionJSONURL: outputDirectory.appendingPathComponent("session.json"),
@@ -505,28 +629,18 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         )
         let splatTrainingManifest = SplatTrainingManifest(
             id: "\(scanSession.id)-splat-training",
-            imageFrames: rgbFrames.map {
+            imageFrames: capturedFrameRecords.map {
                 SplatTrainingFrame(
                     imageURL: $0.imageURL,
-                    pose: $0.pose,
+                    pose: Pose3D(
+                        position: $0.cameraTransform.translation,
+                        orientation: $0.cameraTransform.rotation.value
+                    ),
                     timestamp: $0.timestamp,
                     calibration: SplatFrameCalibration(
-                        intrinsics: plan?.rgbVideo.map {
-                            CameraIntrinsics(
-                                width: $0.targetResolution.width,
-                                height: $0.targetResolution.height,
-                                focalLengthPixels: SIMD2(
-                                    Double($0.targetResolution.width),
-                                    Double($0.targetResolution.width)
-                                ),
-                                principalPointPixels: SIMD2(
-                                    Double($0.targetResolution.width) / 2.0,
-                                    Double($0.targetResolution.height) / 2.0
-                                )
-                            )
-                        },
-                        resolution: plan?.rgbVideo?.targetResolution,
-                        trackingQuality: .normal
+                        intrinsics: $0.intrinsics,
+                        resolution: $0.intrinsics.map { Resolution(width: $0.width, height: $0.height) } ?? plan?.rgbVideo?.targetResolution,
+                        trackingQuality: $0.trackingQuality
                     )
                 )
             },
@@ -552,6 +666,19 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
             splatTrainingManifestURL: splatTrainingManifestURL
         )
         try JSONEncoder.robotVisionLabEncoder.encode(captureBundle).write(to: outputDirectory.appendingPathComponent("capture_bundle.json"))
+    }
+
+    private func currentDeviceModelDescription() -> String {
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let identifier = withUnsafeBytes(of: &systemInfo.machine) { rawBuffer in
+            let bytes = rawBuffer.prefix { $0 != 0 }
+            return String(bytes: bytes, encoding: .utf8)
+        }
+        if let identifier, !identifier.isEmpty {
+            return identifier
+        }
+        return "iOS device"
     }
 
     private func writeJSONLine<T: Encodable>(_ value: T, to handle: FileHandle?) {
@@ -641,6 +768,8 @@ public enum AppleDeviceCaptureError: Error, LocalizedError {
     case cannotAddVideoInput
     case cannotAddMovieOutput
     case missingPixelBufferBaseAddress
+    case movieFinalizationTimedOut
+    case objectCaptureRequiresDedicatedSession
 
     public var errorDescription: String? {
         switch self {
@@ -652,6 +781,10 @@ public enum AppleDeviceCaptureError: Error, LocalizedError {
             "AVCaptureSession could not add AVCaptureMovieFileOutput."
         case .missingPixelBufferBaseAddress:
             "ARKit LiDAR pixel buffer did not expose a readable base address."
+        case .movieFinalizationTimedOut:
+            "AVFoundation movie recording did not finish writing before package finalization."
+        case .objectCaptureRequiresDedicatedSession:
+            "Object Capture uses the dedicated iPhone Object Capture session. Record RGB/ARKit/LiDAR first, then attach object image sets to the selected package."
         }
     }
 }

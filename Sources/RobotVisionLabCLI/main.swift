@@ -29,7 +29,7 @@ extension SplatTrainingCLIError: LocalizedError {
 }
 
 struct RobotVisionLabCLI {
-    static func main() throws {
+    static func main() async throws {
         if let packageURL = parseValidationPackageURL() {
             try validatePackage(at: packageURL)
             return
@@ -41,14 +41,20 @@ struct RobotVisionLabCLI {
 
         let outputDirectory = try parseOutputDirectory()
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--reconstruct-object-capture"), parseRobotCaptureImportURL() == nil {
+            throw SplatTrainingCLIError.missingRequiredInput("--reconstruct-object-capture requires --import-robotcapture <package.robotcapture>.")
+        }
         if CommandLine.arguments.contains("--render-preview") || CommandLine.arguments.contains("--render-dev-preview") || CommandLine.arguments.contains("--render-splat-points") {
             throw SplatTrainingCLIError.missingRequiredInput("Preview and point-projection render paths were removed from product CLI. Use --render-apple-native for native Metal Gaussian splat rendering.")
         }
 
         if CommandLine.arguments.contains("--export-demo-capture") {
             let captureURL = outputDirectory.appendingPathComponent("CaptureBundle", isDirectory: true)
+            let sourceRoot = try writeDemoCaptureSourceAssets(
+                outputDirectory: outputDirectory.appendingPathComponent("DemoCaptureSource", isDirectory: true)
+            )
             _ = try CaptureBundleExporter().writeBundle(
-                scanSession: demoScanSession(),
+                scanSession: demoScanSession(sourceRoot: sourceRoot),
                 capturePlan: demoCapturePlan(),
                 to: captureURL
             )
@@ -73,6 +79,9 @@ struct RobotVisionLabCLI {
             print("Imported robot capture package \(report.manifestID) with \(report.frameCount) frame records")
             print("Wrote robot capture import report to \(reportURL.path)")
             print("Prepared capture route with \(preparation.report.routeKeyframeCount) keyframes")
+            if CommandLine.arguments.contains("--reconstruct-object-capture") {
+                try await reconstructObjectCaptureImageSets(importedCapture: imported, outputDirectory: outputDirectory)
+            }
         }
         if CommandLine.arguments.contains("--plan-splat-training") {
             let reportURL = outputDirectory.appendingPathComponent("splat_training_report.json")
@@ -183,6 +192,12 @@ struct RobotVisionLabCLI {
             try runModelEvaluation(manifest: manifest, outputDirectory: outputDirectory)
         }
         if CommandLine.arguments.contains("--export-robotscene") {
+            let readiness = NativeRenderProductValidator().validate(manifest)
+            let readinessURL = outputDirectory.appendingPathComponent("robot_scene_export_readiness.json")
+            try JSONEncoder.robotVisionLabEncoder.encode(readiness).write(to: readinessURL)
+            guard readiness.isReady else {
+                throw SplatTrainingCLIError.missingRequiredInput("Native render products are not ready for .robotscene export. Render with --render-apple-native first and inspect \(readinessURL.path).")
+            }
             let packageURL = outputDirectory.appendingPathComponent("Project.robotscene", isDirectory: true)
             let evaluationURL = outputDirectory.appendingPathComponent("evaluation_report.json")
             _ = try RobotScenePackageExporter().writeRobotScenePackage(
@@ -434,6 +449,33 @@ struct RobotVisionLabCLI {
                 print("Highest risk frame \(highestRisk.frameIndex): score \(String(format: "%.3f", highestRisk.riskScore)), \(highestRisk.summary)")
             }
         }
+    }
+
+    private static func reconstructObjectCaptureImageSets(
+        importedCapture: RobotCaptureImport,
+        outputDirectory: URL
+    ) async throws {
+        let reconstructionDirectory = outputDirectory.appendingPathComponent("ObjectCaptureReconstruction", isDirectory: true)
+        let requests = ObjectCaptureReconstructionPlanner().makeRequests(
+            for: importedCapture,
+            outputDirectory: reconstructionDirectory
+        )
+        guard !requests.isEmpty else {
+            print("No Object Capture image sets found in the imported package")
+            return
+        }
+
+        var reports: [ObjectCaptureReconstructionReport] = []
+        for request in requests {
+            let label = request.imageSet.label ?? request.imageSet.id
+            print("Reconstructing Object Capture image set \(label) to \(request.outputURL.path)")
+            let report = try await ObjectCaptureReconstructor().reconstruct(request)
+            reports.append(report)
+        }
+
+        let reportURL = outputDirectory.appendingPathComponent("object_capture_reconstruction_report.json")
+        try JSONEncoder.robotVisionLabEncoder.encode(reports).write(to: reportURL)
+        print("Wrote \(reports.count) Object Capture reconstruction report(s) to \(reportURL.path)")
     }
 
     private static func captureRouteIfRequested(target: NavigationTarget) throws -> RobotPath? {
@@ -881,6 +923,10 @@ struct RobotVisionLabCLI {
 
     private static func writeDemoSplatTrainingManifest(outputDirectory: URL) throws -> URL {
         let capturePlan = demoCapturePlan()
+        let sourceRoot = try writeDemoCaptureSourceAssets(
+            outputDirectory: outputDirectory.appendingPathComponent("DemoCaptureSource", isDirectory: true)
+        )
+        let demoSession = demoScanSession(sourceRoot: sourceRoot)
         let calibration = capturePlan.rgbVideo.map {
             SplatFrameCalibration(
                 intrinsics: CameraIntrinsics.fromHorizontalFOV(
@@ -894,15 +940,12 @@ struct RobotVisionLabCLI {
         }
         let manifest = SplatTrainingManifest(
             id: "demo-room-scan-splat-training",
-            imageFrames: demoScanSession().rgbFrames.map {
+            imageFrames: demoSession.rgbFrames.map {
                 SplatTrainingFrame(imageURL: $0.imageURL, pose: $0.pose, timestamp: $0.timestamp, calibration: calibration)
             },
-            lidarFrames: demoScanSession().lidarFrames,
-            roomPlanGeometryURL: URL(fileURLWithPath: "CaptureBundle/roomplan/room.usdz"),
-            objectGeometryURLs: [
-                URL(fileURLWithPath: "CaptureBundle/object-capture/chair.usdz"),
-                URL(fileURLWithPath: "CaptureBundle/object-capture/table.usdz")
-            ],
+            lidarFrames: demoSession.lidarFrames,
+            roomPlanGeometryURL: nil,
+            objectGeometryURLs: [],
             expectedOutput: SplatTrainingOutput(
                 targetURL: outputDirectory.appendingPathComponent("splats/demo-room-scan.ply")
             )
@@ -915,55 +958,105 @@ struct RobotVisionLabCLI {
     private static func demoCapturePlan() -> CapturePlan {
         CapturePlan(
             id: "demo-iphone-lidar-room-capture",
-            captureModes: [.roomPlan, .rgbVideo, .lidarDepth, .objectCapture],
-            roomPlan: RoomPlanOptions(),
+            captureModes: [.rgbVideo, .lidarDepth, .objectCapture],
             objectCapture: ObjectCaptureOptions(objectLabels: ["chair", "table", "charging_dock"]),
             rgbVideo: RGBVideoOptions(targetFPS: 30, targetResolution: .hd1280x720),
             lidar: LiDAROptions()
         )
     }
 
-    private static func demoScanSession() -> ScanSession {
+    private static func demoScanSession(sourceRoot: URL) -> ScanSession {
         ScanSession(
             id: "demo-room-scan",
             createdAt: Date(timeIntervalSince1970: 1_800_000_000),
             rgbFrames: [
                 CapturedRGBFrame(
-                    imageURL: URL(fileURLWithPath: "CaptureBundle/rgb/frame_000000.heic"),
+                    imageURL: sourceRoot.appendingPathComponent("rgb/frame_000000.png"),
                     pose: Pose3D(position: SIMD3<Double>(-2, 1.4, 1.5)),
                     timestamp: 0
                 ),
                 CapturedRGBFrame(
-                    imageURL: URL(fileURLWithPath: "CaptureBundle/rgb/frame_000001.heic"),
+                    imageURL: sourceRoot.appendingPathComponent("rgb/frame_000001.png"),
                     pose: Pose3D(position: SIMD3<Double>(-1, 1.4, 0.9)),
                     timestamp: 0.033
                 ),
                 CapturedRGBFrame(
-                    imageURL: URL(fileURLWithPath: "CaptureBundle/rgb/frame_000002.heic"),
+                    imageURL: sourceRoot.appendingPathComponent("rgb/frame_000002.png"),
                     pose: Pose3D(position: SIMD3<Double>(0, 1.4, 0.2)),
                     timestamp: 0.066
                 )
             ],
             lidarFrames: [
                 CapturedLiDARFrame(
-                    depthURL: URL(fileURLWithPath: "CaptureBundle/lidar/depth_000000.f32"),
-                    confidenceURL: URL(fileURLWithPath: "CaptureBundle/lidar/confidence_000000.bin"),
-                    metadataURL: URL(fileURLWithPath: "CaptureBundle/lidar/depth_000000.json"),
+                    depthURL: sourceRoot.appendingPathComponent("lidar/depth_000000.f32"),
+                    confidenceURL: sourceRoot.appendingPathComponent("lidar/confidence_000000.bin"),
+                    metadataURL: sourceRoot.appendingPathComponent("lidar/depth_000000.json"),
                     pose: Pose3D(position: SIMD3<Double>(-2, 1.4, 1.5)),
                     timestamp: 0
                 )
             ],
-            roomPlanModelURL: URL(fileURLWithPath: "CaptureBundle/roomplan/room.usdz"),
-            objectCaptureAssetURLs: [
-                URL(fileURLWithPath: "CaptureBundle/object-capture/chair.usdz"),
-                URL(fileURLWithPath: "CaptureBundle/object-capture/table.usdz")
+            roomPlanModelURL: nil,
+            objectCaptureImageSets: [
+                ObjectCaptureImageSet(
+                    id: "chair",
+                    label: "chair",
+                    imagesDirectoryURL: sourceRoot.appendingPathComponent("object-capture/chair/images", isDirectory: true),
+                    imageCount: 2,
+                    createdAt: Date(timeIntervalSince1970: 1_800_000_000)
+                ),
+                ObjectCaptureImageSet(
+                    id: "table",
+                    label: "table",
+                    imagesDirectoryURL: sourceRoot.appendingPathComponent("object-capture/table/images", isDirectory: true),
+                    imageCount: 2,
+                    createdAt: Date(timeIntervalSince1970: 1_800_000_000)
+                )
             ]
         )
+    }
+
+    private static func writeDemoCaptureSourceAssets(outputDirectory: URL) throws -> URL {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("rgb", isDirectory: true), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("lidar", isDirectory: true), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("object-capture/chair/images", isDirectory: true), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("object-capture/table/images", isDirectory: true), withIntermediateDirectories: true)
+
+        let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR42mP8z8BQDwAFgwJ/lwOfGAAAAABJRU5ErkJggg==") ?? Data()
+        for index in 0..<3 {
+            try png.write(to: outputDirectory.appendingPathComponent(String(format: "rgb/frame_%06d.png", index)))
+        }
+
+        var depth = Float32(1.25)
+        let depthURL = outputDirectory.appendingPathComponent("lidar/depth_000000.f32")
+        let confidenceURL = outputDirectory.appendingPathComponent("lidar/confidence_000000.bin")
+        let metadataURL = outputDirectory.appendingPathComponent("lidar/depth_000000.json")
+        try Data(bytes: &depth, count: MemoryLayout<Float32>.stride).write(to: depthURL)
+        try Data([2]).write(to: confidenceURL)
+        let metadata = CapturedLiDARDepthMetadata(
+            timestamp: 0,
+            width: 1,
+            height: 1,
+            confidenceFormat: "uint8-arkit-confidence-row-major",
+            cameraPose: Pose3D(position: SIMD3<Double>(-2, 1.4, 1.5)),
+            intrinsics: .fromHorizontalFOV(width: 1280, height: 720, horizontalFOVDegrees: 82),
+            depthURL: depthURL,
+            confidenceURL: confidenceURL,
+            notes: "Explicit CLI fixture depth sample."
+        )
+        try JSONEncoder.robotVisionLabEncoder.encode(metadata).write(to: metadataURL)
+
+        for objectID in ["chair", "table"] {
+            for index in 0..<2 {
+                try png.write(to: outputDirectory.appendingPathComponent(String(format: "object-capture/%@/images/IMG_%04d.jpg", objectID, index)))
+            }
+        }
+        return outputDirectory
     }
 }
 
 do {
-    try RobotVisionLabCLI.main()
+    try await RobotVisionLabCLI.main()
 } catch {
     let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
     FileHandle.standardError.write(Data("error: \(message)\n".utf8))
