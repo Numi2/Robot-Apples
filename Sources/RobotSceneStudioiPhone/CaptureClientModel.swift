@@ -308,6 +308,10 @@ public final class CaptureClientModel {
         state.latestMessage = "Selected \(url.lastPathComponent)."
     }
 
+    public func recordFileImportError(_ context: String, error: Error) {
+        state.latestMessage = "\(context): \(error.localizedDescription)"
+    }
+
     @discardableResult
     public func attachObjectCaptureImageSet(
         label: String,

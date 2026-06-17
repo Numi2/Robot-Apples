@@ -24,6 +24,7 @@ struct RobotSceneStudioVisionApp: App {
             CompositorLayer(configuration: MetalSplatterContentStageConfiguration()) { layerRenderer in
                 MetalSplatterVisionSceneRenderer.startRendering(
                     layerRenderer,
+                    sessionID: scene.wrappedValue?.sessionID ?? UUID().uuidString,
                     splatURL: scene.wrappedValue?.splatURL,
                     modelTransform: scene.wrappedValue?.modelTransform ?? metalSplatterIdentityMatrixPayload,
                     spatialOverlay: scene.wrappedValue?.spatialOverlay ?? .empty
@@ -40,6 +41,9 @@ struct SpatialReviewRootView: View {
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @State private var isOpeningRobotScene = false
     @State private var immersiveSpaceIsOpen = false
+    @State private var splatSessionID = UUID().uuidString
+    @State private var splatControls = MetalSplatterImmersiveSceneControls.default
+    @State private var splatStatus = MetalSplatterImmersiveSceneStatus()
 
     var body: some View {
         NavigationStack {
@@ -60,27 +64,46 @@ struct SpatialReviewRootView: View {
                         if let splatURL = summary.splatURL {
                             Button {
                                 Task {
-                                    switch await openImmersiveSpace(value: MetalSplatterImmersiveScene(
-                                        splatURL: splatURL,
-                                        modelTransform: summary.splatModelTransform,
-                                        spatialOverlay: model.immersiveOverlayPayload()
-                                    )) {
-                                    case .opened:
-                                        immersiveSpaceIsOpen = true
-                                    case .error, .userCancelled:
-                                        break
-                                    @unknown default:
-                                        break
-                                    }
+                                    await openSplatSpace(splatURL: splatURL, summary: summary)
                                 }
                             } label: {
-                                Label("Open Splat Space", systemImage: "visionpro")
+                                Label(immersiveSpaceIsOpen ? "Reopen Splat Space" : "Open Splat Space", systemImage: "visionpro")
                             }
-                            .disabled(immersiveSpaceIsOpen)
                         }
                     } else {
                         Text("Open a Robot Scene package exported from the Mac workstation.")
                             .foregroundStyle(.secondary)
+                    }
+                }
+
+                if model.state.summary?.splatURL != nil {
+                    Section("Splat Space") {
+                        LabeledContent("Status", value: splatStatus.message)
+                        Toggle("Auto Rotate", isOn: Binding(
+                            get: { splatControls.automaticRotationEnabled },
+                            set: { splatControls.automaticRotationEnabled = $0 }
+                        ))
+                        SliderRow(title: "Scale", value: floatBinding(\.scale), range: 0.1...8, format: "%.2fx")
+                        SliderRow(title: "Yaw", value: floatBinding(\.yawRadians), range: -Float.pi...Float.pi, format: "%.2f rad")
+                        SliderRow(title: "Pitch", value: floatBinding(\.pitchRadians), range: -Float.pi / 2...Float.pi / 2, format: "%.2f rad")
+                        SliderRow(title: "Roll", value: floatBinding(\.rollRadians), range: -Float.pi...Float.pi, format: "%.2f rad")
+                        SliderRow(title: "Offset X", value: floatBinding(\.recenterOffsetX), range: -2...2, format: "%.2fm")
+                        SliderRow(title: "Offset Y", value: floatBinding(\.recenterOffsetY), range: -2...2, format: "%.2fm")
+                        SliderRow(title: "Offset Z", value: floatBinding(\.recenterOffsetZ), range: -2...2, format: "%.2fm")
+                        HStack {
+                            Button {
+                                splatControls.recenterOffsetX = 0
+                                splatControls.recenterOffsetY = 0
+                                splatControls.recenterOffsetZ = 0
+                            } label: {
+                                Label("Recenter", systemImage: "scope")
+                            }
+                            Button {
+                                splatControls = .default
+                            } label: {
+                                Label("Reset", systemImage: "arrow.counterclockwise")
+                            }
+                        }
                     }
                 }
 
@@ -131,13 +154,31 @@ struct SpatialReviewRootView: View {
             }
             .navigationTitle("Robot Scene Review")
         }
+        .task {
+            while !Task.isCancelled {
+                splatStatus = MetalSplatterVisionSceneSessionStore.shared.status(for: splatSessionID)
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+        .onChange(of: splatControls) { _, controls in
+            MetalSplatterVisionSceneSessionStore.shared.setControls(controls, for: splatSessionID)
+        }
+        .onChange(of: model.state.summary?.sceneID) { _, _ in
+            splatControls = .default
+            splatSessionID = UUID().uuidString
+            immersiveSpaceIsOpen = false
+            splatStatus = MetalSplatterImmersiveSceneStatus()
+        }
         .fileImporter(
             isPresented: $isOpeningRobotScene,
             allowedContentTypes: [.robotScenePackage, .json],
             allowsMultipleSelection: false
         ) { result in
-            if let url = try? result.get().first {
+            do {
+                guard let url = try result.get().first else { return }
                 model.openRobotSceneReportingErrors(at: url)
+            } catch {
+                model.recordDiagnostic("Unable to open Robot Scene package: \(error.localizedDescription)")
             }
         }
         .onOpenURL { url in
@@ -154,6 +195,47 @@ struct SpatialReviewRootView: View {
         Binding(
             get: { model.state.enabledLayers.contains(layer) },
             set: { model.setLayer(layer, isEnabled: $0) }
+        )
+    }
+
+    private func openSplatSpace(splatURL: URL, summary: SpatialReviewSceneSummary) async {
+        if immersiveSpaceIsOpen {
+            await dismissImmersiveSpace()
+            immersiveSpaceIsOpen = false
+        }
+        MetalSplatterVisionSceneSessionStore.shared.setControls(splatControls, for: splatSessionID)
+        MetalSplatterVisionSceneSessionStore.shared.setStatus(
+            MetalSplatterImmersiveSceneStatus(kind: .loading, message: "Opening \(splatURL.lastPathComponent)."),
+            for: splatSessionID
+        )
+        switch await openImmersiveSpace(value: MetalSplatterImmersiveScene(
+            sessionID: splatSessionID,
+            splatURL: splatURL,
+            modelTransform: summary.splatModelTransform,
+            spatialOverlay: model.immersiveOverlayPayload()
+        )) {
+        case .opened:
+            immersiveSpaceIsOpen = true
+        case .error:
+            model.recordDiagnostic("Unable to open the immersive splat space.")
+            MetalSplatterVisionSceneSessionStore.shared.setStatus(
+                MetalSplatterImmersiveSceneStatus(kind: .failed, message: "Unable to open the immersive splat space."),
+                for: splatSessionID
+            )
+        case .userCancelled:
+            MetalSplatterVisionSceneSessionStore.shared.setStatus(
+                MetalSplatterImmersiveSceneStatus(kind: .idle, message: "Splat space opening was cancelled."),
+                for: splatSessionID
+            )
+        @unknown default:
+            model.recordDiagnostic("The immersive splat space returned an unknown open result.")
+        }
+    }
+
+    private func floatBinding(_ keyPath: WritableKeyPath<MetalSplatterImmersiveSceneControls, Float>) -> Binding<Float> {
+        Binding(
+            get: { splatControls[keyPath: keyPath] },
+            set: { splatControls[keyPath: keyPath] = $0 }
         )
     }
 
@@ -176,6 +258,26 @@ struct SpatialReviewRootView: View {
         case .navigationGraph: "point.3.connected.trianglepath.dotted"
         case .failureMap: "exclamationmark.triangle"
         case .predictions: "brain"
+        }
+    }
+}
+
+private struct SliderRow: View {
+    var title: String
+    @Binding var value: Float
+    var range: ClosedRange<Float>
+    var format: String
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            LabeledContent(title, value: String(format: format, value))
+            Slider(
+                value: Binding(
+                    get: { Double(value) },
+                    set: { value = Float($0) }
+                ),
+                in: Double(range.lowerBound)...Double(range.upperBound)
+            )
         }
     }
 }

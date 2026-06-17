@@ -206,6 +206,10 @@ public final class WorkstationModel {
         appendDiagnostic("Workspace set to \(url.path).")
     }
 
+    public func recordFileImportError(_ context: String, error: Error) {
+        appendDiagnostic("\(context): \(error.localizedDescription)")
+    }
+
     public func importCapture(at packageURL: URL) {
         perform(stage: .importingCapture) {
             try FileManager.default.createDirectory(at: state.workspaceURL, withIntermediateDirectories: true)

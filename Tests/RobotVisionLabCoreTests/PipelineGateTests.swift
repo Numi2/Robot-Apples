@@ -4,6 +4,26 @@ import XCTest
 import simd
 
 final class PipelineGateTests: XCTestCase {
+    func testGeneratedRobotPathFacesNavigationTarget() throws {
+        let target = NavigationTarget(label: "dock", position: SIMD3<Double>(0, 0, -2))
+        let path = RobotPathGenerator().generate(RobotPathGenerationRequest(
+            strategy: .lawnmower(rows: 1, columns: 3),
+            bounds: AxisAlignedBounds(
+                minimum: SIMD3<Double>(-1, 0, 0),
+                maximum: SIMD3<Double>(1, 0, 0)
+            ),
+            robotHeightMeters: 0,
+            navigationTarget: target
+        ))
+
+        XCTAssertEqual(path.keyframes.count, 3)
+        for keyframe in path.keyframes {
+            let forward = keyframe.pose.orientation.value.act(SIMD3<Double>(0, 0, -1))
+            let expected = simd_normalize(target.position - keyframe.pose.position)
+            XCTAssertGreaterThan(simd_dot(forward, expected), 0.99)
+        }
+    }
+
     func testImporterRejectsVideoMovAsTrainingFrameImage() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -293,6 +293,11 @@ public final class SpatialReviewModel {
         }
     }
 
+    public func recordDiagnostic(_ message: String) {
+        guard !message.isEmpty else { return }
+        state.diagnostics.append(message)
+    }
+
     public func setLayer(_ layer: SpatialReviewLayer, isEnabled: Bool) {
         if isEnabled {
             state.enabledLayers.insert(layer)

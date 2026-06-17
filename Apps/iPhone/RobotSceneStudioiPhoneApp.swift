@@ -53,8 +53,11 @@ struct CaptureClientRootView: View {
             allowedContentTypes: [.gaussianSplatPLY, .gaussianSplatAsset, .gaussianSplatSPZ],
             allowsMultipleSelection: false
         ) { result in
-            if let url = try? result.get().first {
+            do {
+                guard let url = try result.get().first else { return }
                 exploratorySplatURL = url
+            } catch {
+                model.recordFileImportError("Unable to import Gaussian splat", error: error)
             }
         }
     }

@@ -63,7 +63,10 @@ public struct RobotPathGenerator: Sendable {
                 keyframes.append(
                     RobotPathKeyframe(
                         timestamp: Double(index) * request.frameInterval,
-                        pose: Pose3D(position: SIMD3<Double>(x, request.robotHeightMeters, zValues[row])),
+                        pose: pose(
+                            at: SIMD3<Double>(x, request.robotHeightMeters, zValues[row]),
+                            request: request
+                        ),
                         navigationTarget: request.navigationTarget
                     )
                 )
@@ -96,7 +99,7 @@ public struct RobotPathGenerator: Sendable {
             keyframes.append(
                 RobotPathKeyframe(
                     timestamp: Double(index) * request.frameInterval,
-                    pose: Pose3D(position: position),
+                    pose: pose(at: position, request: request),
                     navigationTarget: request.navigationTarget
                 )
             )
@@ -113,6 +116,25 @@ public struct RobotPathGenerator: Sendable {
             let t = Double(index) / Double(count - 1)
             return start + ((end - start) * t)
         }
+    }
+
+    private func pose(at position: SIMD3<Double>, request: RobotPathGenerationRequest) -> Pose3D {
+        let target = request.navigationTarget?.position ?? SIMD3<Double>(
+            (request.bounds.minimum.x + request.bounds.maximum.x) / 2.0,
+            (request.bounds.minimum.y + request.bounds.maximum.y) / 2.0,
+            (request.bounds.minimum.z + request.bounds.maximum.z) / 2.0
+        )
+        return Pose3D(position: position, orientation: cameraOrientation(from: position, to: target))
+    }
+
+    private func cameraOrientation(from position: SIMD3<Double>, to target: SIMD3<Double>) -> simd_quatd {
+        var direction = target - position
+        if simd_length_squared(direction) < 0.0001 {
+            direction = SIMD3<Double>(0, 0, -1)
+        } else {
+            direction = simd_normalize(direction)
+        }
+        return simd_quatd(from: SIMD3<Double>(0, 0, -1), to: direction)
     }
 }
 

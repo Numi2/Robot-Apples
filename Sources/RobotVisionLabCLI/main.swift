@@ -578,7 +578,11 @@ struct RobotVisionLabCLI {
         guard let mode = stringValue(for: "--path-mode") else {
             return nil
         }
-        let bounds = insetXZBounds(scene.bounds, by: doubleValue(for: "--path-inset", default: 0.25))
+        let bounds = cameraPathBounds(
+            for: scene.bounds,
+            inset: doubleValue(for: "--path-inset", default: 0.25),
+            viewingDistance: doubleValue(for: "--path-viewing-distance", default: 1.5)
+        )
         let request: RobotPathGenerationRequest
         switch mode {
         case "lawnmower":
@@ -619,6 +623,27 @@ struct RobotVisionLabCLI {
             minimum: SIMD3<Double>(minX, bounds.minimum.y, minZ),
             maximum: SIMD3<Double>(maxX, bounds.maximum.y, maxZ)
         )
+    }
+
+    private static func cameraPathBounds(
+        for bounds: AxisAlignedBounds,
+        inset: Double,
+        viewingDistance: Double
+    ) -> AxisAlignedBounds {
+        var pathBounds = insetXZBounds(bounds, by: inset)
+        let span = bounds.maximum - bounds.minimum
+        let safeViewingDistance = max(viewingDistance, 0.25)
+        if span.z < 0.35 {
+            let z = bounds.maximum.z + safeViewingDistance
+            pathBounds.minimum.z = z
+            pathBounds.maximum.z = z
+        }
+        if span.x < 0.35 {
+            let x = bounds.maximum.x + safeViewingDistance
+            pathBounds.minimum.x = x
+            pathBounds.maximum.x = x
+        }
+        return pathBounds
     }
 
     private static func parseAugmentationSeed() -> UInt64 {

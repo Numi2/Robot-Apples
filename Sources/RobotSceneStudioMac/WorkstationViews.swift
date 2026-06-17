@@ -62,8 +62,11 @@ public struct WorkstationRootView: View {
             allowedContentTypes: [.robotCapturePackage, .json],
             allowsMultipleSelection: false
         ) { result in
-            if let url = try? result.get().first {
+            do {
+                guard let url = try result.get().first else { return }
                 model.importCapture(at: url)
+            } catch {
+                model.recordFileImportError("Unable to import capture package", error: error)
             }
         }
         .fileImporter(
@@ -71,8 +74,11 @@ public struct WorkstationRootView: View {
             allowedContentTypes: [.gaussianSplatPLY, .gaussianSplatAsset, .gaussianSplatSPZ],
             allowsMultipleSelection: false
         ) { result in
-            if let url = try? result.get().first {
+            do {
+                guard let url = try result.get().first else { return }
                 model.linkSplat(at: url)
+            } catch {
+                model.recordFileImportError("Unable to import Gaussian splat", error: error)
             }
         }
         .fileImporter(
@@ -80,8 +86,11 @@ public struct WorkstationRootView: View {
             allowedContentTypes: [.robotScenePackage, .json],
             allowsMultipleSelection: false
         ) { result in
-            if let url = try? result.get().first {
+            do {
+                guard let url = try result.get().first else { return }
                 model.openRobotScene(at: url)
+            } catch {
+                model.recordFileImportError("Unable to open Robot Scene package", error: error)
             }
         }
         .fileImporter(
@@ -89,8 +98,11 @@ public struct WorkstationRootView: View {
             allowedContentTypes: [.robotCapturePackage, .json],
             allowsMultipleSelection: false
         ) { result in
-            if let url = try? result.get().first {
+            do {
+                guard let url = try result.get().first else { return }
                 model.importFinderCopiedCapture(at: url)
+            } catch {
+                model.recordFileImportError("Unable to import Finder capture", error: error)
             }
         }
         .onOpenURL { url in

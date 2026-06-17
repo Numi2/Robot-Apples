@@ -8,18 +8,119 @@ import simd
 import SwiftUI
 
 public struct MetalSplatterImmersiveScene: Codable, Hashable, Sendable {
+    public var sessionID: String
     public var splatURL: URL
     public var modelTransform: [Float]
     public var spatialOverlay: MetalSplatterSpatialOverlayPayload
 
     public init(
+        sessionID: String = UUID().uuidString,
         splatURL: URL,
         modelTransform: [Float] = metalSplatterIdentityMatrixPayload,
         spatialOverlay: MetalSplatterSpatialOverlayPayload = .empty
     ) {
+        self.sessionID = sessionID
         self.splatURL = splatURL
         self.modelTransform = modelTransform
         self.spatialOverlay = spatialOverlay
+    }
+}
+
+public struct MetalSplatterImmersiveSceneControls: Codable, Equatable, Hashable, Sendable {
+    public var recenterOffsetX: Float
+    public var recenterOffsetY: Float
+    public var recenterOffsetZ: Float
+    public var scale: Float
+    public var yawRadians: Float
+    public var pitchRadians: Float
+    public var rollRadians: Float
+    public var automaticRotationEnabled: Bool
+
+    public init(
+        recenterOffsetX: Float = 0,
+        recenterOffsetY: Float = 0,
+        recenterOffsetZ: Float = 0,
+        scale: Float = 1,
+        yawRadians: Float = 0,
+        pitchRadians: Float = 0,
+        rollRadians: Float = 0,
+        automaticRotationEnabled: Bool = true
+    ) {
+        self.recenterOffsetX = recenterOffsetX
+        self.recenterOffsetY = recenterOffsetY
+        self.recenterOffsetZ = recenterOffsetZ
+        self.scale = min(max(scale, 0.1), 8)
+        self.yawRadians = yawRadians
+        self.pitchRadians = min(max(pitchRadians, -Float.pi / 2), Float.pi / 2)
+        self.rollRadians = rollRadians
+        self.automaticRotationEnabled = automaticRotationEnabled
+    }
+
+    public static let `default` = MetalSplatterImmersiveSceneControls()
+}
+
+public enum MetalSplatterImmersiveSceneStatusKind: String, Codable, Equatable, Sendable {
+    case idle
+    case loading
+    case ready
+    case failed
+}
+
+public struct MetalSplatterImmersiveSceneStatus: Codable, Equatable, Sendable {
+    public var kind: MetalSplatterImmersiveSceneStatusKind
+    public var message: String
+    public var updatedAt: Date
+
+    public init(
+        kind: MetalSplatterImmersiveSceneStatusKind = .idle,
+        message: String = "Splat space is idle.",
+        updatedAt: Date = Date()
+    ) {
+        self.kind = kind
+        self.message = message
+        self.updatedAt = updatedAt
+    }
+}
+
+public final class MetalSplatterVisionSceneSessionStore: @unchecked Sendable {
+    public static let shared = MetalSplatterVisionSceneSessionStore()
+
+    private let lock = NSLock()
+    private var controlsBySessionID: [String: MetalSplatterImmersiveSceneControls] = [:]
+    private var statusBySessionID: [String: MetalSplatterImmersiveSceneStatus] = [:]
+
+    private init() {}
+
+    public func controls(for sessionID: String) -> MetalSplatterImmersiveSceneControls {
+        lock.withLock {
+            controlsBySessionID[sessionID] ?? .default
+        }
+    }
+
+    public func setControls(_ controls: MetalSplatterImmersiveSceneControls, for sessionID: String) {
+        lock.withLock {
+            controlsBySessionID[sessionID] = controls
+        }
+    }
+
+    public func status(for sessionID: String) -> MetalSplatterImmersiveSceneStatus {
+        lock.withLock {
+            statusBySessionID[sessionID] ?? MetalSplatterImmersiveSceneStatus()
+        }
+    }
+
+    public func setStatus(_ status: MetalSplatterImmersiveSceneStatus, for sessionID: String) {
+        lock.withLock {
+            statusBySessionID[sessionID] = status
+        }
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock()
+        defer { unlock() }
+        return try body()
     }
 }
 
@@ -56,6 +157,7 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
 
     private var modelRenderer: (any MetalSplatterModelRendering)?
     private var overlayRenderer: MetalSplatterSpatialOverlayRenderer?
+    private var sessionID: String = UUID().uuidString
     private var spatialOverlay: MetalSplatterSpatialOverlayPayload = .empty
     private var modelTransform: simd_float4x4 = matrix_identity_float4x4
     private var lastRotationUpdateTimestamp: Date?
@@ -84,17 +186,23 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
 
     public static func startRendering(
         _ layerRenderer: LayerRenderer,
+        sessionID: String = UUID().uuidString,
         splatURL: URL?,
         modelTransform: [Float] = metalSplatterIdentityMatrixPayload,
         spatialOverlay: MetalSplatterSpatialOverlayPayload = .empty
     ) {
         let renderer = MetalSplatterVisionSceneRenderer(layerRenderer)
+        renderer.sessionID = sessionID
         renderer.modelTransform = metalSplatterMatrix(from: modelTransform)
         renderer.spatialOverlay = spatialOverlay
         Task {
             do {
                 try await renderer.load(splatURL)
             } catch {
+                MetalSplatterVisionSceneSessionStore.shared.setStatus(
+                    MetalSplatterImmersiveSceneStatus(kind: .failed, message: error.localizedDescription),
+                    for: sessionID
+                )
                 log.error("Unable to load Gaussian splat: \(error.localizedDescription)")
             }
             renderer.startRenderLoop()
@@ -103,7 +211,17 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
 
     public func load(_ splatURL: URL?) async throws {
         modelRenderer = nil
-        guard let splatURL else { return }
+        guard let splatURL else {
+            MetalSplatterVisionSceneSessionStore.shared.setStatus(
+                MetalSplatterImmersiveSceneStatus(kind: .idle, message: "No Gaussian splat is linked to this scene."),
+                for: sessionID
+            )
+            return
+        }
+        MetalSplatterVisionSceneSessionStore.shared.setStatus(
+            MetalSplatterImmersiveSceneStatus(kind: .loading, message: "Loading \(splatURL.lastPathComponent)."),
+            for: sessionID
+        )
         modelRenderer = try await MetalSplatterSceneLoader.makeRenderer(
             for: splatURL,
             device: device,
@@ -112,6 +230,10 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
             sampleCount: 1,
             maxViewCount: layerRenderer.properties.viewCount,
             maxSimultaneousRenders: MetalSplatterViewerConstants.maxSimultaneousRenders
+        )
+        MetalSplatterVisionSceneSessionStore.shared.setStatus(
+            MetalSplatterImmersiveSceneStatus(kind: .ready, message: "Rendering \(splatURL.lastPathComponent)."),
+            for: sessionID
         )
     }
 
@@ -171,6 +293,7 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
         frame.startSubmission()
 
         updateRotation()
+        let controls = MetalSplatterVisionSceneSessionStore.shared.controls(for: sessionID)
         let primaryDrawable = drawables[0]
         let time = LayerRenderer.Clock.Instant.epoch
             .duration(to: primaryDrawable.frameTiming.presentationTime)
@@ -192,7 +315,8 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
                 let splatViewports = viewports(
                     drawable: drawable,
                     deviceAnchor: deviceAnchor,
-                    sceneTransform: modelTransform
+                    sceneTransform: controlledSceneTransform(controls) * modelTransform,
+                    controls: controls
                 )
                 _ = try modelRenderer.render(
                     viewports: splatViewports,
@@ -230,10 +354,14 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
     private func viewports(
         drawable: LayerRenderer.Drawable,
         deviceAnchor: DeviceAnchor?,
-        sceneTransform: simd_float4x4
+        sceneTransform: simd_float4x4,
+        controls: MetalSplatterImmersiveSceneControls = .default
     ) -> [MetalSplatterViewportDescriptor] {
         let simdDeviceAnchor = deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4
-        let modelView = metalSplatterDefaultModelViewMatrix(rotationRadians: rotationRadians, sceneTransform: sceneTransform)
+        let modelView = metalSplatterDefaultModelViewMatrix(
+            rotationRadians: controls.automaticRotationEnabled ? rotationRadians : 0,
+            sceneTransform: sceneTransform
+        )
         return drawable.views.enumerated().map { index, view in
             let userViewpoint = (simdDeviceAnchor * view.transform).inverse
             let projection = drawable.computeProjection(viewIndex: index)
@@ -251,10 +379,27 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
     }
 
     private func updateRotation() {
+        guard MetalSplatterVisionSceneSessionStore.shared.controls(for: sessionID).automaticRotationEnabled else {
+            lastRotationUpdateTimestamp = Date()
+            return
+        }
         let now = Date()
         defer { lastRotationUpdateTimestamp = now }
         guard let lastRotationUpdateTimestamp else { return }
         rotationRadians += MetalSplatterViewerConstants.rotationRadiansPerSecond * Float(now.timeIntervalSince(lastRotationUpdateTimestamp))
+    }
+
+    private func controlledSceneTransform(_ controls: MetalSplatterImmersiveSceneControls) -> simd_float4x4 {
+        let translation = metalSplatterTranslationMatrix(
+            controls.recenterOffsetX,
+            controls.recenterOffsetY,
+            controls.recenterOffsetZ
+        )
+        let scale = simd_float4x4(diagonal: SIMD4<Float>(controls.scale, controls.scale, controls.scale, 1))
+        let yaw = metalSplatterRotationMatrix(radians: controls.yawRadians, axis: SIMD3<Float>(0, 1, 0))
+        let pitch = metalSplatterRotationMatrix(radians: controls.pitchRadians, axis: SIMD3<Float>(1, 0, 0))
+        let roll = metalSplatterRotationMatrix(radians: controls.rollRadians, axis: SIMD3<Float>(0, 0, 1))
+        return translation * roll * pitch * yaw * scale
     }
 }
 

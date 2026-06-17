@@ -231,15 +231,21 @@ public struct MetalGaussianSplatRenderConfiguration: Codable, Equatable, Sendabl
     public var tileSize: Int
     public var maxSplatsPerFrame: Int?
     public var streamingChunkSplatCount: Int?
+    public var depthVisibilityMaxSplats: Int
+    public var depthVisibilityMaxRadiusPixels: Int
 
     public init(
         tileSize: Int = 16,
         maxSplatsPerFrame: Int? = nil,
-        streamingChunkSplatCount: Int? = nil
+        streamingChunkSplatCount: Int? = nil,
+        depthVisibilityMaxSplats: Int = 8192,
+        depthVisibilityMaxRadiusPixels: Int = 48
     ) {
         self.tileSize = max(4, tileSize)
         self.maxSplatsPerFrame = maxSplatsPerFrame.map { max(1, $0) }
         self.streamingChunkSplatCount = streamingChunkSplatCount.map { max(1, $0) }
+        self.depthVisibilityMaxSplats = max(1, depthVisibilityMaxSplats)
+        self.depthVisibilityMaxRadiusPixels = max(1, depthVisibilityMaxRadiusPixels)
     }
 }
 
@@ -1601,8 +1607,11 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
         let pixelCount = max(1, width * height)
         var depthPixels = Array(repeating: Float.greatestFiniteMagnitude, count: pixelCount)
         var visibilityPixels = Array(repeating: UInt32(0), count: pixelCount)
-        for splat in projectedSplats where splat.depthMeters > 0 {
-            let radius = min(max(splat.majorRadiusPixels, 1), 128)
+        for splat in depthVisibilitySplats(from: projectedSplats) where splat.depthMeters > 0 {
+            let radius = min(
+                max(splat.majorRadiusPixels, 1),
+                Float(configuration.depthVisibilityMaxRadiusPixels)
+            )
             let minX = max(0, Int(floor(splat.centerPixels.x - radius)))
             let minY = max(0, Int(floor(splat.centerPixels.y - radius)))
             let maxX = min(width - 1, Int(ceil(splat.centerPixels.x + radius)))
@@ -1651,6 +1660,18 @@ public final class MetalGaussianSplatRenderer: SplatRenderer {
                 try makeVisibilityPGM(visibilityPointer: visibilityPointer.baseAddress!, pixelCount: pixelCount, width: width, height: height).write(to: visibilityURL)
             }
             return metricDepth
+        }
+    }
+
+    private func depthVisibilitySplats(from projectedSplats: [ProjectedGaussianSplat]) -> [ProjectedGaussianSplat] {
+        guard projectedSplats.count > configuration.depthVisibilityMaxSplats else {
+            return projectedSplats
+        }
+        let lastIndex = projectedSplats.count - 1
+        let denominator = max(configuration.depthVisibilityMaxSplats - 1, 1)
+        return (0..<configuration.depthVisibilityMaxSplats).map { sampleIndex in
+            let sourceIndex = Int((Double(sampleIndex) * Double(lastIndex) / Double(denominator)).rounded())
+            return projectedSplats[min(lastIndex, sourceIndex)]
         }
     }
 
