@@ -107,10 +107,15 @@ public struct SharedProjectFormatTools: Sendable {
     public init() {}
 
     public func artifactRecord(role: String, url: URL, packageRoot: URL) -> PackageArtifactRecord {
-        let absoluteURL = resolve(url, relativeTo: packageRoot)
+        let absoluteURL = PackageURLTools.resolve(url, relativeTo: packageRoot)
         let attributes = (try? FileManager.default.attributesOfItem(atPath: absoluteURL.path)) ?? [:]
         let byteCount = attributes[.size] as? Int64 ?? 0
-        return PackageArtifactRecord(role: role, url: url, byteCount: byteCount, sha256: sha256(for: absoluteURL))
+        return PackageArtifactRecord(
+            role: role,
+            url: PackageURLTools.packageRelativeURL(for: absoluteURL, packageRoot: packageRoot),
+            byteCount: byteCount,
+            sha256: sha256(for: absoluteURL)
+        )
     }
 
     public func validate(
@@ -125,7 +130,7 @@ public struct SharedProjectFormatTools: Sendable {
         var totalBytes: Int64 = 0
         for artifact in artifacts {
             totalBytes += artifact.byteCount
-            let resolved = resolve(artifact.url, relativeTo: packageRoot)
+            let resolved = PackageURLTools.resolve(artifact.url, relativeTo: packageRoot)
             if !FileManager.default.fileExists(atPath: resolved.path) {
                 issues.append(PackageValidationIssue(.error, "Missing artifact \(artifact.role): \(artifact.url.path)."))
             }
@@ -205,13 +210,6 @@ public struct SharedProjectFormatTools: Sendable {
         """
     }
 
-    private func resolve(_ url: URL, relativeTo packageRoot: URL) -> URL {
-        if url.isFileURL && url.path.hasPrefix("/") {
-            return url
-        }
-        return packageRoot.appendingPathComponent(url.relativePath)
-    }
-
     private func sha256(for url: URL) -> String? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         #if canImport(CryptoKit)
@@ -219,6 +217,101 @@ public struct SharedProjectFormatTools: Sendable {
         #else
         return nil
         #endif
+    }
+}
+
+public struct PackageURLTools: Sendable {
+    public init() {}
+
+    public static func packageRelativeURL(for url: URL, packageRoot: URL) -> URL {
+        if isRelativeFileReference(url) {
+            return relativeURL(path: url.relativePath)
+        }
+
+        let resolvedURL = resolve(url, relativeTo: packageRoot)
+        guard let relativePath = relativePathIfContained(resolvedURL, in: packageRoot) else {
+            return url
+        }
+        return relativeURL(path: relativePath)
+    }
+
+    public static func resolve(_ url: URL, relativeTo packageRoot: URL) -> URL {
+        if isRelativeFileReference(url) {
+            let candidate = packageRoot
+                .appendingPathComponent(url.relativePath)
+                .standardizedFileURL
+            guard relativePathIfContained(candidate, in: packageRoot) != nil else {
+                return invalidPackageRelativeURL(for: url, packageRoot: packageRoot)
+            }
+            return candidate
+        }
+
+        if url.isFileURL, url.path.hasPrefix("/") {
+            if FileManager.default.fileExists(atPath: url.path) {
+                return url
+            }
+            if !url.relativePath.hasPrefix("/") {
+                return packageRoot.appendingPathComponent(url.relativePath)
+            }
+            if let recovered = recoverMovedPackageURL(url, packageRoot: packageRoot) {
+                return recovered
+            }
+            return url
+        }
+
+        return url
+    }
+
+    public static func relativeURL(path: String) -> URL {
+        let trimmed = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !trimmed.isEmpty else {
+            return URL(string: ".") ?? URL(fileURLWithPath: ".")
+        }
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/?#%:")
+        let encodedPath = trimmed
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map { component in
+                String(component).addingPercentEncoding(withAllowedCharacters: allowed) ?? String(component)
+            }
+            .joined(separator: "/")
+        return URL(string: encodedPath) ?? URL(fileURLWithPath: encodedPath)
+    }
+
+    private static func isRelativeFileReference(_ url: URL) -> Bool {
+        url.scheme == nil && !url.relativePath.hasPrefix("/")
+    }
+
+    private static func relativePathIfContained(_ url: URL, in packageRoot: URL) -> String? {
+        let rootPath = packageRoot.standardizedFileURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let urlPath = url.standardizedFileURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard urlPath == rootPath || urlPath.hasPrefix(rootPath + "/") else {
+            return nil
+        }
+        if urlPath == rootPath {
+            return "."
+        }
+        return String(urlPath.dropFirst(rootPath.count + 1))
+    }
+
+    private static func invalidPackageRelativeURL(for url: URL, packageRoot: URL) -> URL {
+        let name = url.lastPathComponent.isEmpty ? "invalid" : url.lastPathComponent
+        return packageRoot
+            .appendingPathComponent("__invalid_package_relative_path__", isDirectory: true)
+            .appendingPathComponent(name)
+    }
+
+    private static func recoverMovedPackageURL(_ url: URL, packageRoot: URL) -> URL? {
+        let components = url.pathComponents.filter { $0 != "/" && !$0.isEmpty }
+        guard !components.isEmpty else { return nil }
+        for startIndex in components.indices {
+            let suffix = components[startIndex...].joined(separator: "/")
+            let candidate = packageRoot.appendingPathComponent(suffix)
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
     }
 }
 

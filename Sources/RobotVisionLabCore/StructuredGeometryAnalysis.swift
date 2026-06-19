@@ -193,10 +193,7 @@ public struct StructuredGeometryAnalyzer: Sendable {
     }
 
     private func resolve(_ url: URL, relativeTo packageRoot: URL) -> URL {
-        if url.isFileURL && url.path.hasPrefix("/") {
-            return url
-        }
-        return packageRoot.appendingPathComponent(url.relativePath)
+        PackageURLTools.resolve(url, relativeTo: packageRoot)
     }
 }
 

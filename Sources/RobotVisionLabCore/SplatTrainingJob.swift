@@ -39,11 +39,13 @@ public enum AppleTrainingFramework: String, Codable, Sendable {
     case mlx
     case createML
     case metalPerformanceShaders
+    case nerfstudioGSplat
 }
 
 public enum SplatTrainingMode: String, Codable, Sendable {
     case planning
     case nativeAppleSilicon
+    case productionGSplat
 }
 
 public enum SplatTrainingStatus: String, Codable, Sendable {

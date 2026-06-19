@@ -261,7 +261,7 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
                     .appendingPathComponent("rgb", isDirectory: true)
                     .appendingPathComponent(String(format: "frame_%06d.jpg", index))
                 try writeRGBFrameImage(frame.capturedImage, to: frameURL)
-                let record = makeFrameRecord(index: index, frame: frame, pose: pose, imageURL: frameURL)
+                let record = makeFrameRecord(index: index, frame: frame, pose: pose, imageURL: frameURL, packageRoot: outputDirectory)
                 rgbFrames.append(CapturedRGBFrame(imageURL: frameURL, pose: pose, timestamp: timestamp))
                 capturedFrameRecords.append(record)
                 writeJSONLine(record, to: framesJSONLHandle)
@@ -360,8 +360,10 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
             confidenceFormat: confidenceURL == nil ? nil : "uint8-arkit-confidence-row-major",
             cameraPose: pose,
             intrinsics: CameraIntrinsics(matrix: frame.camera.intrinsics, resolution: frame.camera.imageResolution),
-            depthURL: depthURL,
-            confidenceURL: confidenceURL,
+            depthURL: PackageURLTools.packageRelativeURL(for: depthURL, packageRoot: directory.deletingLastPathComponent()),
+            confidenceURL: confidenceURL.map {
+                PackageURLTools.packageRelativeURL(for: $0, packageRoot: directory.deletingLastPathComponent())
+            },
             notes: plan?.lidar?.alignToRGB == false
                 ? "ARKit sceneDepth.depthMap captured as Float32 meters in ARKit depth resolution without PNG quantization."
                 : "ARKit sceneDepth.depthMap captured as Float32 meters and indexed against the synchronized ARFrame RGB image."
@@ -490,6 +492,9 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         motionJSONLURL = outputDirectory.appendingPathComponent("motion.jsonl")
         sessionJSONURL = outputDirectory.appendingPathComponent("session.json")
         for url in [framesJSONLURL, motionJSONLURL].compactMap({ $0 }) {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }
         framesJSONLHandle = try framesJSONLURL.map { try FileHandle(forWritingTo: $0) }
@@ -520,12 +525,12 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         try imageContext.writeJPEGRepresentation(of: image, to: url, colorSpace: colorSpace)
     }
 
-    private func makeFrameRecord(index: Int, frame: ARFrame, pose: Pose3D, imageURL: URL) -> RobotCaptureFrameRecord {
+    private func makeFrameRecord(index: Int, frame: ARFrame, pose: Pose3D, imageURL: URL, packageRoot: URL) -> RobotCaptureFrameRecord {
         let intrinsics = CameraIntrinsics(matrix: frame.camera.intrinsics, resolution: frame.camera.imageResolution)
         return RobotCaptureFrameRecord(
             index: index,
             timestamp: frame.timestamp,
-            imageURL: imageURL,
+            imageURL: PackageURLTools.packageRelativeURL(for: imageURL, packageRoot: packageRoot),
             cameraTransform: Transform3D(translation: pose.position, rotation: pose.orientation.value),
             intrinsics: intrinsics,
             trackingQuality: TrackingQuality(frame.camera.trackingState)
@@ -606,13 +611,15 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
         let capturePackage = RobotCapturePackageManifest(
             id: "\(outputDirectory.lastPathComponent)-robot-capture",
             artifacts: artifacts,
-            validationReportURL: reportURLs.json,
-            humanReportURL: reportURLs.markdown,
-            videoURL: videoSegmentURLs.first,
-            framesJSONLURL: outputDirectory.appendingPathComponent("frames.jsonl"),
-            motionJSONLURL: outputDirectory.appendingPathComponent("motion.jsonl"),
-            sessionJSONURL: outputDirectory.appendingPathComponent("session.json"),
-            captureBundleURL: outputDirectory.appendingPathComponent("capture_bundle.json"),
+            validationReportURL: PackageURLTools.packageRelativeURL(for: reportURLs.json, packageRoot: outputDirectory),
+            humanReportURL: PackageURLTools.packageRelativeURL(for: reportURLs.markdown, packageRoot: outputDirectory),
+            videoURL: videoSegmentURLs.first.map {
+                PackageURLTools.packageRelativeURL(for: $0, packageRoot: outputDirectory)
+            },
+            framesJSONLURL: PackageURLTools.relativeURL(path: "frames.jsonl"),
+            motionJSONLURL: PackageURLTools.relativeURL(path: "motion.jsonl"),
+            sessionJSONURL: PackageURLTools.relativeURL(path: "session.json"),
+            captureBundleURL: PackageURLTools.relativeURL(path: "capture_bundle.json"),
             notes: "Primary transfer path is Multipeer Connectivity from iPhone/iPad to Mac."
         )
         try JSONEncoder.robotVisionLabEncoder.encode(capturePackage).write(to: outputDirectory.appendingPathComponent("robotcapture.json"))
@@ -627,6 +634,7 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
             roomPlanModelURL: roomPlanModelURL,
             objectCaptureAssetURLs: objectCaptureAssetURLs
         )
+        let portableScanSession = packageRelative(scanSession, packageRoot: outputDirectory)
         let splatTrainingManifest = SplatTrainingManifest(
             id: "\(scanSession.id)-splat-training",
             imageFrames: capturedFrameRecords.map {
@@ -644,28 +652,71 @@ public final class AppleDeviceCaptureSession: NSObject, DeviceCaptureSessionCont
                     )
                 )
             },
-            lidarFrames: lidarFrames,
-            roomPlanGeometryURL: roomPlanModelURL,
-            objectGeometryURLs: objectCaptureAssetURLs,
+            lidarFrames: portableScanSession.lidarFrames,
+            roomPlanGeometryURL: portableScanSession.roomPlanModelURL,
+            objectGeometryURLs: portableScanSession.objectCaptureAssetURLs,
             expectedOutput: SplatTrainingOutput(
-                targetURL: outputDirectory
-                    .appendingPathComponent("splats", isDirectory: true)
-                    .appendingPathComponent("\(scanSession.id).ply")
+                targetURL: PackageURLTools.relativeURL(path: "splats/\(scanSession.id).ply")
             )
         )
         let splatTrainingManifestURL = outputDirectory.appendingPathComponent("splat_training_manifest.json")
         try JSONEncoder.robotVisionLabEncoder.encode(splatTrainingManifest).write(to: splatTrainingManifestURL)
 
         let captureBundle = CaptureBundleManifest(
-            scanSession: scanSession,
+            scanSession: portableScanSession,
             capturePlan: plan,
-            rgbFrames: rgbFrames,
-            lidarFrames: lidarFrames,
-            roomPlanModelURL: roomPlanModelURL,
-            objectCaptureAssetURLs: objectCaptureAssetURLs,
-            splatTrainingManifestURL: splatTrainingManifestURL
+            rgbFrames: portableScanSession.rgbFrames,
+            lidarFrames: portableScanSession.lidarFrames,
+            roomPlanModelURL: portableScanSession.roomPlanModelURL,
+            objectCaptureAssetURLs: portableScanSession.objectCaptureAssetURLs,
+            splatTrainingManifestURL: PackageURLTools.packageRelativeURL(for: splatTrainingManifestURL, packageRoot: outputDirectory)
         )
         try JSONEncoder.robotVisionLabEncoder.encode(captureBundle).write(to: outputDirectory.appendingPathComponent("capture_bundle.json"))
+    }
+
+    private func packageRelative(_ scanSession: ScanSession, packageRoot: URL) -> ScanSession {
+        ScanSession(
+            id: scanSession.id,
+            createdAt: scanSession.createdAt,
+            worldUnit: scanSession.worldUnit,
+            rgbFrames: scanSession.rgbFrames.map {
+                CapturedRGBFrame(
+                    imageURL: PackageURLTools.packageRelativeURL(for: $0.imageURL, packageRoot: packageRoot),
+                    pose: $0.pose,
+                    timestamp: $0.timestamp
+                )
+            },
+            lidarFrames: scanSession.lidarFrames.map {
+                CapturedLiDARFrame(
+                    depthURL: PackageURLTools.packageRelativeURL(for: $0.depthURL, packageRoot: packageRoot),
+                    confidenceURL: $0.confidenceURL.map {
+                        PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot)
+                    },
+                    metadataURL: PackageURLTools.packageRelativeURL(for: $0.metadataURL, packageRoot: packageRoot),
+                    pose: $0.pose,
+                    timestamp: $0.timestamp
+                )
+            },
+            roomPlanModelURL: scanSession.roomPlanModelURL.map {
+                PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot)
+            },
+            objectCaptureAssetURLs: scanSession.objectCaptureAssetURLs.map {
+                PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot)
+            },
+            objectCaptureImageSets: scanSession.objectCaptureImageSets.map {
+                ObjectCaptureImageSet(
+                    id: $0.id,
+                    label: $0.label,
+                    imagesDirectoryURL: PackageURLTools.packageRelativeURL(for: $0.imagesDirectoryURL, packageRoot: packageRoot),
+                    checkpointDirectoryURL: $0.checkpointDirectoryURL.map {
+                        PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot)
+                    },
+                    imageCount: $0.imageCount,
+                    createdAt: $0.createdAt,
+                    notes: $0.notes
+                )
+            }
+        )
     }
 
     private func currentDeviceModelDescription() -> String {

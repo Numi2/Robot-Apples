@@ -91,6 +91,7 @@ let package = Package(
             dependencies: [
                 "RobotVisionLabCore",
                 "RobotSceneStudioiPhone",
+                "RobotSceneStudioMac",
                 "RobotSceneStudioVision",
                 "RobotSceneStudioSplatViewer"
             ]

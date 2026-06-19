@@ -152,7 +152,7 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
 
     private let layerRenderer: LayerRenderer
     private let device: MTLDevice
-    private let commandQueue: MTLCommandQueue
+    private let commandQueue: MTLCommandQueue?
     private let inFlightSemaphore = DispatchSemaphore(value: MetalSplatterViewerConstants.maxSimultaneousRenders)
 
     private var modelRenderer: (any MetalSplatterModelRendering)?
@@ -169,10 +169,10 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
     public init(_ layerRenderer: LayerRenderer) {
         self.layerRenderer = layerRenderer
         self.device = layerRenderer.device
-        guard let commandQueue = device.makeCommandQueue() else {
-            fatalError("Unable to create a Metal command queue for visionOS splat rendering.")
+        self.commandQueue = device.makeCommandQueue()
+        if self.commandQueue == nil {
+            Self.log.error("Unable to create a Metal command queue for visionOS splat rendering.")
         }
-        self.commandQueue = commandQueue
         do {
             self.overlayRenderer = try MetalSplatterSpatialOverlayRenderer(
                 device: device,
@@ -267,6 +267,13 @@ public final class MetalSplatterVisionSceneRenderer: @unchecked Sendable {
     }
 
     private func renderFrame() {
+        guard let commandQueue else {
+            MetalSplatterVisionSceneSessionStore.shared.setStatus(
+                MetalSplatterImmersiveSceneStatus(kind: .failed, message: "Metal command queue is unavailable."),
+                for: sessionID
+            )
+            return
+        }
         guard let frame = layerRenderer.queryNextFrame() else { return }
 
         frame.startUpdate()

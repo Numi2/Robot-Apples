@@ -132,7 +132,7 @@ public struct RobotCaptureImporter: Sendable {
             captureBundle: captureBundle
         )
         try assertPipelineReady(importedPackage)
-        return importedPackage
+        return normalize(importedPackage)
     }
 
     public func makeReport(
@@ -228,10 +228,85 @@ public struct RobotCaptureImporter: Sendable {
     }
 
     private func resolve(_ url: URL, relativeTo packageRoot: URL) -> URL {
-        if url.isFileURL && FileManager.default.fileExists(atPath: url.path) {
-            return url
-        }
-        return packageRoot.appendingPathComponent(url.relativePath)
+        PackageURLTools.resolve(url, relativeTo: packageRoot)
+    }
+
+    private func normalize(_ importedPackage: RobotCaptureImport) -> RobotCaptureImport {
+        let packageRoot = importedPackage.packageRoot
+        return RobotCaptureImport(
+            packageRoot: packageRoot,
+            manifest: importedPackage.manifest,
+            session: importedPackage.session,
+            frames: importedPackage.frames.map { frame in
+                RobotCaptureFrameRecord(
+                    index: frame.index,
+                    timestamp: frame.timestamp,
+                    imageURL: resolve(frame.imageURL, relativeTo: packageRoot),
+                    cameraTransform: frame.cameraTransform,
+                    intrinsics: frame.intrinsics,
+                    trackingQuality: frame.trackingQuality
+                )
+            },
+            motion: importedPackage.motion,
+            captureBundle: normalize(importedPackage.captureBundle, packageRoot: packageRoot)
+        )
+    }
+
+    private func normalize(_ bundle: CaptureBundleManifest, packageRoot: URL) -> CaptureBundleManifest {
+        let scanSession = normalize(bundle.scanSession, packageRoot: packageRoot)
+        return CaptureBundleManifest(
+            scanSession: scanSession,
+            capturePlan: bundle.capturePlan,
+            rgbFrames: bundle.rgbFrames.map { normalize($0, packageRoot: packageRoot) },
+            lidarFrames: bundle.lidarFrames.map { normalize($0, packageRoot: packageRoot) },
+            roomPlanModelURL: bundle.roomPlanModelURL.map { resolve($0, relativeTo: packageRoot) },
+            objectCaptureAssetURLs: bundle.objectCaptureAssetURLs.map { resolve($0, relativeTo: packageRoot) },
+            objectCaptureImageSets: bundle.objectCaptureImageSets.map { normalize($0, packageRoot: packageRoot) },
+            splatTrainingManifestURL: resolve(bundle.splatTrainingManifestURL, relativeTo: packageRoot)
+        )
+    }
+
+    private func normalize(_ scanSession: ScanSession, packageRoot: URL) -> ScanSession {
+        ScanSession(
+            id: scanSession.id,
+            createdAt: scanSession.createdAt,
+            worldUnit: scanSession.worldUnit,
+            rgbFrames: scanSession.rgbFrames.map { normalize($0, packageRoot: packageRoot) },
+            lidarFrames: scanSession.lidarFrames.map { normalize($0, packageRoot: packageRoot) },
+            roomPlanModelURL: scanSession.roomPlanModelURL.map { resolve($0, relativeTo: packageRoot) },
+            objectCaptureAssetURLs: scanSession.objectCaptureAssetURLs.map { resolve($0, relativeTo: packageRoot) },
+            objectCaptureImageSets: scanSession.objectCaptureImageSets.map { normalize($0, packageRoot: packageRoot) }
+        )
+    }
+
+    private func normalize(_ frame: CapturedRGBFrame, packageRoot: URL) -> CapturedRGBFrame {
+        CapturedRGBFrame(
+            imageURL: resolve(frame.imageURL, relativeTo: packageRoot),
+            pose: frame.pose,
+            timestamp: frame.timestamp
+        )
+    }
+
+    private func normalize(_ frame: CapturedLiDARFrame, packageRoot: URL) -> CapturedLiDARFrame {
+        CapturedLiDARFrame(
+            depthURL: resolve(frame.depthURL, relativeTo: packageRoot),
+            confidenceURL: frame.confidenceURL.map { resolve($0, relativeTo: packageRoot) },
+            metadataURL: resolve(frame.metadataURL, relativeTo: packageRoot),
+            pose: frame.pose,
+            timestamp: frame.timestamp
+        )
+    }
+
+    private func normalize(_ imageSet: ObjectCaptureImageSet, packageRoot: URL) -> ObjectCaptureImageSet {
+        ObjectCaptureImageSet(
+            id: imageSet.id,
+            label: imageSet.label,
+            imagesDirectoryURL: resolve(imageSet.imagesDirectoryURL, relativeTo: packageRoot),
+            checkpointDirectoryURL: imageSet.checkpointDirectoryURL.map { resolve($0, relativeTo: packageRoot) },
+            imageCount: imageSet.imageCount,
+            createdAt: imageSet.createdAt,
+            notes: imageSet.notes
+        )
     }
 
     private func assertPipelineReady(_ importedPackage: RobotCaptureImport) throws {

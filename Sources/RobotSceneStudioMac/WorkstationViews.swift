@@ -136,6 +136,14 @@ public struct WorkstationControlPanel: View {
     @State private var splatTrainingSplatsPerFrame = 24
     @State private var splatTrainingEpochs = 25
     @State private var writesASCIITrainingPLY = false
+    @State private var productionSplatMethod = "splatfacto"
+    @State private var productionSplatIterations = 30_000
+    @State private var productionMinTrainFrames = "\(ProductionSplatDatasetRequirements.production.minTrainingFrameCount)"
+    @State private var productionMinEvalFrames = "\(ProductionSplatDatasetRequirements.production.minValidationFrameCount)"
+    @State private var productionMinTotalFrames = "\(ProductionSplatDatasetRequirements.production.minTotalFrameCount)"
+    @State private var productionMinPSNR = ""
+    @State private var productionMinSSIM = ""
+    @State private var productionMaxLPIPS = ""
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -161,7 +169,15 @@ public struct WorkstationControlPanel: View {
                     metalStreamingChunkSplats: $metalStreamingChunkSplats,
                     splatTrainingSplatsPerFrame: $splatTrainingSplatsPerFrame,
                     splatTrainingEpochs: $splatTrainingEpochs,
-                    writesASCIITrainingPLY: $writesASCIITrainingPLY
+                    writesASCIITrainingPLY: $writesASCIITrainingPLY,
+                    productionSplatMethod: $productionSplatMethod,
+                    productionSplatIterations: $productionSplatIterations,
+                    productionMinTrainFrames: $productionMinTrainFrames,
+                    productionMinEvalFrames: $productionMinEvalFrames,
+                    productionMinTotalFrames: $productionMinTotalFrames,
+                    productionMinPSNR: $productionMinPSNR,
+                    productionMinSSIM: $productionMinSSIM,
+                    productionMaxLPIPS: $productionMaxLPIPS
                 )
             case .export:
                 ExportControlPanel(model: model)
@@ -425,6 +441,14 @@ private struct AppleSiliconControlPanel: View {
     @Binding var splatTrainingSplatsPerFrame: Int
     @Binding var splatTrainingEpochs: Int
     @Binding var writesASCIITrainingPLY: Bool
+    @Binding var productionSplatMethod: String
+    @Binding var productionSplatIterations: Int
+    @Binding var productionMinTrainFrames: String
+    @Binding var productionMinEvalFrames: String
+    @Binding var productionMinTotalFrames: String
+    @Binding var productionMinPSNR: String
+    @Binding var productionMinSSIM: String
+    @Binding var productionMaxLPIPS: String
 
     var body: some View {
         GroupBox("Apple Silicon") {
@@ -501,6 +525,47 @@ private struct AppleSiliconControlPanel: View {
                 }
                 .disabled(model.state.activeCaptureURL == nil)
 
+                TextField("Production method", text: $productionSplatMethod)
+                    .textFieldStyle(.roundedBorder)
+
+                Stepper(value: $productionSplatIterations, in: 1_000...300_000, step: 1_000) {
+                    Label("Production Steps \(productionSplatIterations)", systemImage: "point.3.filled.connected.trianglepath.dotted")
+                }
+
+                TextField("Min train frames", text: $productionMinTrainFrames)
+                    .textFieldStyle(.roundedBorder)
+
+                TextField("Min eval frames", text: $productionMinEvalFrames)
+                    .textFieldStyle(.roundedBorder)
+
+                TextField("Min total frames", text: $productionMinTotalFrames)
+                    .textFieldStyle(.roundedBorder)
+
+                TextField("Min PSNR", text: $productionMinPSNR)
+                    .textFieldStyle(.roundedBorder)
+
+                TextField("Min SSIM", text: $productionMinSSIM)
+                    .textFieldStyle(.roundedBorder)
+
+                TextField("Max LPIPS", text: $productionMaxLPIPS)
+                    .textFieldStyle(.roundedBorder)
+
+                Button {
+                    model.runProductionSplatOptimization(
+                        maxIterations: productionSplatIterations,
+                        method: productionSplatMethod.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "splatfacto" : productionSplatMethod,
+                        minTrainFrames: optionalPositiveInt(productionMinTrainFrames) ?? ProductionSplatDatasetRequirements.production.minTrainingFrameCount,
+                        minEvalFrames: optionalNonNegativeInt(productionMinEvalFrames) ?? ProductionSplatDatasetRequirements.production.minValidationFrameCount,
+                        minTotalFrames: optionalPositiveInt(productionMinTotalFrames) ?? ProductionSplatDatasetRequirements.production.minTotalFrameCount,
+                        minPSNR: optionalPositiveDouble(productionMinPSNR),
+                        minSSIM: optionalPositiveDouble(productionMinSSIM),
+                        maxLPIPS: optionalPositiveDouble(productionMaxLPIPS)
+                    )
+                } label: {
+                    Label("Run Production Splat Optimization", systemImage: "play.square.stack")
+                }
+                .disabled(model.state.activeCaptureURL == nil)
+
                 Button {
                     model.writeMLXTrainingPackage()
                 } label: {
@@ -515,6 +580,22 @@ private struct AppleSiliconControlPanel: View {
     private func optionalPositiveInt(_ text: String) -> Int? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let value = Int(trimmed), value > 0 else {
+            return nil
+        }
+        return value
+    }
+
+    private func optionalNonNegativeInt(_ text: String) -> Int? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let value = Int(trimmed), value >= 0 else {
+            return nil
+        }
+        return value
+    }
+
+    private func optionalPositiveDouble(_ text: String) -> Double? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let value = Double(trimmed), value > 0 else {
             return nil
         }
         return value

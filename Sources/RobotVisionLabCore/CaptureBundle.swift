@@ -174,18 +174,26 @@ public struct SplatTrainingFrame: Codable, Equatable, Sendable {
     public var pose: Pose3D
     public var timestamp: TimeInterval
     public var calibration: SplatFrameCalibration?
+    public var split: SplatTrainingFrameRole?
 
     public init(
         imageURL: URL,
         pose: Pose3D,
         timestamp: TimeInterval,
-        calibration: SplatFrameCalibration? = nil
+        calibration: SplatFrameCalibration? = nil,
+        split: SplatTrainingFrameRole? = nil
     ) {
         self.imageURL = imageURL
         self.pose = pose
         self.timestamp = timestamp
         self.calibration = calibration
+        self.split = split
     }
+}
+
+public enum SplatTrainingFrameRole: String, Codable, Equatable, Sendable {
+    case train
+    case validation
 }
 
 public struct SplatFrameCalibration: Codable, Equatable, Sendable {
@@ -258,7 +266,8 @@ public struct CaptureBundleExporter: Sendable {
         )
         try fileManager.createDirectory(at: outputDirectory.appendingPathComponent("splats", isDirectory: true), withIntermediateDirectories: true)
         let packagedScanSession = rebase(scanSession, into: outputDirectory)
-        try copyReferencedAssets(from: scanSession, to: packagedScanSession)
+        try copyReferencedAssets(from: scanSession, to: packagedScanSession, packageRoot: outputDirectory)
+        let portableScanSession = packageRelative(packagedScanSession, packageRoot: outputDirectory)
 
         let intrinsics = capturePlan?.rgbVideo.map {
             CameraIntrinsics(
@@ -276,8 +285,8 @@ public struct CaptureBundleExporter: Sendable {
         }
         let resolution = capturePlan?.rgbVideo?.targetResolution
         let trainingManifest = SplatTrainingManifest(
-            id: "\(packagedScanSession.id)-splat-training",
-            imageFrames: packagedScanSession.rgbFrames.map {
+            id: "\(portableScanSession.id)-splat-training",
+            imageFrames: portableScanSession.rgbFrames.map {
                 SplatTrainingFrame(
                     imageURL: $0.imageURL,
                     pose: $0.pose,
@@ -289,34 +298,32 @@ public struct CaptureBundleExporter: Sendable {
                     )
                 )
             },
-            lidarFrames: packagedScanSession.lidarFrames,
-            roomPlanGeometryURL: packagedScanSession.roomPlanModelURL,
-            objectGeometryURLs: packagedScanSession.objectCaptureAssetURLs,
+            lidarFrames: portableScanSession.lidarFrames,
+            roomPlanGeometryURL: portableScanSession.roomPlanModelURL,
+            objectGeometryURLs: portableScanSession.objectCaptureAssetURLs,
             expectedOutput: SplatTrainingOutput(
-                targetURL: outputDirectory
-                    .appendingPathComponent("splats", isDirectory: true)
-                    .appendingPathComponent("\(packagedScanSession.id).ply")
+                targetURL: PackageURLTools.relativeURL(path: "splats/\(portableScanSession.id).ply")
             )
         )
         let trainingManifestURL = outputDirectory.appendingPathComponent("splat_training_manifest.json")
         try JSONEncoder.robotVisionLabEncoder.encode(trainingManifest).write(to: trainingManifestURL)
 
         let bundle = CaptureBundleManifest(
-            scanSession: packagedScanSession,
+            scanSession: portableScanSession,
             capturePlan: capturePlan,
-            rgbFrames: packagedScanSession.rgbFrames,
-            lidarFrames: packagedScanSession.lidarFrames,
-            roomPlanModelURL: packagedScanSession.roomPlanModelURL,
-            objectCaptureAssetURLs: packagedScanSession.objectCaptureAssetURLs,
-            objectCaptureImageSets: packagedScanSession.objectCaptureImageSets,
-            splatTrainingManifestURL: trainingManifestURL
+            rgbFrames: portableScanSession.rgbFrames,
+            lidarFrames: portableScanSession.lidarFrames,
+            roomPlanModelURL: portableScanSession.roomPlanModelURL,
+            objectCaptureAssetURLs: portableScanSession.objectCaptureAssetURLs,
+            objectCaptureImageSets: portableScanSession.objectCaptureImageSets,
+            splatTrainingManifestURL: PackageURLTools.packageRelativeURL(for: trainingManifestURL, packageRoot: outputDirectory)
         )
         try JSONEncoder.robotVisionLabEncoder.encode(bundle).write(to: outputDirectory.appendingPathComponent("capture_bundle.json"))
         let videoURL = outputDirectory.appendingPathComponent("video.mov")
         let framesJSONLURL = outputDirectory.appendingPathComponent("frames.jsonl")
         let motionJSONLURL = outputDirectory.appendingPathComponent("motion.jsonl")
         let sessionJSONURL = outputDirectory.appendingPathComponent("session.json")
-        let frameRecords = packagedScanSession.rgbFrames.enumerated().map { index, frame in
+        let frameRecords = portableScanSession.rgbFrames.enumerated().map { index, frame in
             RobotCaptureFrameRecord(
                 index: index,
                 timestamp: frame.timestamp,
@@ -387,13 +394,13 @@ public struct CaptureBundleExporter: Sendable {
         let capturePackage = RobotCapturePackageManifest(
             id: "\(packagedScanSession.id)-robot-capture",
             artifacts: artifacts,
-            validationReportURL: reportURLs.json,
-            humanReportURL: reportURLs.markdown,
-            videoURL: packageVideoURL,
-            framesJSONLURL: framesJSONLURL,
-            motionJSONLURL: motionJSONLURL,
-            sessionJSONURL: sessionJSONURL,
-            captureBundleURL: outputDirectory.appendingPathComponent("capture_bundle.json"),
+            validationReportURL: PackageURLTools.packageRelativeURL(for: reportURLs.json, packageRoot: outputDirectory),
+            humanReportURL: PackageURLTools.packageRelativeURL(for: reportURLs.markdown, packageRoot: outputDirectory),
+            videoURL: packageVideoURL.map { PackageURLTools.packageRelativeURL(for: $0, packageRoot: outputDirectory) },
+            framesJSONLURL: PackageURLTools.packageRelativeURL(for: framesJSONLURL, packageRoot: outputDirectory),
+            motionJSONLURL: PackageURLTools.packageRelativeURL(for: motionJSONLURL, packageRoot: outputDirectory),
+            sessionJSONURL: PackageURLTools.packageRelativeURL(for: sessionJSONURL, packageRoot: outputDirectory),
+            captureBundleURL: PackageURLTools.relativeURL(path: "capture_bundle.json"),
             notes: "Use Multipeer Connectivity for primary nearby iPhone-to-Mac transfer."
         )
         try JSONEncoder.robotVisionLabEncoder.encode(capturePackage).write(to: outputDirectory.appendingPathComponent("robotcapture.json"))
@@ -460,7 +467,7 @@ public struct CaptureBundleExporter: Sendable {
         )
     }
 
-    private func copyReferencedAssets(from source: ScanSession, to destination: ScanSession) throws {
+    private func copyReferencedAssets(from source: ScanSession, to destination: ScanSession, packageRoot: URL) throws {
         for (sourceFrame, destinationFrame) in zip(source.rgbFrames, destination.rgbFrames) {
             try copyRequiredFile(from: sourceFrame.imageURL, to: destinationFrame.imageURL, role: "RGB frame")
         }
@@ -470,6 +477,7 @@ public struct CaptureBundleExporter: Sendable {
             if let sourceConfidenceURL = sourceFrame.confidenceURL, let destinationConfidenceURL = destinationFrame.confidenceURL {
                 try copyRequiredFile(from: sourceConfidenceURL, to: destinationConfidenceURL, role: "LiDAR confidence")
             }
+            try rewriteLiDARMetadata(sourceURL: sourceFrame.metadataURL, destinationFrame: destinationFrame, packageRoot: packageRoot)
         }
         if let sourceRoomPlanURL = source.roomPlanModelURL, let destinationRoomPlanURL = destination.roomPlanModelURL {
             try copyRequiredFile(from: sourceRoomPlanURL, to: destinationRoomPlanURL, role: "RoomPlan geometry")
@@ -529,6 +537,70 @@ public struct CaptureBundleExporter: Sendable {
             try fileManager.removeItem(at: destinationURL)
         }
         try fileManager.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    private func rewriteLiDARMetadata(
+        sourceURL: URL,
+        destinationFrame: CapturedLiDARFrame,
+        packageRoot: URL
+    ) throws {
+        let metadataURL = FileManager.default.fileExists(atPath: sourceURL.path) ? sourceURL : destinationFrame.metadataURL
+        guard var metadata = try? JSONDecoder.robotVisionLabDecoder.decode(
+            CapturedLiDARDepthMetadata.self,
+            from: Data(contentsOf: metadataURL)
+        ) else {
+            return
+        }
+        metadata.depthURL = PackageURLTools.packageRelativeURL(for: destinationFrame.depthURL, packageRoot: packageRoot)
+        metadata.confidenceURL = destinationFrame.confidenceURL.map {
+            PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot)
+        }
+        try JSONEncoder.robotVisionLabEncoder.encode(metadata).write(to: destinationFrame.metadataURL)
+    }
+
+    private func packageRelative(_ scanSession: ScanSession, packageRoot: URL) -> ScanSession {
+        ScanSession(
+            id: scanSession.id,
+            createdAt: scanSession.createdAt,
+            worldUnit: scanSession.worldUnit,
+            rgbFrames: scanSession.rgbFrames.map {
+                CapturedRGBFrame(
+                    imageURL: PackageURLTools.packageRelativeURL(for: $0.imageURL, packageRoot: packageRoot),
+                    pose: $0.pose,
+                    timestamp: $0.timestamp
+                )
+            },
+            lidarFrames: scanSession.lidarFrames.map {
+                CapturedLiDARFrame(
+                    depthURL: PackageURLTools.packageRelativeURL(for: $0.depthURL, packageRoot: packageRoot),
+                    confidenceURL: $0.confidenceURL.map {
+                        PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot)
+                    },
+                    metadataURL: PackageURLTools.packageRelativeURL(for: $0.metadataURL, packageRoot: packageRoot),
+                    pose: $0.pose,
+                    timestamp: $0.timestamp
+                )
+            },
+            roomPlanModelURL: scanSession.roomPlanModelURL.map {
+                PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot)
+            },
+            objectCaptureAssetURLs: scanSession.objectCaptureAssetURLs.map {
+                PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot)
+            },
+            objectCaptureImageSets: scanSession.objectCaptureImageSets.map {
+                ObjectCaptureImageSet(
+                    id: $0.id,
+                    label: $0.label,
+                    imagesDirectoryURL: PackageURLTools.packageRelativeURL(for: $0.imagesDirectoryURL, packageRoot: packageRoot),
+                    checkpointDirectoryURL: $0.checkpointDirectoryURL.map {
+                        PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot)
+                    },
+                    imageCount: $0.imageCount,
+                    createdAt: $0.createdAt,
+                    notes: $0.notes
+                )
+            }
+        )
     }
 
     private func safeObjectCaptureImageSetDirectoryName(for imageSet: ObjectCaptureImageSet, index: Int) -> String {

@@ -426,7 +426,10 @@ public struct RobotScenePackageExporter: Sendable {
         let navigationGraphURL = packageDirectory.appendingPathComponent("navigation_graph.json")
         try JSONEncoder.robotVisionLabEncoder.encode(navigationGraph).write(to: navigationGraphURL)
 
-        let evaluationReport = evaluationReportURL.flatMap { try? JSONDecoder.robotVisionLabDecoder.decode(ModelEvaluationReport.self, from: Data(contentsOf: $0)) }
+        let packagedEvaluationReportURL = try packageEvaluationReport(evaluationReportURL, packageDirectory: packageDirectory)
+        let evaluationReport = packagedEvaluationReportURL.flatMap {
+            try? JSONDecoder.robotVisionLabDecoder.decode(ModelEvaluationReport.self, from: Data(contentsOf: $0))
+        }
         let failureMap = makeFailureMap(from: packagedDatasetManifest, evaluationReport: evaluationReport)
         let failureMapURL = packageDirectory.appendingPathComponent("failure_map.json")
         try JSONEncoder.robotVisionLabEncoder.encode(failureMap).write(to: failureMapURL)
@@ -443,10 +446,12 @@ public struct RobotScenePackageExporter: Sendable {
 
         let reviewAsset = VisionProReviewAsset(
             splatSceneURL: packagedScene.sourceURL,
-            robotRouteURL: routeURL,
-            failureMapURL: failureMapURL,
-            datasetManifestURL: datasetManifestURL,
-            evaluationReportURL: evaluationReportURL,
+            robotRouteURL: PackageURLTools.packageRelativeURL(for: routeURL, packageRoot: packageDirectory),
+            failureMapURL: PackageURLTools.packageRelativeURL(for: failureMapURL, packageRoot: packageDirectory),
+            datasetManifestURL: PackageURLTools.packageRelativeURL(for: datasetManifestURL, packageRoot: packageDirectory),
+            evaluationReportURL: packagedEvaluationReportURL.map {
+                PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageDirectory)
+            },
             reviewSummaryURL: reviewSummaryReferenceURL
         )
         let artifactURLs: [(String, URL)] = [
@@ -457,7 +462,7 @@ public struct RobotScenePackageExporter: Sendable {
             ("review-route", routeURL),
             ("spatial-review-summary", reviewSummaryURL)
         ].compactMap { role, url in url.map { (role, $0) } }
-            + [evaluationReportURL.map { ("evaluation-report", $0) }].compactMap { $0 }
+            + [packagedEvaluationReportURL.map { ("evaluation-report", $0) }].compactMap { $0 }
         let artifacts = artifactURLs.map { tools.artifactRecord(role: $0.0, url: $0.1, packageRoot: packageDirectory) }
         let report = tools.validate(
             packageID: "\(manifest.recipeID)-robot-scene",
@@ -471,13 +476,15 @@ public struct RobotScenePackageExporter: Sendable {
         let package = RobotScenePackageManifest(
             id: "\(manifest.recipeID)-robot-scene",
             artifacts: artifacts,
-            validationReportURL: reportURLs.json,
-            humanReportURL: reportURLs.markdown,
-            capturePackageURL: capturePackageURL,
+            validationReportURL: PackageURLTools.packageRelativeURL(for: reportURLs.json, packageRoot: packageDirectory),
+            humanReportURL: PackageURLTools.packageRelativeURL(for: reportURLs.markdown, packageRoot: packageDirectory),
+            capturePackageURL: capturePackageURL.map {
+                PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageDirectory)
+            },
             splatScene: packagedScene,
-            datasetManifestURL: datasetManifestURL,
-            navigationGraphURL: navigationGraphURL,
-            failureMapURL: failureMapURL,
+            datasetManifestURL: PackageURLTools.packageRelativeURL(for: datasetManifestURL, packageRoot: packageDirectory),
+            navigationGraphURL: PackageURLTools.packageRelativeURL(for: navigationGraphURL, packageRoot: packageDirectory),
+            failureMapURL: PackageURLTools.packageRelativeURL(for: failureMapURL, packageRoot: packageDirectory),
             visionProReviewAsset: reviewAsset
         )
         try JSONEncoder.robotVisionLabEncoder.encode(package).write(to: packageDirectory.appendingPathComponent("robotscene.json"))
@@ -489,7 +496,7 @@ public struct RobotScenePackageExporter: Sendable {
             return scene
         }
         let fileName = sourceURL.lastPathComponent.isEmpty ? "scene.ply" : sourceURL.lastPathComponent
-        let relativeURL = URL(string: "assets/splat/\(fileName)") ?? URL(fileURLWithPath: "assets/splat/\(fileName)")
+        let relativeURL = PackageURLTools.relativeURL(path: "assets/splat/\(fileName)")
         let targetURL = packageDirectory.appendingPathComponent(relativeURL.relativePath)
         if sourceURL.standardizedFileURL.path != targetURL.standardizedFileURL.path {
             try FileManager.default.createDirectory(at: targetURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -505,6 +512,23 @@ public struct RobotScenePackageExporter: Sendable {
             bounds: scene.bounds,
             roomPlanModelURL: scene.roomPlanModelURL
         )
+    }
+
+    private func packageEvaluationReport(_ sourceURL: URL?, packageDirectory: URL) throws -> URL? {
+        guard let sourceURL else { return nil }
+        let destinationURL = packageDirectory.appendingPathComponent("review/evaluation_report.json")
+        let resolvedSourceURL = PackageURLTools.resolve(sourceURL, relativeTo: packageDirectory)
+        guard FileManager.default.fileExists(atPath: resolvedSourceURL.path) else {
+            return nil
+        }
+        try FileManager.default.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if resolvedSourceURL.standardizedFileURL.path != destinationURL.standardizedFileURL.path {
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                try FileManager.default.removeItem(at: destinationURL)
+            }
+            try FileManager.default.copyItem(at: resolvedSourceURL, to: destinationURL)
+        }
+        return destinationURL
     }
 
     private func packagedSource(from source: SplatSource, packagedURL: URL) -> SplatSource {

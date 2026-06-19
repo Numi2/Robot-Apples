@@ -355,8 +355,10 @@ public final class CaptureClientModel {
         let imageSet = ObjectCaptureImageSet(
             id: imageSetID,
             label: label.isEmpty ? nil : label,
-            imagesDirectoryURL: packagedImagesURL,
-            checkpointDirectoryURL: packagedCheckpointURL,
+            imagesDirectoryURL: PackageURLTools.packageRelativeURL(for: packagedImagesURL, packageRoot: packageURL),
+            checkpointDirectoryURL: packagedCheckpointURL.map {
+                PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageURL)
+            },
             imageCount: imageCount,
             createdAt: createdAt,
             notes: "Captured with iPhone ObjectCaptureSession."
@@ -696,7 +698,8 @@ public final class CaptureClientModel {
     ) {
         let record = tools.artifactRecord(role: role, url: url, packageRoot: packageRoot)
         manifest.artifacts.removeAll {
-            $0.role == role && $0.url.standardizedFileURL.path == url.standardizedFileURL.path
+            $0.role == role
+                && PackageURLTools.resolve($0.url, relativeTo: packageRoot).standardizedFileURL.path == url.standardizedFileURL.path
         }
         manifest.artifacts.append(record)
     }

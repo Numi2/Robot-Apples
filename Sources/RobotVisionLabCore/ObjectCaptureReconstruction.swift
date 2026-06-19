@@ -117,10 +117,7 @@ public struct ObjectCaptureReconstructionPlanner: Sendable {
     }
 
     private func resolve(_ url: URL, relativeTo packageRoot: URL) -> URL {
-        if url.isFileURL, FileManager.default.fileExists(atPath: url.path) {
-            return url
-        }
-        return packageRoot.appendingPathComponent(url.relativePath)
+        PackageURLTools.resolve(url, relativeTo: packageRoot)
     }
 
     private func safeOutputName(for imageSet: ObjectCaptureImageSet, index: Int) -> String {

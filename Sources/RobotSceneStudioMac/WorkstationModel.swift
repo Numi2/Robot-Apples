@@ -219,6 +219,8 @@ public final class WorkstationModel {
             let reportURL = state.workspaceURL.appendingPathComponent("robotcapture_import_report.json")
             try importer.writeReport(report, to: reportURL)
 
+            resetPreparedCaptureProducts(clearLinkedSplat: true)
+            state.artifacts = []
             importedCapture = imported
             importHealthReport = report
             state.activeCaptureURL = packageURL
@@ -241,6 +243,7 @@ public final class WorkstationModel {
                 outputDirectory: outputURL,
                 holdoutEveryNthFrame: holdoutEveryNthFrame
             )
+            resetPreparedCaptureProducts(clearLinkedSplat: false)
             preparation = output
             state.frameCount = output.report.routeKeyframeCount
             state.warningCount += output.report.warnings.count
@@ -269,9 +272,9 @@ public final class WorkstationModel {
 
             var reports: [ObjectCaptureReconstructionReport] = []
             for request in requests {
-                let report = try await ObjectCaptureReconstructor().reconstruct(request)
+                var report = try await ObjectCaptureReconstructor().reconstruct(request)
+                report.outputURL = try persistReconstructedObject(report: report, importedCapture: &importedCapture)
                 reports.append(report)
-                importedCapture.captureBundle.objectCaptureAssetURLs.append(report.outputURL)
                 appendArtifact(
                     title: "Object Capture \(report.label ?? report.imageSetID)",
                     url: report.outputURL,
@@ -682,51 +685,59 @@ public final class WorkstationModel {
 
     public func writeSplatTrainingPackage() {
         perform(stage: .planningTraining) {
-            guard let preparation else {
-                throw WorkstationError.missingPreparedCapture
-            }
-            let job = SplatTrainingJob(
-                id: "\(preparation.splatTrainingManifest.id)-apple-native-splat-package",
-                manifest: preparation.splatTrainingManifest,
-                backend: AppleNativeTrainingBackend(),
-                mode: .nativeAppleSilicon
-            )
-            let package = try SplatTrainingPackageBuilder().writePackage(
-                job: job,
-                manifestURL: preparation.report.splatTrainingManifestURL,
-                outputDirectory: state.workspaceURL.appendingPathComponent("SplatTrainingPackage", isDirectory: true)
-            )
+            let package = try makeSplatTrainingPackage()
             splatTrainingPackage = package
-            appendArtifact(title: "Splat Training Package", url: package.trainScriptURL.deletingLastPathComponent(), kind: "splat-training-package")
-            appendArtifact(title: "Splat Training Frame Index", url: package.frameIndexURL, kind: "splat-training-index")
-            appendArtifact(title: "Capture Splat MLX Script", url: package.trainScriptURL, kind: "splat-training-script")
+            appendSplatTrainingPackageArtifacts(package)
+        }
+    }
+
+    private func makeSplatTrainingPackage() throws -> SplatTrainingPackageManifest {
+        guard let preparation else {
+            throw WorkstationError.missingPreparedCapture
+        }
+        let job = SplatTrainingJob(
+            id: "\(preparation.splatTrainingManifest.id)-apple-native-splat-package",
+            manifest: preparation.splatTrainingManifest,
+            backend: AppleNativeTrainingBackend(),
+            mode: .nativeAppleSilicon
+        )
+        return try SplatTrainingPackageBuilder().writePackage(
+            job: job,
+            manifestURL: preparation.report.splatTrainingManifestURL,
+            outputDirectory: state.workspaceURL.appendingPathComponent("SplatTrainingPackage", isDirectory: true)
+        )
+    }
+
+    private func appendSplatTrainingPackageArtifacts(_ package: SplatTrainingPackageManifest) {
+        appendArtifact(title: "Splat Training Package", url: package.trainScriptURL.deletingLastPathComponent(), kind: "splat-training-package")
+        appendArtifact(title: "Splat Training Frame Index", url: package.frameIndexURL, kind: "splat-training-index")
+        appendArtifact(title: "Capture Splat MLX Script", url: package.trainScriptURL, kind: "splat-training-script")
+        if let optimizerPlanURL = package.optimizerPlanURL {
+            appendArtifact(title: "Production Splat Optimization Plan", url: optimizerPlanURL, kind: "splat-optimization-plan")
+        }
+        if let productionDatasetURL = package.productionDatasetURL {
+            appendArtifact(title: "Production Splat Dataset", url: productionDatasetURL, kind: "splat-training-dataset")
+        }
+        if let productionRunnerURL = package.productionRunnerURL {
+            appendArtifact(title: "Production Splat Optimizer Runner", url: productionRunnerURL, kind: "splat-training-script")
         }
     }
 
     public func runSplatTraining(splatsPerFrame: Int = 24, epochs: Int = 25, asciiPLY: Bool = false) {
-        perform(stage: .runningSplatTraining) {
+        Task {
+            await runSplatTrainingAsync(splatsPerFrame: splatsPerFrame, epochs: epochs, asciiPLY: asciiPLY)
+        }
+    }
+
+    public func runSplatTrainingAsync(splatsPerFrame: Int = 24, epochs: Int = 25, asciiPLY: Bool = false) async {
+        await performAsync(stage: .runningSplatTraining) {
             let package: SplatTrainingPackageManifest
             if let existingPackage = splatTrainingPackage {
                 package = existingPackage
             } else {
-                guard let preparation else {
-                    throw WorkstationError.missingPreparedCapture
-                }
-                let job = SplatTrainingJob(
-                    id: "\(preparation.splatTrainingManifest.id)-apple-native-splat-package",
-                    manifest: preparation.splatTrainingManifest,
-                    backend: AppleNativeTrainingBackend(),
-                    mode: .nativeAppleSilicon
-                )
-                package = try SplatTrainingPackageBuilder().writePackage(
-                    job: job,
-                    manifestURL: preparation.report.splatTrainingManifestURL,
-                    outputDirectory: state.workspaceURL.appendingPathComponent("SplatTrainingPackage", isDirectory: true)
-                )
+                package = try makeSplatTrainingPackage()
                 splatTrainingPackage = package
-                appendArtifact(title: "Splat Training Package", url: package.trainScriptURL.deletingLastPathComponent(), kind: "splat-training-package")
-                appendArtifact(title: "Splat Training Frame Index", url: package.frameIndexURL, kind: "splat-training-index")
-                appendArtifact(title: "Capture Splat MLX Script", url: package.trainScriptURL, kind: "splat-training-script")
+                appendSplatTrainingPackageArtifacts(package)
             }
 
             let job = SplatTrainingJob(
@@ -739,7 +750,7 @@ public final class WorkstationModel {
                 mode: .nativeAppleSilicon
             )
             let startedAt = Date()
-            let result = try runProcess(
+            let result = try await runProcessAsync(
                 executableURL: splatTrainingPythonExecutableURL(),
                 arguments: splatTrainingPythonPrefixArguments() + splatTrainingArguments(package: package, splatsPerFrame: splatsPerFrame, epochs: epochs, asciiPLY: asciiPLY),
                 currentDirectoryURL: package.trainScriptURL.deletingLastPathComponent()
@@ -779,6 +790,126 @@ public final class WorkstationModel {
             metalRenderProfile = nil
             appendArtifact(title: "Gaussian Splat", url: outputURL, kind: "splat")
             appendDiagnostic("Apple MLX splat training complete: \(outputURL.lastPathComponent) linked as the active Gaussian splat.")
+        }
+    }
+
+    public func runProductionSplatOptimization(
+        maxIterations: Int = 30_000,
+        method: String = "splatfacto",
+        minTrainFrames: Int = ProductionSplatDatasetRequirements.production.minTrainingFrameCount,
+        minEvalFrames: Int = ProductionSplatDatasetRequirements.production.minValidationFrameCount,
+        minTotalFrames: Int = ProductionSplatDatasetRequirements.production.minTotalFrameCount,
+        minPSNR: Double? = nil,
+        minSSIM: Double? = nil,
+        maxLPIPS: Double? = nil
+    ) {
+        Task {
+            await runProductionSplatOptimizationAsync(
+                maxIterations: maxIterations,
+                method: method,
+                minTrainFrames: minTrainFrames,
+                minEvalFrames: minEvalFrames,
+                minTotalFrames: minTotalFrames,
+                minPSNR: minPSNR,
+                minSSIM: minSSIM,
+                maxLPIPS: maxLPIPS
+            )
+        }
+    }
+
+    public func runProductionSplatOptimizationAsync(
+        maxIterations: Int = 30_000,
+        method: String = "splatfacto",
+        minTrainFrames: Int = ProductionSplatDatasetRequirements.production.minTrainingFrameCount,
+        minEvalFrames: Int = ProductionSplatDatasetRequirements.production.minValidationFrameCount,
+        minTotalFrames: Int = ProductionSplatDatasetRequirements.production.minTotalFrameCount,
+        minPSNR: Double? = nil,
+        minSSIM: Double? = nil,
+        maxLPIPS: Double? = nil
+    ) async {
+        await performAsync(stage: .runningSplatTraining) {
+            let package: SplatTrainingPackageManifest
+            if let existingPackage = splatTrainingPackage {
+                package = existingPackage
+            } else {
+                package = try makeSplatTrainingPackage()
+                splatTrainingPackage = package
+                appendSplatTrainingPackageArtifacts(package)
+            }
+            guard let runnerURL = package.productionRunnerURL else {
+                throw WorkstationError.missingProductionOptimizerPackage
+            }
+            let manifest = try JSONDecoder.robotVisionLabDecoder.decode(
+                SplatTrainingManifest.self,
+                from: Data(contentsOf: package.sourceManifestURL)
+            )
+            let job = SplatTrainingJob(
+                id: "\(package.id)-production-run",
+                manifest: manifest,
+                backend: AppleNativeTrainingBackend(
+                    name: "Production Splatfacto/gsplat Optimizer",
+                    framework: .nerfstudioGSplat,
+                    deploymentTarget: .coreML
+                ),
+                mode: .productionGSplat
+            )
+            var runnerArguments = [
+                runnerURL.path,
+                "--method", method,
+                "--max-num-iterations", "\(max(maxIterations, 1))",
+                "--output", package.outputURL.path,
+                "--min-train-frames", "\(max(minTrainFrames, 1))",
+                "--min-eval-frames", "\(max(minEvalFrames, 0))",
+                "--min-total-frames", "\(max(minTotalFrames, 0))"
+            ]
+            if let minPSNR {
+                runnerArguments.append(contentsOf: ["--min-psnr", "\(minPSNR)"])
+            }
+            if let minSSIM {
+                runnerArguments.append(contentsOf: ["--min-ssim", "\(minSSIM)"])
+            }
+            if let maxLPIPS {
+                runnerArguments.append(contentsOf: ["--max-lpips", "\(maxLPIPS)"])
+            }
+            let startedAt = Date()
+            let result = try await runProcessAsync(
+                executableURL: splatTrainingPythonExecutableURL(),
+                arguments: splatTrainingPythonPrefixArguments() + runnerArguments,
+                currentDirectoryURL: runnerURL.deletingLastPathComponent()
+            )
+            let finishedAt = Date()
+            let report = SplatTrainingReportBuilder().completedReport(
+                job: job,
+                startedAt: startedAt,
+                finishedAt: finishedAt,
+                exitCode: result.exitCode,
+                standardOutput: result.standardOutput,
+                standardError: result.standardError
+            )
+            let reportURL = state.workspaceURL.appendingPathComponent("production_splat_optimization_report.json")
+            try SplatTrainingReportWriter().write(report, to: reportURL)
+            splatTrainingReport = report
+            appendArtifact(title: "Production Splat Optimization Report", url: reportURL, kind: "training-report")
+
+            guard result.exitCode == 0 else {
+                throw WorkstationError.splatOptimizationFailed(reportURL)
+            }
+
+            let asset = try GaussianSplatImporter().inspect(url: package.outputURL)
+            splatAsset = asset
+            state.activeSplatURL = package.outputURL
+            datasetManifest = nil
+            metalRenderProfile = nil
+            appendArtifact(title: "Production Gaussian Splat", url: package.outputURL, kind: "splat")
+            let summaryURL = package.outputURL.deletingPathExtension().appendingPathExtension("production_training_summary.json")
+            if FileManager.default.fileExists(atPath: summaryURL.path) {
+                appendArtifact(title: "Production Splat Summary", url: summaryURL, kind: "training-summary")
+            }
+            let evalMetricsURL = runnerURL.deletingLastPathComponent().appendingPathComponent("production_eval_metrics.json")
+            if FileManager.default.fileExists(atPath: evalMetricsURL.path) {
+                appendArtifact(title: "Production Splat Eval Metrics", url: evalMetricsURL, kind: "training-metrics")
+            }
+            appendDiagnostic("Production splat optimization complete: \(package.outputURL.lastPathComponent) linked as the active Gaussian splat.")
         }
     }
 
@@ -860,7 +991,46 @@ public final class WorkstationModel {
         }
     }
 
-    public func runCurrentPipeline(captureURL: URL, splatURL: URL? = nil) {
+    public func runCurrentPipeline(
+        captureURL: URL,
+        splatURL: URL? = nil,
+        productionMaxIterations: Int = 30_000,
+        productionMethod: String = "splatfacto",
+        productionMinTrainFrames: Int = ProductionSplatDatasetRequirements.production.minTrainingFrameCount,
+        productionMinEvalFrames: Int = ProductionSplatDatasetRequirements.production.minValidationFrameCount,
+        productionMinTotalFrames: Int = ProductionSplatDatasetRequirements.production.minTotalFrameCount,
+        minPSNR: Double? = nil,
+        minSSIM: Double? = nil,
+        maxLPIPS: Double? = nil
+    ) {
+        Task {
+            await runCurrentPipelineAsync(
+                captureURL: captureURL,
+                splatURL: splatURL,
+                productionMaxIterations: productionMaxIterations,
+                productionMethod: productionMethod,
+                productionMinTrainFrames: productionMinTrainFrames,
+                productionMinEvalFrames: productionMinEvalFrames,
+                productionMinTotalFrames: productionMinTotalFrames,
+                minPSNR: minPSNR,
+                minSSIM: minSSIM,
+                maxLPIPS: maxLPIPS
+            )
+        }
+    }
+
+    public func runCurrentPipelineAsync(
+        captureURL: URL,
+        splatURL: URL? = nil,
+        productionMaxIterations: Int = 30_000,
+        productionMethod: String = "splatfacto",
+        productionMinTrainFrames: Int = ProductionSplatDatasetRequirements.production.minTrainingFrameCount,
+        productionMinEvalFrames: Int = ProductionSplatDatasetRequirements.production.minValidationFrameCount,
+        productionMinTotalFrames: Int = ProductionSplatDatasetRequirements.production.minTotalFrameCount,
+        minPSNR: Double? = nil,
+        minSSIM: Double? = nil,
+        maxLPIPS: Double? = nil
+    ) async {
         importCapture(at: captureURL)
         guard state.stage != .failed else { return }
         prepareCapture()
@@ -868,14 +1038,25 @@ public final class WorkstationModel {
         if let splatURL {
             linkSplat(at: splatURL)
             guard state.stage != .failed else { return }
+        } else {
+            appendDiagnostic("No linked splat supplied; running production Splatfacto/gsplat optimization before render and export.")
+            await runProductionSplatOptimizationAsync(
+                maxIterations: productionMaxIterations,
+                method: productionMethod,
+                minTrainFrames: productionMinTrainFrames,
+                minEvalFrames: productionMinEvalFrames,
+                minTotalFrames: productionMinTotalFrames,
+                minPSNR: minPSNR,
+                minSSIM: minSSIM,
+                maxLPIPS: maxLPIPS
+            )
+            guard state.stage != .failed else { return }
         }
         buildDatasetManifest()
         guard state.stage != .failed else { return }
         planMetalRender()
         guard state.stage != .failed else { return }
         renderMetalSplats()
-        guard state.stage != .failed else { return }
-        planTraining()
         guard state.stage != .failed else { return }
         exportRobotScene()
     }
@@ -951,7 +1132,21 @@ public final class WorkstationModel {
         ProcessInfo.processInfo.environment["ROBOT_SCENE_PYTHON"] == nil ? ["python3"] : []
     }
 
-    private func runProcess(
+    private nonisolated func runProcessAsync(
+        executableURL: URL,
+        arguments: [String],
+        currentDirectoryURL: URL
+    ) async throws -> (exitCode: Int32, standardOutput: String, standardError: String) {
+        try await Task.detached(priority: .utility) {
+            try Self.runProcessCollectingOutput(
+                executableURL: executableURL,
+                arguments: arguments,
+                currentDirectoryURL: currentDirectoryURL
+            )
+        }.value
+    }
+
+    private nonisolated static func runProcessCollectingOutput(
         executableURL: URL,
         arguments: [String],
         currentDirectoryURL: URL
@@ -966,11 +1161,29 @@ public final class WorkstationModel {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
+        let standardOutput = ProcessOutputBuffer()
+        let standardError = ProcessOutputBuffer()
+        outputPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty {
+                standardOutput.append(data)
+            }
+        }
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty {
+                standardError.append(data)
+            }
+        }
         try process.run()
         process.waitUntilExit()
 
-        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let error = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        outputPipe.fileHandleForReading.readabilityHandler = nil
+        errorPipe.fileHandleForReading.readabilityHandler = nil
+        standardOutput.append(outputPipe.fileHandleForReading.readDataToEndOfFile())
+        standardError.append(errorPipe.fileHandleForReading.readDataToEndOfFile())
+        let output = String(data: standardOutput.data, encoding: .utf8) ?? ""
+        let error = String(data: standardError.data, encoding: .utf8) ?? ""
         return (process.terminationStatus, output, error)
     }
 
@@ -1037,10 +1250,10 @@ public final class WorkstationModel {
     }
 
     private func resolveCaptureAssetURL(_ url: URL) -> URL {
-        guard url.scheme == nil, let packageRoot = importedCapture?.packageRoot else {
+        guard let packageRoot = importedCapture?.packageRoot else {
             return url
         }
-        return packageRoot.appendingPathComponent(url.relativePath)
+        return PackageURLTools.resolve(url, relativeTo: packageRoot)
     }
 
     private func ensureDatasetManifest() throws -> DatasetManifest {
@@ -1112,6 +1325,167 @@ public final class WorkstationModel {
         state.diagnostics.append(message)
     }
 
+    private func resetPreparedCaptureProducts(clearLinkedSplat: Bool) {
+        preparation = nil
+        objectCaptureReconstructionReports = []
+        alignedRoute = nil
+        expandedRoute = nil
+        datasetManifest = nil
+        evaluationReportURL = nil
+        robotSceneManifest = nil
+        spatialReviewSummary = nil
+        failureMarkers = []
+        routeAlignmentReport = nil
+        routeExpansionReport = nil
+        routeConfidenceMetrics = nil
+        coverageReport = nil
+        navigationGraph = nil
+        metalRenderProfile = nil
+        mlxTrainingPackage = nil
+        splatTrainingPackage = nil
+        splatTrainingReport = nil
+        failureMapCalibrationReport = nil
+        state.activeRobotSceneURL = nil
+        state.activeRobotSceneID = nil
+        state.failureMarkerCount = 0
+        if clearLinkedSplat {
+            splatAsset = nil
+            state.activeSplatURL = nil
+        }
+    }
+
+    private func persistReconstructedObject(
+        report: ObjectCaptureReconstructionReport,
+        importedCapture: inout RobotCaptureImport
+    ) throws -> URL {
+        let packageRoot = importedCapture.packageRoot
+        let destinationDirectory = packageRoot.appendingPathComponent("object-capture/reconstructed", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        let baseName = safeFileComponent(report.label ?? report.imageSetID)
+        let destinationURL = uniqueFileURL(
+            in: destinationDirectory,
+            baseName: baseName.isEmpty ? "object" : baseName,
+            pathExtension: report.outputURL.pathExtension.isEmpty ? "usdz" : report.outputURL.pathExtension
+        )
+        if report.outputURL.standardizedFileURL.path != destinationURL.standardizedFileURL.path {
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                try FileManager.default.removeItem(at: destinationURL)
+            }
+            try FileManager.default.copyItem(at: report.outputURL, to: destinationURL)
+        }
+
+        var captureBundle = importedCapture.captureBundle
+        captureBundle.objectCaptureAssetURLs.removeAll {
+            PackageURLTools.resolve($0, relativeTo: packageRoot).standardizedFileURL.path == destinationURL.standardizedFileURL.path
+        }
+        captureBundle.objectCaptureAssetURLs.append(destinationURL)
+        captureBundle.scanSession.objectCaptureAssetURLs = captureBundle.objectCaptureAssetURLs
+        let portableCaptureBundle = packageRelative(captureBundle, packageRoot: packageRoot)
+        try JSONEncoder.robotVisionLabEncoder.encode(portableCaptureBundle).write(to: packageRoot.appendingPathComponent("capture_bundle.json"))
+
+        var manifest = importedCapture.manifest
+        let tools = SharedProjectFormatTools()
+        manifest.artifacts.removeAll {
+            $0.role == "object-capture-geometry"
+                && PackageURLTools.resolve($0.url, relativeTo: packageRoot).standardizedFileURL.path == destinationURL.standardizedFileURL.path
+        }
+        manifest.artifacts.append(tools.artifactRecord(role: "object-capture-geometry", url: destinationURL, packageRoot: packageRoot))
+        let validation = tools.validate(
+            packageID: manifest.id,
+            packageKind: "robotcapture",
+            schemaVersion: manifest.schemaVersion,
+            artifacts: manifest.artifacts,
+            policy: manifest.artifactPolicy,
+            packageRoot: packageRoot
+        )
+        let reportURLs = try tools.writeReports(validation, to: packageRoot, title: ".robotcapture Project Report")
+        manifest.validationReportURL = PackageURLTools.packageRelativeURL(for: reportURLs.json, packageRoot: packageRoot)
+        manifest.humanReportURL = PackageURLTools.packageRelativeURL(for: reportURLs.markdown, packageRoot: packageRoot)
+        try JSONEncoder.robotVisionLabEncoder.encode(manifest).write(to: packageRoot.appendingPathComponent("robotcapture.json"))
+
+        importedCapture.manifest = manifest
+        importedCapture.captureBundle = captureBundle
+        return destinationURL
+    }
+
+    private func packageRelative(_ bundle: CaptureBundleManifest, packageRoot: URL) -> CaptureBundleManifest {
+        let scanSession = packageRelative(bundle.scanSession, packageRoot: packageRoot)
+        return CaptureBundleManifest(
+            scanSession: scanSession,
+            capturePlan: bundle.capturePlan,
+            rgbFrames: bundle.rgbFrames.map { packageRelative($0, packageRoot: packageRoot) },
+            lidarFrames: bundle.lidarFrames.map { packageRelative($0, packageRoot: packageRoot) },
+            roomPlanModelURL: bundle.roomPlanModelURL.map { PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot) },
+            objectCaptureAssetURLs: bundle.objectCaptureAssetURLs.map { PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot) },
+            objectCaptureImageSets: bundle.objectCaptureImageSets.map { packageRelative($0, packageRoot: packageRoot) },
+            splatTrainingManifestURL: PackageURLTools.packageRelativeURL(for: bundle.splatTrainingManifestURL, packageRoot: packageRoot)
+        )
+    }
+
+    private func packageRelative(_ scanSession: ScanSession, packageRoot: URL) -> ScanSession {
+        ScanSession(
+            id: scanSession.id,
+            createdAt: scanSession.createdAt,
+            worldUnit: scanSession.worldUnit,
+            rgbFrames: scanSession.rgbFrames.map { packageRelative($0, packageRoot: packageRoot) },
+            lidarFrames: scanSession.lidarFrames.map { packageRelative($0, packageRoot: packageRoot) },
+            roomPlanModelURL: scanSession.roomPlanModelURL.map { PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot) },
+            objectCaptureAssetURLs: scanSession.objectCaptureAssetURLs.map { PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot) },
+            objectCaptureImageSets: scanSession.objectCaptureImageSets.map { packageRelative($0, packageRoot: packageRoot) }
+        )
+    }
+
+    private func packageRelative(_ frame: CapturedRGBFrame, packageRoot: URL) -> CapturedRGBFrame {
+        CapturedRGBFrame(
+            imageURL: PackageURLTools.packageRelativeURL(for: frame.imageURL, packageRoot: packageRoot),
+            pose: frame.pose,
+            timestamp: frame.timestamp
+        )
+    }
+
+    private func packageRelative(_ frame: CapturedLiDARFrame, packageRoot: URL) -> CapturedLiDARFrame {
+        CapturedLiDARFrame(
+            depthURL: PackageURLTools.packageRelativeURL(for: frame.depthURL, packageRoot: packageRoot),
+            confidenceURL: frame.confidenceURL.map { PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot) },
+            metadataURL: PackageURLTools.packageRelativeURL(for: frame.metadataURL, packageRoot: packageRoot),
+            pose: frame.pose,
+            timestamp: frame.timestamp
+        )
+    }
+
+    private func packageRelative(_ imageSet: ObjectCaptureImageSet, packageRoot: URL) -> ObjectCaptureImageSet {
+        ObjectCaptureImageSet(
+            id: imageSet.id,
+            label: imageSet.label,
+            imagesDirectoryURL: PackageURLTools.packageRelativeURL(for: imageSet.imagesDirectoryURL, packageRoot: packageRoot),
+            checkpointDirectoryURL: imageSet.checkpointDirectoryURL.map {
+                PackageURLTools.packageRelativeURL(for: $0, packageRoot: packageRoot)
+            },
+            imageCount: imageSet.imageCount,
+            createdAt: imageSet.createdAt,
+            notes: imageSet.notes
+        )
+    }
+
+    private func uniqueFileURL(in directory: URL, baseName: String, pathExtension: String) -> URL {
+        var index = 1
+        while true {
+            let suffix = index == 1 ? "" : "-\(index)"
+            let candidate = directory.appendingPathComponent("\(baseName)\(suffix)").appendingPathExtension(pathExtension)
+            if !FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+            index += 1
+        }
+    }
+
+    private func safeFileComponent(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let scalars = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
+        let sanitized = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        return sanitized.isEmpty ? "object" : sanitized
+    }
+
     private func activeSceneBounds(for route: RobotPath) throws -> AxisAlignedBounds {
         if let splatAsset {
             return splatAsset.bounds
@@ -1128,10 +1502,7 @@ public final class WorkstationModel {
     }
 
     private func resolve(_ url: URL, relativeTo root: URL) -> URL {
-        if url.isFileURL && url.path.hasPrefix("/") {
-            return url
-        }
-        return root.appendingPathComponent(url.relativePath)
+        PackageURLTools.resolve(url, relativeTo: root)
     }
 
     private func handleTransferEvent(_ event: RobotCaptureTransferEvent) {
@@ -1186,6 +1557,24 @@ public final class WorkstationModel {
     }
 }
 
+private final class ProcessOutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = Data()
+
+    func append(_ data: Data) {
+        guard !data.isEmpty else { return }
+        lock.lock()
+        storage.append(data)
+        lock.unlock()
+    }
+
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
 private final class WorkstationMultipeerReceiverDelegate: RobotCaptureTransferDelegate, @unchecked Sendable {
     private let handler: @MainActor @Sendable (RobotCaptureTransferEvent) -> Void
 
@@ -1207,6 +1596,8 @@ public enum WorkstationError: Error, LocalizedError {
     case missingSplat
     case nativeRenderProductsNotReady(URL)
     case trainingFailed(URL)
+    case missingProductionOptimizerPackage
+    case splatOptimizationFailed(URL)
 
     public var errorDescription: String? {
         switch self {
@@ -1220,6 +1611,10 @@ public enum WorkstationError: Error, LocalizedError {
             "Native render products are not ready for MLX training. Render Metal splats first and inspect \(url.path)."
         case .trainingFailed(let url):
             "Apple MLX splat training failed. Inspect \(url.path)."
+        case .missingProductionOptimizerPackage:
+            "Write a splat training package before running production splat optimization."
+        case .splatOptimizationFailed(let url):
+            "Production splat optimization failed. Inspect \(url.path)."
         }
     }
 }

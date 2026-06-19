@@ -380,10 +380,7 @@ public final class SpatialReviewModel {
     }
 
     private func resolve(_ url: URL, relativeTo root: URL) -> URL {
-        if url.isFileURL && FileManager.default.fileExists(atPath: url.path) {
-            return url
-        }
-        return root.appendingPathComponent(url.relativePath)
+        PackageURLTools.resolve(url, relativeTo: root)
     }
 
     private func matrixPayload(for transform: Transform3D) -> [Float] {

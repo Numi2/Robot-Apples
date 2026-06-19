@@ -1,4 +1,5 @@
 import Foundation
+import SplatIO
 import simd
 
 public struct RenderableGaussianSplat: Codable, Equatable, Sendable {
@@ -349,6 +350,8 @@ public struct GaussianSplatCloudLoader: Sendable {
             return try loadPLY(url: url)
         case "splat":
             return try loadBinarySplat(url: url)
+        case "spz":
+            return try loadSplatIO(url: url)
         default:
             throw GaussianSplatImportError.unsupportedFormat(url.pathExtension)
         }
@@ -421,9 +424,9 @@ public struct GaussianSplatCloudLoader: Sendable {
             }
 
             let rgb = SIMD3<Float>(
-                redIndex.flatMap { Float(colorComponent: values[$0]) } ?? 1,
-                greenIndex.flatMap { Float(colorComponent: values[$0]) } ?? 1,
-                blueIndex.flatMap { Float(colorComponent: values[$0]) } ?? 1
+                redIndex.flatMap { asciiColorComponent(values[$0], propertyName: propertyNames[$0]) } ?? 1,
+                greenIndex.flatMap { asciiColorComponent(values[$0], propertyName: propertyNames[$0]) } ?? 1,
+                blueIndex.flatMap { asciiColorComponent(values[$0], propertyName: propertyNames[$0]) } ?? 1
             )
             let opacity = opacityIndex.flatMap { Float(opacityComponent: values[$0]) } ?? 1
             let scale = SIMD3<Float>(
@@ -590,6 +593,55 @@ public struct GaussianSplatCloudLoader: Sendable {
         )
     }
 
+    private func loadSplatIO(url: URL) throws -> RenderableGaussianSplatCloud {
+        let points = try readSplatIOPoints(url: url)
+        guard !points.isEmpty else {
+            throw GaussianSplatImportError.invalidSPZ("SPZ contains no splat points.")
+        }
+        var splats: [RenderableGaussianSplat] = []
+        splats.reserveCapacity(points.count)
+        var minimum = SIMD3<Double>(Double.greatestFiniteMagnitude, Double.greatestFiniteMagnitude, Double.greatestFiniteMagnitude)
+        var maximum = SIMD3<Double>(-Double.greatestFiniteMagnitude, -Double.greatestFiniteMagnitude, -Double.greatestFiniteMagnitude)
+        var properties: Set<GaussianSplatProperty> = [.position, .color, .opacity, .scale, .rotation]
+        for point in points {
+            let color = point.color.asSRGBFloat
+            let position = point.position
+            splats.append(RenderableGaussianSplat(
+                position: position,
+                color: SIMD4<Float>(color.x, color.y, color.z, point.opacity.asLinearFloat),
+                scale: point.scale.asLinearFloat,
+                rotation: point.rotation.vector
+            ))
+            minimum = min(minimum, SIMD3<Double>(Double(position.x), Double(position.y), Double(position.z)))
+            maximum = max(maximum, SIMD3<Double>(Double(position.x), Double(position.y), Double(position.z)))
+            if point.color.shDegree > .sh0 {
+                properties.insert(.sphericalHarmonics)
+            }
+        }
+        return RenderableGaussianSplatCloud(
+            sourceURL: url,
+            splats: splats,
+            bounds: AxisAlignedBounds(minimum: minimum, maximum: maximum),
+            properties: properties
+        )
+    }
+
+    private func readSplatIOPoints(url: URL) throws -> [SplatPoint] {
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = SplatIOCloudReadBox()
+        Task.detached {
+            do {
+                let reader = try AutodetectSceneReader(url)
+                box.result = .success(try await reader.readAll())
+            } catch {
+                box.result = .failure(error)
+            }
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return try box.result?.get() ?? []
+    }
+
     private func parsePLYLayout(lines: [String]) throws -> PLYVertexLayout {
         var vertexCount = 0
         var properties: [PLYProperty] = []
@@ -643,10 +695,25 @@ public struct GaussianSplatCloudLoader: Sendable {
 
     private func readColor(_ data: Data, base: Int, property: PLYProperty) throws -> Float {
         let value = try readFloat(data, base: base, property: property)
+        if property.name.hasPrefix("f_dc_") {
+            return shDCToSRGB(value)
+        }
         if property.type == .uchar || property.type == .uint8 {
             return max(0, min(1, value / 255))
         }
         return max(0, min(1, value))
+    }
+
+    private func asciiColorComponent(_ value: String.SubSequence, propertyName: String) -> Float? {
+        if propertyName.hasPrefix("f_dc_") {
+            guard let float = Float(value) else { return nil }
+            return shDCToSRGB(float)
+        }
+        return Float(colorComponent: value)
+    }
+
+    private func shDCToSRGB(_ value: Float) -> Float {
+        max(0, min(1, 0.5 + 0.28209479177387814 * value))
     }
 
     private func sigmoid(_ value: Float) -> Float {
@@ -656,6 +723,10 @@ public struct GaussianSplatCloudLoader: Sendable {
     private func expClamped(_ value: Float) -> Float {
         max(0.001, min(0.5, exp(value)))
     }
+}
+
+private final class SplatIOCloudReadBox: @unchecked Sendable {
+    var result: Result<[SplatPoint], Error>?
 }
 
 private extension Float {

@@ -8,6 +8,7 @@ enum SplatTrainingCLIError: Error {
     case missingOutputDirectory
     case missingRequiredInput(String)
     case splatTrainingFailed(URL)
+    case productionSplatOptimizationFailed(URL)
     case spatialReviewFailed(String)
 }
 
@@ -22,6 +23,8 @@ extension SplatTrainingCLIError: LocalizedError {
             message
         case .splatTrainingFailed(let url):
             "Apple MLX splat training failed. Inspect \(url.path)."
+        case .productionSplatOptimizationFailed(let url):
+            "Production splat optimization failed. Inspect \(url.path)."
         case .spatialReviewFailed(let message):
             message
         }
@@ -106,6 +109,15 @@ struct RobotVisionLabCLI {
             print("Wrote Apple-native splat training package to \(package.trainScriptURL.deletingLastPathComponent().path)")
             print("Frame index: \(package.frameIndexURL.path)")
             print("Training script: \(package.trainScriptURL.path)")
+            if let optimizerPlanURL = package.optimizerPlanURL {
+                print("Production optimizer plan: \(optimizerPlanURL.path)")
+            }
+            if let productionRunnerURL = package.productionRunnerURL {
+                print("Production optimizer runner: \(productionRunnerURL.path)")
+            }
+            if let nerfstudioTransformsURL = package.nerfstudioTransformsURL {
+                print("Nerfstudio transforms: \(nerfstudioTransformsURL.path)")
+            }
             print("Expected output: \(package.outputURL.path)")
         }
         if CommandLine.arguments.contains("--run-splat-training") {
@@ -118,11 +130,24 @@ struct RobotVisionLabCLI {
             )
             try runSplatTraining(package: package, job: job, outputDirectory: outputDirectory)
         }
+        if CommandLine.arguments.contains("--run-production-splat-optimizer") {
+            let manifestURL = try parseSplatTrainingManifestURL(outputDirectory: outputDirectory)
+            let job = try splatTrainingJob(outputDirectory: outputDirectory, manifestURL: manifestURL, mode: .productionGSplat)
+            let package = try SplatTrainingPackageBuilder().writePackage(
+                job: job,
+                manifestURL: manifestURL,
+                outputDirectory: outputDirectory.appendingPathComponent("SplatTrainingPackage", isDirectory: true)
+            )
+            try runProductionSplatOptimization(package: package, job: job, outputDirectory: outputDirectory)
+        }
         if CommandLine.arguments.contains("--write-model-adapter-schemas") {
             try writeModelAdapterSchemas(outputDirectory: outputDirectory)
         }
 
-        if CommandLine.arguments.contains("--run-splat-training"), !hasDatasetActionFlag(), parseSplatURL() == nil, !routeURLArgumentIsPresent() {
+        if (CommandLine.arguments.contains("--run-splat-training") || CommandLine.arguments.contains("--run-production-splat-optimizer")),
+           !hasDatasetActionFlag(),
+           parseSplatURL() == nil,
+           !routeURLArgumentIsPresent() {
             return
         }
 
@@ -659,6 +684,26 @@ struct RobotVisionLabCLI {
         return args[index + 1]
     }
 
+    private static func stringValues(for flag: String) -> [String] {
+        let args = CommandLine.arguments
+        let prefix = "\(flag)="
+        var values: [String] = []
+        var index = args.startIndex
+        while index < args.endIndex {
+            let argument = args[index]
+            if argument == flag, args.indices.contains(index + 1) {
+                values.append(args[index + 1])
+                index += 2
+                continue
+            }
+            if argument.hasPrefix(prefix) {
+                values.append(String(argument.dropFirst(prefix.count)))
+            }
+            index += 1
+        }
+        return values
+    }
+
     private static func intValue(for flag: String, default defaultValue: Int) -> Int {
         stringValue(for: flag).flatMap(Int.init) ?? defaultValue
     }
@@ -839,6 +884,58 @@ struct RobotVisionLabCLI {
         }
     }
 
+    private static func runProductionSplatOptimization(
+        package: SplatTrainingPackageManifest,
+        job: SplatTrainingJob,
+        outputDirectory: URL
+    ) throws {
+        guard let runnerURL = package.productionRunnerURL else {
+            throw SplatTrainingCLIError.missingRequiredInput("Splat training package did not include a production optimizer runner.")
+        }
+        let startedAt = Date()
+        let result = try runProcess(
+            executableURL: splatTrainingPythonExecutableURL(),
+            arguments: splatTrainingPythonPrefixArguments() + productionSplatOptimizerArguments(package: package, runnerURL: runnerURL),
+            currentDirectoryURL: runnerURL.deletingLastPathComponent()
+        )
+        let finishedAt = Date()
+        let report = SplatTrainingReportBuilder().completedReport(
+            job: job,
+            startedAt: startedAt,
+            finishedAt: finishedAt,
+            exitCode: result.exitCode,
+            standardOutput: result.standardOutput,
+            standardError: result.standardError
+        )
+        let reportURL = outputDirectory.appendingPathComponent("production_splat_optimization_report.json")
+        try SplatTrainingReportWriter().write(report, to: reportURL)
+        print("Wrote production splat optimization report to \(reportURL.path)")
+        guard result.exitCode == 0 else {
+            throw SplatTrainingCLIError.productionSplatOptimizationFailed(reportURL)
+        }
+        if CommandLine.arguments.contains("--production-splat-preflight-only") {
+            print("Production splat preflight complete.")
+            if let datasetURL = package.productionDatasetURL {
+                let preflightURL = datasetURL.appendingPathComponent("dataset_preflight.json")
+                if FileManager.default.fileExists(atPath: preflightURL.path) {
+                    print("Dataset preflight: \(preflightURL.path)")
+                }
+            }
+            return
+        }
+        let asset = try GaussianSplatImporter().inspect(url: package.outputURL)
+        print("Production Gaussian splat: \(package.outputURL.path)")
+        print("Imported optimized \(asset.format.rawValue) splat with \(asset.vertexCount) vertices")
+        let summaryURL = package.outputURL.deletingPathExtension().appendingPathExtension("production_training_summary.json")
+        if FileManager.default.fileExists(atPath: summaryURL.path) {
+            print("Production training summary: \(summaryURL.path)")
+        }
+        let evalMetricsURL = runnerURL.deletingLastPathComponent().appendingPathComponent("production_eval_metrics.json")
+        if FileManager.default.fileExists(atPath: evalMetricsURL.path) {
+            print("Production eval metrics: \(evalMetricsURL.path)")
+        }
+    }
+
     private static func splatTrainingArguments(package: SplatTrainingPackageManifest) -> [String] {
         var arguments = [
             package.trainScriptURL.path,
@@ -852,6 +949,72 @@ struct RobotVisionLabCLI {
         }
         if CommandLine.arguments.contains("--splat-training-ascii-ply") {
             arguments.append("--ascii-ply")
+        }
+        return arguments
+    }
+
+    private static func productionSplatOptimizerArguments(package: SplatTrainingPackageManifest, runnerURL: URL) -> [String] {
+        var arguments = [
+            runnerURL.path,
+            "--output", package.outputURL.path,
+            "--method", stringValue(for: "--production-splat-method") ?? "splatfacto",
+            "--max-num-iterations", "\(intValue(for: "--production-splat-iterations", default: 30_000))",
+            "--eval-mode", stringValue(for: "--production-splat-eval-mode") ?? "filename",
+            "--cache-images", stringValue(for: "--production-splat-cache-images") ?? "disk"
+        ]
+        if let datasetURL = package.productionDatasetURL {
+            arguments.append(contentsOf: ["--dataset", datasetURL.path])
+        }
+        if let checkpointDirectoryURL = package.checkpointDirectoryURL {
+            arguments.append(contentsOf: ["--checkpoints", checkpointDirectoryURL.path])
+        }
+        if let exportedModelDirectoryURL = package.exportedModelDirectoryURL {
+            arguments.append(contentsOf: ["--exports", exportedModelDirectoryURL.path])
+        }
+        if CommandLine.arguments.contains("--production-splat-no-depth-point-cloud") {
+            arguments.append("--no-load-depth-point-cloud")
+        }
+        if CommandLine.arguments.contains("--production-splat-skip-eval") {
+            arguments.append("--skip-eval")
+        }
+        if CommandLine.arguments.contains("--production-splat-skip-train") {
+            arguments.append("--skip-train")
+        }
+        if CommandLine.arguments.contains("--production-splat-skip-export") {
+            arguments.append("--skip-export")
+        }
+        if CommandLine.arguments.contains("--production-splat-preflight-only") {
+            arguments.append("--preflight-only")
+        }
+        if CommandLine.arguments.contains("--production-splat-print-commands") {
+            arguments.append("--print-commands")
+        }
+        if let evalOutput = stringValue(for: "--production-splat-eval-output") {
+            arguments.append(contentsOf: ["--eval-output", evalOutput])
+        }
+        if let evalRenderOutput = stringValue(for: "--production-splat-eval-render-output") {
+            arguments.append(contentsOf: ["--eval-render-output", evalRenderOutput])
+        }
+        if let minPSNR = stringValue(for: "--production-splat-min-psnr") {
+            arguments.append(contentsOf: ["--min-psnr", minPSNR])
+        }
+        if let minSSIM = stringValue(for: "--production-splat-min-ssim") {
+            arguments.append(contentsOf: ["--min-ssim", minSSIM])
+        }
+        if let maxLPIPS = stringValue(for: "--production-splat-max-lpips") {
+            arguments.append(contentsOf: ["--max-lpips", maxLPIPS])
+        }
+        if let minTrainFrames = stringValue(for: "--production-splat-min-train-frames") {
+            arguments.append(contentsOf: ["--min-train-frames", minTrainFrames])
+        }
+        if let minEvalFrames = stringValue(for: "--production-splat-min-eval-frames") {
+            arguments.append(contentsOf: ["--min-eval-frames", minEvalFrames])
+        }
+        if let minTotalFrames = stringValue(for: "--production-splat-min-total-frames") {
+            arguments.append(contentsOf: ["--min-total-frames", minTotalFrames])
+        }
+        for extraArgument in stringValues(for: "--production-splat-extra-ns-train-arg") {
+            arguments.append("--extra-ns-train-arg=\(extraArgument)")
         }
         return arguments
     }
@@ -883,18 +1046,43 @@ struct RobotVisionLabCLI {
         let errorPipe = Pipe()
         process.standardOutput = outputPipe
         process.standardError = errorPipe
+
+        let standardOutput = CLIProcessOutputBuffer()
+        let standardError = CLIProcessOutputBuffer()
+        outputPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            standardOutput.append(data)
+            FileHandle.standardOutput.write(data)
+        }
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            standardError.append(data)
+            FileHandle.standardError.write(data)
+        }
         try process.run()
         process.waitUntilExit()
-        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let error = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        if !output.isEmpty {
-            print(output, terminator: output.hasSuffix("\n") ? "" : "\n")
+
+        outputPipe.fileHandleForReading.readabilityHandler = nil
+        errorPipe.fileHandleForReading.readabilityHandler = nil
+        let remainingOutput = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let remainingError = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        if !remainingOutput.isEmpty {
+            standardOutput.append(remainingOutput)
+            FileHandle.standardOutput.write(remainingOutput)
         }
-        if !error.isEmpty {
-            FileHandle.standardError.write(Data(error.utf8))
-            if !error.hasSuffix("\n") {
-                FileHandle.standardError.write(Data("\n".utf8))
-            }
+        if !remainingError.isEmpty {
+            standardError.append(remainingError)
+            FileHandle.standardError.write(remainingError)
+        }
+        let output = String(data: standardOutput.data, encoding: .utf8) ?? ""
+        let error = String(data: standardError.data, encoding: .utf8) ?? ""
+        if !output.isEmpty, !output.hasSuffix("\n") {
+            print()
+        }
+        if !error.isEmpty, !error.hasSuffix("\n") {
+            FileHandle.standardError.write(Data("\n".utf8))
         }
         return (process.terminationStatus, output, error)
     }
@@ -933,39 +1121,39 @@ struct RobotVisionLabCLI {
         throw SplatTrainingCLIError.missingPreparedManifest(url)
     }
 
-    private static func splatTrainingJob(outputDirectory: URL, manifestURL: URL) throws -> SplatTrainingJob {
+    private static func splatTrainingJob(
+        outputDirectory: URL,
+        manifestURL: URL,
+        mode: SplatTrainingMode = .planning
+    ) throws -> SplatTrainingJob {
         let manifest = try JSONDecoder.robotVisionLabDecoder.decode(
             SplatTrainingManifest.self,
             from: Data(contentsOf: manifestURL)
         )
+        let backend = mode == .productionGSplat
+            ? AppleNativeTrainingBackend(
+                name: "Production Splatfacto/gsplat Optimizer",
+                framework: .nerfstudioGSplat,
+                deploymentTarget: .coreML
+            )
+            : AppleNativeTrainingBackend()
         return SplatTrainingJob(
             id: "\(manifest.id)-job",
             manifest: manifest,
-            backend: AppleNativeTrainingBackend(),
-            mode: .planning
+            backend: backend,
+            mode: mode
         )
     }
 
-    private static func writeDemoSplatTrainingManifest(outputDirectory: URL) throws -> URL {
-        let capturePlan = demoCapturePlan()
-        let sourceRoot = try writeDemoCaptureSourceAssets(
-            outputDirectory: outputDirectory.appendingPathComponent("DemoCaptureSource", isDirectory: true)
-        )
-        let demoSession = demoScanSession(sourceRoot: sourceRoot)
-        let calibration = capturePlan.rgbVideo.map {
-            SplatFrameCalibration(
-                intrinsics: CameraIntrinsics.fromHorizontalFOV(
-                    width: $0.targetResolution.width,
-                    height: $0.targetResolution.height,
-                    horizontalFOVDegrees: 70
-                ),
-                resolution: $0.targetResolution,
-                trackingQuality: .normal
-            )
-        }
-        let manifest = SplatTrainingManifest(
-            id: "demo-room-scan-splat-training",
-            imageFrames: demoSession.rgbFrames.map {
+	    private static func writeDemoSplatTrainingManifest(outputDirectory: URL) throws -> URL {
+	        let sourceRoot = try writeDemoCaptureSourceAssets(
+	            outputDirectory: outputDirectory.appendingPathComponent("DemoCaptureSource", isDirectory: true)
+	        )
+	        let demoSession = demoScanSession(sourceRoot: sourceRoot)
+	        let calibration = demoFixtureCalibration()
+	        let manifest = SplatTrainingManifest(
+	            id: "demo-room-scan-splat-training",
+	            imageFrames: demoSession.rgbFrames.map {
                 SplatTrainingFrame(imageURL: $0.imageURL, pose: $0.pose, timestamp: $0.timestamp, calibration: calibration)
             },
             lidarFrames: demoSession.lidarFrames,
@@ -983,15 +1171,36 @@ struct RobotVisionLabCLI {
     private static func demoCapturePlan() -> CapturePlan {
         CapturePlan(
             id: "demo-iphone-lidar-room-capture",
-            captureModes: [.rgbVideo, .lidarDepth, .objectCapture],
-            objectCapture: ObjectCaptureOptions(objectLabels: ["chair", "table", "charging_dock"]),
-            rgbVideo: RGBVideoOptions(targetFPS: 30, targetResolution: .hd1280x720),
-            lidar: LiDAROptions()
-        )
-    }
+	            captureModes: [.rgbVideo, .lidarDepth, .objectCapture],
+	            objectCapture: ObjectCaptureOptions(objectLabels: ["chair", "table", "charging_dock"]),
+	            rgbVideo: RGBVideoOptions(targetFPS: 30, targetResolution: demoFixtureResolution()),
+	            lidar: LiDAROptions()
+	        )
+	    }
 
-    private static func demoScanSession(sourceRoot: URL) -> ScanSession {
-        ScanSession(
+	    private static func demoFixtureResolution() -> Resolution {
+	        Resolution(width: 1, height: 1)
+	    }
+
+	    private static func demoFixtureIntrinsics() -> CameraIntrinsics {
+	        CameraIntrinsics(
+	            width: 1,
+	            height: 1,
+	            focalLengthPixels: SIMD2<Double>(1, 1),
+	            principalPointPixels: SIMD2<Double>(0.5, 0.5)
+	        )
+	    }
+
+	    private static func demoFixtureCalibration() -> SplatFrameCalibration {
+	        SplatFrameCalibration(
+	            intrinsics: demoFixtureIntrinsics(),
+	            resolution: demoFixtureResolution(),
+	            trackingQuality: .normal
+	        )
+	    }
+
+	    private static func demoScanSession(sourceRoot: URL) -> ScanSession {
+	        ScanSession(
             id: "demo-room-scan",
             createdAt: Date(timeIntervalSince1970: 1_800_000_000),
             rgbFrames: [
@@ -1060,14 +1269,14 @@ struct RobotVisionLabCLI {
         try Data([2]).write(to: confidenceURL)
         let metadata = CapturedLiDARDepthMetadata(
             timestamp: 0,
-            width: 1,
-            height: 1,
-            confidenceFormat: "uint8-arkit-confidence-row-major",
-            cameraPose: Pose3D(position: SIMD3<Double>(-2, 1.4, 1.5)),
-            intrinsics: .fromHorizontalFOV(width: 1280, height: 720, horizontalFOVDegrees: 82),
-            depthURL: depthURL,
-            confidenceURL: confidenceURL,
-            notes: "Explicit CLI fixture depth sample."
+	            width: 1,
+	            height: 1,
+	            confidenceFormat: "uint8-arkit-confidence-row-major",
+	            cameraPose: Pose3D(position: SIMD3<Double>(-2, 1.4, 1.5)),
+	            intrinsics: demoFixtureIntrinsics(),
+	            depthURL: depthURL,
+	            confidenceURL: confidenceURL,
+	            notes: "Explicit CLI fixture depth sample."
         )
         try JSONEncoder.robotVisionLabEncoder.encode(metadata).write(to: metadataURL)
 
@@ -1077,6 +1286,24 @@ struct RobotVisionLabCLI {
             }
         }
         return outputDirectory
+    }
+}
+
+private final class CLIProcessOutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = Data()
+
+    func append(_ data: Data) {
+        guard !data.isEmpty else { return }
+        lock.lock()
+        storage.append(data)
+        lock.unlock()
+    }
+
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }
 

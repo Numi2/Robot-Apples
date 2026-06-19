@@ -186,11 +186,12 @@ public struct RobotCapturePreparer: Sendable {
             }
         }
 
-        if evaluation.isEmpty, let last = training.popLast() {
+        if evaluation.isEmpty, training.count > 1, let last = training.popLast() {
             evaluation.append(last)
         }
         if training.isEmpty, let first = evaluation.first {
             training.append(first)
+            evaluation.removeAll { $0 == first }
         }
 
         return CaptureFrameSplit(
@@ -205,8 +206,14 @@ public struct RobotCapturePreparer: Sendable {
         split: CaptureFrameSplit,
         outputDirectory: URL
     ) -> SplatTrainingManifest {
+        let trainingIndexes = Set(split.trainingFrameIndexes)
+        let evaluationIndexes = Set(split.evaluationFrameIndexes).subtracting(trainingIndexes)
         let frameByIndex = Dictionary(uniqueKeysWithValues: importedCapture.frames.map { ($0.index, $0) })
-        let imageFrames = split.trainingFrameIndexes.compactMap { index -> SplatTrainingFrame? in
+        let orderedIndexes = importedCapture.frames
+            .map(\.index)
+            .filter { trainingIndexes.contains($0) || evaluationIndexes.contains($0) }
+            .sorted()
+        let imageFrames = orderedIndexes.compactMap { index -> SplatTrainingFrame? in
             guard let frame = frameByIndex[index] else { return nil }
             return SplatTrainingFrame(
                 imageURL: frame.imageURL,
@@ -219,7 +226,8 @@ public struct RobotCapturePreparer: Sendable {
                     intrinsics: frame.intrinsics,
                     resolution: frame.intrinsics.map { Resolution(width: $0.width, height: $0.height) },
                     trackingQuality: frame.trackingQuality
-                )
+                ),
+                split: evaluationIndexes.contains(index) ? .validation : .train
             )
         }
 
