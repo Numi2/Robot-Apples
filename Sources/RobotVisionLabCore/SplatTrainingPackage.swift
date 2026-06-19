@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 public enum SplatOptimizerProfile: String, Codable, Equatable, Sendable {
     case mlxRayDepthSupervised
+    case productionBrush
     case productionGSplatSplatfacto
 }
 
@@ -114,6 +115,7 @@ public struct SplatTrainingPackageManifest: Codable, Equatable, Sendable {
     public var optimizerProfile: SplatOptimizerProfile?
     public var optimizerPlanURL: URL?
     public var productionDatasetURL: URL?
+    public var brushDatasetURL: URL?
     public var nerfstudioTransformsURL: URL?
     public var productionPointCloudURL: URL?
     public var productionRunnerURL: URL?
@@ -136,6 +138,7 @@ public struct SplatTrainingPackageManifest: Codable, Equatable, Sendable {
         optimizerProfile: SplatOptimizerProfile? = nil,
         optimizerPlanURL: URL? = nil,
         productionDatasetURL: URL? = nil,
+        brushDatasetURL: URL? = nil,
         nerfstudioTransformsURL: URL? = nil,
         productionPointCloudURL: URL? = nil,
         productionRunnerURL: URL? = nil,
@@ -157,6 +160,7 @@ public struct SplatTrainingPackageManifest: Codable, Equatable, Sendable {
         self.optimizerProfile = optimizerProfile
         self.optimizerPlanURL = optimizerPlanURL
         self.productionDatasetURL = productionDatasetURL
+        self.brushDatasetURL = brushDatasetURL
         self.nerfstudioTransformsURL = nerfstudioTransformsURL
         self.productionPointCloudURL = productionPointCloudURL
         self.productionRunnerURL = productionRunnerURL
@@ -192,6 +196,7 @@ public struct SplatTrainingPackageBuilder: Sendable {
         let depthPriorIndexURL = outputDirectory.appendingPathComponent("capture_lidar_depth_priors.jsonl")
         let trainScriptURL = outputDirectory.appendingPathComponent("train_capture_splat_mlx.py")
         let productionDatasetURL = outputDirectory.appendingPathComponent("production_gsplat_dataset", isDirectory: true)
+        let brushDatasetURL = outputDirectory.appendingPathComponent("production_brush_dataset", isDirectory: true)
         let nerfstudioTransformsURL = productionDatasetURL.appendingPathComponent("transforms.json")
         let productionPointCloudURL = productionDatasetURL.appendingPathComponent("sparse_pc.ply")
         let productionRunnerURL = outputDirectory.appendingPathComponent("run_production_splat_optimizer.py")
@@ -212,6 +217,7 @@ public struct SplatTrainingPackageBuilder: Sendable {
         )
         try FileManager.default.createDirectory(at: checkpointDirectoryURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: exportedModelDirectoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: brushDatasetURL, withIntermediateDirectories: true)
         try productionRunnerScript().write(to: productionRunnerURL, atomically: true, encoding: .utf8)
         let optimizationPlan = makeProductionOptimizationPlan(
             datasetURL: productionDatasetURL,
@@ -232,9 +238,10 @@ public struct SplatTrainingPackageBuilder: Sendable {
             frameIndexURL: frameIndexURL,
             depthPriorIndexURL: job.manifest.lidarFrames.isEmpty ? nil : depthPriorIndexURL,
             trainScriptURL: trainScriptURL,
-            optimizerProfile: .productionGSplatSplatfacto,
+            optimizerProfile: .productionBrush,
             optimizerPlanURL: optimizerPlanURL,
             productionDatasetURL: productionDatasetURL,
+            brushDatasetURL: brushDatasetURL,
             nerfstudioTransformsURL: nerfstudioTransformsURL,
             productionPointCloudURL: FileManager.default.fileExists(atPath: productionPointCloudURL.path) ? productionPointCloudURL : nil,
             productionRunnerURL: productionRunnerURL,
@@ -247,11 +254,11 @@ public struct SplatTrainingPackageBuilder: Sendable {
             validationFrameCount: frameRoles.filter { $0 == .validation }.count,
             calibratedFrameCount: calibratedFrameCount,
             notes: [
-                "Primary production path: use run_production_splat_optimizer.py to train Nerfstudio Splatfacto/gsplat with differentiable rasterization, spherical harmonics, checkpointing, densification, and pruning.",
-                "The production_gsplat_dataset folder is self-contained and writes Nerfstudio-compatible transforms.json from calibrated capture poses.",
-                "When LiDAR priors are present, the package writes sparse_pc.ply as a metric depth-derived point cloud for Splatfacto/gsplat initialization.",
+                "Primary production path: use run_production_splat_optimizer.py to train Brush with native Gaussian splatting, WebGPU-compatible kernels, spherical harmonics, refinement, and PLY export.",
+                "The production_gsplat_dataset folder is self-contained and writes Nerfstudio-compatible transforms.json from calibrated capture poses; the runner materializes a Brush-specific train/eval dataset from it.",
+                "When LiDAR priors are present, the package writes sparse_pc.ply as a metric depth-derived point cloud for Brush init.ply and fallback trainers.",
                 "production_splat_optimization_plan.json records optimizer stages, quality gates, dependency requirements, checkpoint/export locations, and the recommended runner command.",
-                "The MLX script remains packaged as a local fallback; production optimization should use the generated Splatfacto/gsplat runner.",
+                "The MLX script remains packaged as a local fallback; Nerfstudio Splatfacto/gsplat remains selectable through the generated runner for comparison.",
                 "Consumes RGB frame URLs, camera intrinsics, tracking quality, and aligned camera poses.",
                 "Consumes strict Float32 meter depth priors when present and indexes them separately from RGB frame records.",
                 "Exports a Gaussian PLY asset for the native Metal renderer and .robotscene packaging.",
@@ -680,8 +687,8 @@ public struct SplatTrainingPackageBuilder: Sendable {
         outputURL: URL
     ) -> SplatOptimizationPlan {
         SplatOptimizationPlan(
-            profile: .productionGSplatSplatfacto,
-            trainer: "Nerfstudio Splatfacto / gsplat",
+            profile: .productionBrush,
+            trainer: "Brush Gaussian Splat Optimizer",
             datasetURL: datasetURL,
             transformsJSONURL: transformsURL,
             initialPointCloudURL: pointCloudURL,
@@ -692,10 +699,12 @@ public struct SplatTrainingPackageBuilder: Sendable {
             recommendedCommand: [
                 "python3",
                 runnerURL.path,
-                "--method",
-                "splatfacto",
+                "--backend",
+                "brush",
                 "--max-num-iterations",
                 "30000",
+                "--method",
+                "splatfacto",
                 "--eval-mode",
                 "filename",
                 "--cache-images",
@@ -710,34 +719,34 @@ public struct SplatTrainingPackageBuilder: Sendable {
                     startStep: 0,
                     endStep: 0,
                     settings: [
-                        "dataparser": "nerfstudio-data",
-                        "transforms": transformsURL.lastPathComponent,
+                        "primary_trainer": "brush-cli",
+                        "source_transforms": transformsURL.lastPathComponent,
+                        "brush_transforms": "production_brush_dataset/transforms_train.json plus transforms_val.json when validation is present",
                         "image_source": "self-contained production_gsplat_dataset/images/train and images/eval",
-                        "eval_mode": "filename",
-                        "point_initialization": "sparse_pc.ply via ply_file_path when metric depth priors are available"
+                        "point_initialization": "sparse_pc.ply copied to production_brush_dataset/init.ply when metric depth priors are available"
                     ]
                 ),
                 SplatOptimizationStage(
                     name: "anisotropic gaussian warmup",
-                    purpose: "Optimize means, RGB/SH color, opacity, anisotropic covariance, and rotations with differentiable rasterization.",
+                    purpose: "Optimize means, RGB/SH color, opacity, anisotropic covariance, and rotations with Brush differentiable rasterization.",
                     startStep: 1,
                     endStep: 500,
                     settings: [
                         "sh_degree": "3",
-                        "opacity_reset": "enabled",
-                        "visibility_aware_rasterization": "enabled",
+                        "render_backend": "Brush Burn/WebGPU-compatible backend",
+                        "viewer": "disabled for headless production runs",
                         "initial_points": "depth-derived sparse point cloud when present, otherwise trainer initialization"
                     ]
                 ),
                 SplatOptimizationStage(
-                    name: "densification and pruning",
-                    purpose: "Interleave split/clone densification with opacity and scale pruning to allocate Gaussians only where image gradients need detail.",
+                    name: "refinement and pruning",
+                    purpose: "Interleave Brush refinement, growth selection, split handling, and pruning to allocate Gaussians where image gradients need detail.",
                     startStep: 500,
                     endStep: 15000,
                     settings: [
-                        "densification": "screen-space gradient split/clone",
-                        "pruning": "low-opacity and oversized-screen-radius gaussian removal",
-                        "checkpointing": checkpointDirectoryURL.lastPathComponent
+                        "refine_every": "200",
+                        "growth_stop_iter": "15000",
+                        "export_directory": exportDirectoryURL.lastPathComponent
                     ]
                 ),
                 SplatOptimizationStage(
@@ -746,16 +755,16 @@ public struct SplatTrainingPackageBuilder: Sendable {
                     startStep: 15000,
                     endStep: 30000,
                     settings: [
-                        "evaluation": "ns-eval --load-config config.yml --output-path production_eval_metrics.json",
-                        "export": "ns-export gaussian-splat",
+                        "evaluation": "Brush eval stream reports PSNR and SSIM against transforms_val.json when present",
+                        "export": "brush-cli --export-path production_exports --export-name brush_final.ply",
                         "target": outputURL.lastPathComponent,
                         "audit": "production_training_summary.json plus SHA-256 and eval metrics"
                     ]
                 )
             ],
             requiredCapabilities: [
-                "Python environment with nerfstudio CLI commands: ns-train, ns-eval, and ns-export.",
-                "Splatfacto/gsplat differentiable Gaussian rasterization backend.",
+                "Brush CLI binary on PATH, preferably the optimized release brush-cli build from ArthurBrussee/brush.",
+                "Brush differentiable Gaussian rasterization backend with native GPU support.",
                 "Enough GPU memory for the requested frame count and target Gaussian budget.",
                 "Disk space for copied training images, checkpoints, exported PLY, and run summaries."
             ],
@@ -764,17 +773,18 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 "If transforms.json references ply_file_path, sparse_pc.ply must exist and be reported in dataset_preflight.json.",
                 "Production preflight must require at least 2 train frames, 1 validation/eval frame when evaluation runs, and 3 total frames by default.",
                 "Dataset preflight must write dataset_preflight.json with frame counts, byte counts, split counts, and missing-file count of zero.",
-                "Training must write a Nerfstudio config.yml checkpoint before export.",
-                "ns-eval must write production_eval_metrics.json against the preserved validation split.",
-                "Optional PSNR, SSIM, and LPIPS gates must pass when configured.",
-                "ns-export gaussian-splat must produce a PLY that GaussianSplatImporter can inspect.",
+                "Brush dataset materialization must write transforms_train.json and transforms_val.json when evaluation runs.",
+                "Brush eval metrics must be recorded to production_eval_metrics.json when evaluation runs.",
+                "Optional PSNR and SSIM gates must pass when configured; LPIPS gates require a backend that reports LPIPS.",
+                "Brush export must produce a PLY that GaussianSplatImporter can inspect.",
                 "The exported PLY SHA-256, dataset preflight, eval metrics, and command transcript must be recorded in production_training_summary.json.",
                 "The exported splat must be linked back as the active scene source before render/export."
             ],
             notes: [
                 "This is the production-quality path; the generated MLX script remains a local fallback for small captures or machines without the external training stack.",
+                "Nerfstudio Splatfacto/gsplat remains available through --backend nerfstudio for comparison or fallback runs.",
                 "The plan follows the 3DGS pattern of visibility-aware differentiable rasterization, anisotropic covariance optimization, spherical harmonics color, interleaved densification, and pruning.",
-                "Depth priors are preserved for custom trainer extensions, and sparse_pc.ply gives stock Splatfacto a metric point-cloud initialization through Nerfstudio's 3D point loading path."
+                "Depth priors are preserved for custom trainer extensions, and sparse_pc.ply gives Brush a metric point-cloud initialization through init.ply."
             ]
         )
     }
@@ -786,6 +796,8 @@ public struct SplatTrainingPackageBuilder: Sendable {
         import hashlib
         import json
         import math
+        import os
+        import re
         import shutil
         import struct
         import subprocess
@@ -814,6 +826,32 @@ public struct SplatTrainingPackageBuilder: Sendable {
         def run(command):
             print(json.dumps({"running": command}, indent=2))
             subprocess.run(command, check=True)
+
+        def run_capture(command, env=None):
+            print(json.dumps({"running": command}, indent=2))
+            completed = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+            if completed.stdout:
+                print(completed.stdout, end="")
+            if completed.stderr:
+                print(completed.stderr, end="", file=sys.stderr)
+            if completed.returncode != 0:
+                raise subprocess.CalledProcessError(
+                    completed.returncode,
+                    command,
+                    output=completed.stdout,
+                    stderr=completed.stderr,
+                )
+            return {
+                "stdout": completed.stdout,
+                "stderr": completed.stderr,
+                "returncode": completed.returncode,
+            }
+
+        def resolve_tool(name):
+            candidate = Path(name).expanduser()
+            if candidate.parent != Path(".") or candidate.is_absolute():
+                return str(candidate) if candidate.exists() else None
+            return shutil.which(name)
 
         def finite_number(value):
             return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
@@ -946,7 +984,7 @@ public struct SplatTrainingPackageBuilder: Sendable {
             if train_count < min_train_frames:
                 invalid_frames.append({"index": None, "reason": f"dataset has {train_count} train split frames but production preflight requires at least {min_train_frames}"})
             if require_eval_split and eval_count < min_eval_frames:
-                invalid_frames.append({"index": None, "reason": f"dataset has {eval_count} validation split frames for ns-eval but production preflight requires at least {min_eval_frames}"})
+                invalid_frames.append({"index": None, "reason": f"dataset has {eval_count} validation/eval split frames but production preflight requires at least {min_eval_frames}"})
             if missing_files or invalid_frames:
                 raise ValueError(json.dumps({
                     "dataset": str(dataset),
@@ -975,6 +1013,116 @@ public struct SplatTrainingPackageBuilder: Sendable {
             preflight_path.write_text(json.dumps(preflight, indent=2))
             preflight["preflight_path"] = str(preflight_path)
             return preflight
+
+        def copy_or_link(source, destination):
+            source = Path(source)
+            destination = Path(destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists() or destination.is_symlink():
+                destination.unlink()
+            try:
+                destination.hardlink_to(source)
+            except OSError:
+                shutil.copy2(source, destination)
+
+        def brush_scene_payload(transforms, frames, ply_file_path=None):
+            payload = {
+                key: value
+                for key, value in transforms.items()
+                if key not in {"frames", "ply_file_path"}
+            }
+            if ply_file_path is not None:
+                payload["ply_file_path"] = ply_file_path
+            payload["frames"] = frames
+            return payload
+
+        def prepare_brush_dataset(source_dataset, brush_dataset, include_eval=True, load_depth_point_cloud=True):
+            source_dataset = Path(source_dataset)
+            brush_dataset = Path(brush_dataset)
+            transforms_path = source_dataset / "transforms.json"
+            transforms = json.loads(transforms_path.read_text())
+            frames = transforms.get("frames") or []
+            if not frames:
+                raise ValueError(f"Cannot prepare Brush dataset without frames: {transforms_path}")
+            if brush_dataset.resolve() == source_dataset.resolve():
+                raise ValueError("Brush dataset output must be separate from the source production dataset.")
+            if brush_dataset.exists():
+                shutil.rmtree(brush_dataset)
+            brush_dataset.mkdir(parents=True, exist_ok=True)
+
+            train_frames = []
+            eval_frames = []
+            copied_images = []
+            for index, frame in enumerate(frames):
+                split = str(frame.get("split") or "train").lower()
+                is_eval = split in ("validation", "eval")
+                if is_eval and not include_eval:
+                    continue
+                source_relative = frame.get("file_path")
+                if not source_relative:
+                    raise ValueError(f"Frame {index} is missing file_path")
+                source_image = source_dataset / source_relative
+                target_split = "eval" if is_eval else "train"
+                target_relative = Path("images") / target_split / f"frame_{index:06d}{source_image.suffix.lower() or '.png'}"
+                copy_or_link(source_image, brush_dataset / target_relative)
+                brush_frame = dict(frame)
+                brush_frame["file_path"] = str(target_relative).replace("\\\\", "/")
+                brush_frame.pop("split", None)
+                if is_eval:
+                    eval_frames.append(brush_frame)
+                else:
+                    train_frames.append(brush_frame)
+                copied_images.append(str(target_relative))
+
+            point_cloud = transforms.get("ply_file_path")
+            init_ply = None
+            if load_depth_point_cloud and point_cloud:
+                source_ply = source_dataset / point_cloud
+                if source_ply.exists():
+                    init_ply = "init.ply"
+                    copy_or_link(source_ply, brush_dataset / init_ply)
+
+            train_path = brush_dataset / "transforms_train.json"
+            train_path.write_text(json.dumps(brush_scene_payload(transforms, train_frames, init_ply), indent=2))
+            val_path = None
+            if include_eval and eval_frames:
+                val_path = brush_dataset / "transforms_val.json"
+                val_path.write_text(json.dumps(brush_scene_payload(transforms, eval_frames, None), indent=2))
+
+            metadata = {
+                "dataset": str(brush_dataset),
+                "source_dataset": str(source_dataset),
+                "train_frame_count": len(train_frames),
+                "eval_frame_count": len(eval_frames),
+                "copied_image_count": len(copied_images),
+                "transforms_train": str(train_path),
+                "transforms_val": str(val_path) if val_path is not None else None,
+                "init_ply": str(brush_dataset / init_ply) if init_ply is not None else None,
+            }
+            (brush_dataset / "brush_dataset_preflight.json").write_text(json.dumps(metadata, indent=2))
+            return metadata
+
+        def parse_brush_eval_metrics(stdout, stderr):
+            history = []
+            combined = "\\n".join([stdout or "", stderr or ""])
+            pattern = re.compile(r"Eval iter\\s+(\\d+)\\s*:\\s*PSNR\\s+([-+0-9.eE]+)\\s*,\\s*ssim\\s+([-+0-9.eE]+)", re.IGNORECASE)
+            for match in pattern.finditer(combined):
+                history.append({
+                    "iter": int(match.group(1)),
+                    "psnr": float(match.group(2)),
+                    "ssim": float(match.group(3)),
+                })
+            if not history:
+                return None
+            latest = history[-1]
+            return {
+                "backend": "brush",
+                "results": {
+                    "psnr": latest["psnr"],
+                    "ssim": latest["ssim"],
+                },
+                "history": history,
+            }
 
         def path_key(path):
             return str(Path(path).resolve())
@@ -1088,34 +1236,41 @@ public struct SplatTrainingPackageBuilder: Sendable {
 
         def main():
             package_root = Path(__file__).resolve().parent
-            parser = argparse.ArgumentParser(description="Run the production Splatfacto/gsplat optimizer for this capture package.")
+            parser = argparse.ArgumentParser(description="Run the production Brush or Nerfstudio Gaussian splat optimizer for this capture package.")
+            parser.add_argument("--backend", default="brush", choices=["brush", "nerfstudio"], help="Optimizer backend. Brush is the Apple-focused default; Nerfstudio remains selectable for fallback/comparison.")
             parser.add_argument("--dataset", default=str(package_root / "production_gsplat_dataset"))
+            parser.add_argument("--brush-dataset", default=str(package_root / "production_brush_dataset"), help="Materialized Brush train/eval dataset directory.")
             parser.add_argument("--checkpoints", default=str(package_root / "production_checkpoints"))
             parser.add_argument("--exports", default=str(package_root / "production_exports"))
             parser.add_argument("--output", default=None, help="Final PLY path to copy the exported splat to.")
-            parser.add_argument("--method", default="splatfacto", help="Nerfstudio method, for example splatfacto, splatfacto-big, or a locally installed gsplat variant.")
+            parser.add_argument("--method", default="splatfacto", help="Nerfstudio method when --backend nerfstudio is selected.")
+            parser.add_argument("--brush-binary", default="brush-cli", help="Brush headless training binary.")
+            parser.add_argument("--brush-export-name", default="brush_final.ply", help="Brush PLY export filename.")
+            parser.add_argument("--brush-max-resolution", type=int, default=1920, help="Maximum source image resolution passed to Brush.")
             parser.add_argument("--max-num-iterations", type=int, default=30000)
             parser.add_argument("--steps-per-save", type=int, default=5000)
             parser.add_argument("--eval-mode", default="filename", help="Nerfstudio eval split mode. Filename mode matches the generated images/train and images/eval layout.")
-            parser.add_argument("--eval-output", default=str(package_root / "production_eval_metrics.json"), help="JSON metrics path written by ns-eval.")
-            parser.add_argument("--eval-render-output", default=None, help="Optional directory for ns-eval rendered output images.")
-            parser.add_argument("--min-psnr", type=float, default=None, help="Optional minimum PSNR gate; fails the run if ns-eval reports a lower PSNR.")
-            parser.add_argument("--min-ssim", type=float, default=None, help="Optional minimum SSIM gate; fails the run if ns-eval reports a lower SSIM.")
-            parser.add_argument("--max-lpips", type=float, default=None, help="Optional maximum LPIPS gate; fails the run if ns-eval reports a higher LPIPS.")
+            parser.add_argument("--eval-output", default=str(package_root / "production_eval_metrics.json"), help="JSON metrics path written by the selected backend.")
+            parser.add_argument("--eval-render-output", default=None, help="Optional directory for Nerfstudio eval rendered output images.")
+            parser.add_argument("--min-psnr", type=float, default=None, help="Optional minimum PSNR gate.")
+            parser.add_argument("--min-ssim", type=float, default=None, help="Optional minimum SSIM gate.")
+            parser.add_argument("--max-lpips", type=float, default=None, help="Optional maximum LPIPS gate. Brush does not currently report LPIPS.")
             parser.add_argument("--min-train-frames", type=int, default=2, help="Minimum train split frames required by production preflight.")
-            parser.add_argument("--min-eval-frames", type=int, default=1, help="Minimum validation/eval split frames required when ns-eval runs.")
+            parser.add_argument("--min-eval-frames", type=int, default=1, help="Minimum validation/eval split frames required when evaluation runs.")
             parser.add_argument("--min-total-frames", type=int, default=0, help="Minimum total frames required by production preflight. Default is min train plus required eval frames.")
-            parser.add_argument("--cache-images", default="disk", choices=["default", "cpu", "gpu", "disk"], help="Splatfacto image cache mode; disk is safer for large captures.")
+            parser.add_argument("--cache-images", default="disk", choices=["default", "cpu", "gpu", "disk"], help="Splatfacto image cache mode used only by the Nerfstudio backend.")
             parser.add_argument("--load-depth-point-cloud", action=argparse.BooleanOptionalAction, default=True, help="Load sparse_pc.ply depth initialization points when transforms.json references them.")
             parser.add_argument("--skip-train", action="store_true")
             parser.add_argument("--skip-eval", action="store_true")
             parser.add_argument("--skip-export", action="store_true")
             parser.add_argument("--preflight-only", action="store_true")
             parser.add_argument("--print-commands", action="store_true")
+            parser.add_argument("--extra-brush-arg", action="append", default=[], help="Additional argument forwarded to brush-cli. Repeat for each token.")
             parser.add_argument("--extra-ns-train-arg", action="append", default=[], help="Additional argument forwarded to ns-train. Repeat for each token.")
             args = parser.parse_args()
 
             dataset = Path(args.dataset).resolve()
+            brush_dataset = Path(args.brush_dataset).resolve()
             checkpoint_root = Path(args.checkpoints).resolve()
             export_root = Path(args.exports).resolve()
             checkpoint_root.mkdir(parents=True, exist_ok=True)
@@ -1123,36 +1278,208 @@ public struct SplatTrainingPackageBuilder: Sendable {
             min_train_frames = max(args.min_train_frames, 1)
             min_eval_frames = max(args.min_eval_frames, 0)
             min_total_frames = max(args.min_total_frames, 0)
+            require_eval = not args.skip_eval
             preflight = validate_dataset(
                 dataset,
-                require_eval_split=not args.skip_eval,
+                require_eval_split=require_eval,
                 min_train_frames=min_train_frames,
                 min_eval_frames=min_eval_frames,
                 min_total_frames=min_total_frames,
             )
+            brush_preflight = None
+            if args.backend == "brush":
+                brush_preflight = prepare_brush_dataset(
+                    dataset,
+                    brush_dataset,
+                    include_eval=require_eval,
+                    load_depth_point_cloud=args.load_depth_point_cloud,
+                )
             quality_gate_requested = args.min_psnr is not None or args.min_ssim is not None or args.max_lpips is not None
 
-            ns_train = shutil.which("ns-train")
-            ns_eval = shutil.which("ns-eval")
-            ns_export = shutil.which("ns-export")
+            brush_tool = resolve_tool(args.brush_binary)
+            ns_train = resolve_tool("ns-train")
+            ns_eval = resolve_tool("ns-eval")
+            ns_export = resolve_tool("ns-export")
             tool_report = {
+                "backend": args.backend,
+                "brush": brush_tool,
                 "ns_train": ns_train,
                 "ns_eval": ns_eval,
                 "ns_export": ns_export,
             }
             commands = []
             missing_tools = []
-            if not args.skip_train and ns_train is None:
-                missing_tools.append("ns-train")
-            if not args.skip_eval and ns_eval is None:
-                missing_tools.append("ns-eval")
-            if not args.skip_export and ns_export is None:
-                missing_tools.append("ns-export")
+            if args.backend == "brush":
+                if not args.skip_train and brush_tool is None:
+                    missing_tools.append(args.brush_binary)
+            else:
+                if not args.skip_train and ns_train is None:
+                    missing_tools.append("ns-train")
+                if not args.skip_eval and ns_eval is None:
+                    missing_tools.append("ns-eval")
+                if not args.skip_export and ns_export is None:
+                    missing_tools.append("ns-export")
             if args.preflight_only:
-                print(json.dumps({"preflight": preflight, "tools": tool_report, "missing_tools": missing_tools, "commands": commands}, indent=2))
+                print(json.dumps({
+                    "backend": args.backend,
+                    "preflight": preflight,
+                    "brush_preflight": brush_preflight,
+                    "tools": tool_report,
+                    "missing_tools": missing_tools,
+                    "commands": commands,
+                }, indent=2))
                 return
             if missing_tools:
+                if args.backend == "brush":
+                    raise RuntimeError("Brush CLI is required for production splat optimization. Missing commands on PATH: " + ", ".join(missing_tools))
                 raise RuntimeError("Nerfstudio CLI is required for production splat optimization. Missing commands on PATH: " + ", ".join(missing_tools))
+
+            eval_output = None
+            eval_metrics = None
+            eval_metrics_sha256 = None
+            quality_gates = []
+            exported_ply = None
+            exported_ply_validation = None
+            final_output_validation = None
+
+            def add_quality_gate(metric, candidate_names, minimum=None, maximum=None):
+                value = metric_value(eval_metrics, candidate_names)
+                if value is None:
+                    raise RuntimeError(f"Eval metrics did not include a {metric.upper()} value for quality gating.")
+                passed = True
+                if minimum is not None and value < minimum:
+                    passed = False
+                if maximum is not None and value > maximum:
+                    passed = False
+                gate = {
+                    "metric": metric,
+                    "minimum": minimum,
+                    "maximum": maximum,
+                    "value": value,
+                    "passed": passed,
+                }
+                quality_gates.append(gate)
+                if not passed:
+                    if minimum is not None:
+                        raise RuntimeError(f"{metric.upper()} quality gate failed: {value:.4f} < {minimum:.4f}")
+                    raise RuntimeError(f"{metric.upper()} quality gate failed: {value:.4f} > {maximum:.4f}")
+
+            def apply_quality_gates():
+                if args.min_psnr is not None:
+                    add_quality_gate("psnr", ["psnr", "eval_psnr", "mean_psnr", "psnr_mean"], minimum=args.min_psnr)
+                if args.min_ssim is not None:
+                    add_quality_gate("ssim", ["ssim", "eval_ssim", "mean_ssim", "ssim_mean"], minimum=args.min_ssim)
+                if args.max_lpips is not None:
+                    add_quality_gate("lpips", ["lpips", "eval_lpips", "mean_lpips", "lpips_mean"], maximum=args.max_lpips)
+
+            def summarize_and_exit(trainer, method, config, exported_ply, export_reused, extra_summary=None):
+                final_output = Path(args.output).resolve() if args.output else None
+                if export_reused:
+                    if final_output is not None and final_output.exists():
+                        selected_ply = final_output
+                    else:
+                        selected_ply = newest_ply_or_none(export_root)
+                    if selected_ply is None:
+                        raise FileNotFoundError("--skip-export requires --output to reference an existing PLY or the export directory to contain a prior .ply export.")
+                else:
+                    selected_ply = exported_ply if exported_ply is not None else newest_ply(export_root)
+                if final_output is None:
+                    final_output = selected_ply
+                exported_validation = inspect_gaussian_ply(selected_ply)
+                if final_output != selected_ply:
+                    final_output.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(selected_ply, final_output)
+                final_validation = inspect_gaussian_ply(final_output)
+                summary = {
+                    "trainer": trainer,
+                    "backend": args.backend,
+                    "method": method,
+                    "dataset": str(dataset),
+                    "brush_dataset": str(brush_dataset) if args.backend == "brush" else None,
+                    "config": str(config) if config is not None else None,
+                    "eval_output": str(eval_output) if eval_output is not None else None,
+                    "eval_metrics": eval_metrics,
+                    "eval_metrics_sha256": eval_metrics_sha256,
+                    "quality_gate": quality_gates[0] if quality_gates else None,
+                    "quality_gates": quality_gates,
+                    "exported_ply": str(selected_ply),
+                    "exported_ply_validation": exported_validation,
+                    "export_reused": export_reused,
+                    "final_output": str(final_output),
+                    "final_output_validation": final_validation,
+                    "final_output_sha256": checksum(final_output),
+                    "preflight": preflight,
+                    "brush_preflight": brush_preflight,
+                    "tools": tool_report,
+                    "commands": commands,
+                }
+                if extra_summary:
+                    summary.update(extra_summary)
+                summary_path = final_output.with_suffix(".production_training_summary.json")
+                summary_path.write_text(json.dumps(summary, indent=2))
+                print(json.dumps(summary, indent=2))
+
+            if args.backend == "brush":
+                if args.skip_train:
+                    if quality_gate_requested:
+                        eval_output = Path(args.eval_output).resolve()
+                        eval_metrics = load_json_if_present(eval_output)
+                        if eval_metrics is None:
+                            raise RuntimeError(f"Quality gates require eval metrics, but --skip-eval was used and no metrics JSON exists at {eval_output}.")
+                        eval_metrics_sha256 = checksum(eval_output)
+                        apply_quality_gates()
+                    summarize_and_exit("brush", "brush", None, None, args.skip_export, extra_summary={"brush_preflight": brush_preflight})
+                    return
+                if args.skip_export:
+                    raise RuntimeError("Brush training and PLY export run as one command; use --skip-train --skip-export only when summarizing an existing output.")
+                iterations = max(args.max_num_iterations, 1)
+                prior_exports = snapshot_files(export_root, "*.ply")
+                brush_command = [
+                    brush_tool,
+                    str(brush_dataset),
+                    "--with-viewer=false",
+                    "--total-train-iters", str(iterations),
+                    "--export-path", str(export_root),
+                    "--export-name", args.brush_export_name,
+                    "--export-every", str(iterations),
+                    "--eval-every", str(iterations),
+                    "--max-resolution", str(max(args.brush_max_resolution, 1)),
+                ] + args.extra_brush_arg
+                commands.append(brush_command)
+                if args.print_commands:
+                    print(json.dumps({"brush_command": brush_command}, indent=2))
+                brush_env = os.environ.copy()
+                brush_env.setdefault("RUST_LOG", "info")
+                brush_result = run_capture(brush_command, env=brush_env)
+                if not args.skip_eval:
+                    eval_output = Path(args.eval_output).resolve()
+                    eval_output.parent.mkdir(parents=True, exist_ok=True)
+                    eval_metrics = parse_brush_eval_metrics(brush_result.get("stdout"), brush_result.get("stderr"))
+                    if eval_metrics is None:
+                        raise RuntimeError("Brush completed but did not report eval PSNR/SSIM metrics. Keep --skip-eval disabled only when Brush has a validation split and emits eval output.")
+                    eval_output.write_text(json.dumps(eval_metrics, indent=2))
+                    eval_metrics_sha256 = checksum(eval_output)
+                    apply_quality_gates()
+                elif quality_gate_requested:
+                    eval_output = Path(args.eval_output).resolve()
+                    eval_metrics = load_json_if_present(eval_output)
+                    if eval_metrics is None:
+                        raise RuntimeError(f"Quality gates require eval metrics, but --skip-eval was used and no metrics JSON exists at {eval_output}.")
+                    eval_metrics_sha256 = checksum(eval_output)
+                    apply_quality_gates()
+                exported_ply = newest_ply(export_root, excluded=prior_exports)
+                summarize_and_exit(
+                    "brush",
+                    "brush",
+                    None,
+                    exported_ply,
+                    False,
+                    extra_summary={
+                        "brush_preflight": brush_preflight,
+                        "brush_stdout_sha256": hashlib.sha256((brush_result.get("stdout") or "").encode("utf-8")).hexdigest(),
+                    },
+                )
+                return
 
             prior_configs = snapshot_files(checkpoint_root, "config.yml")
             config = None
@@ -1186,44 +1513,6 @@ public struct SplatTrainingPackageBuilder: Sendable {
             else:
                 needs_config = not args.skip_eval or not args.skip_export
                 config = latest_config(checkpoint_root) if needs_config else latest_config_or_none(checkpoint_root)
-
-            eval_output = None
-            eval_metrics = None
-            eval_metrics_sha256 = None
-            quality_gates = []
-            exported_ply = None
-            exported_ply_validation = None
-            final_output_validation = None
-
-            def add_quality_gate(metric, candidate_names, minimum=None, maximum=None):
-                value = metric_value(eval_metrics, candidate_names)
-                if value is None:
-                    raise RuntimeError(f"ns-eval metrics did not include a {metric.upper()} value for quality gating.")
-                passed = True
-                if minimum is not None and value < minimum:
-                    passed = False
-                if maximum is not None and value > maximum:
-                    passed = False
-                gate = {
-                    "metric": metric,
-                    "minimum": minimum,
-                    "maximum": maximum,
-                    "value": value,
-                    "passed": passed,
-                }
-                quality_gates.append(gate)
-                if not passed:
-                    if minimum is not None:
-                        raise RuntimeError(f"{metric.upper()} quality gate failed: {value:.4f} < {minimum:.4f}")
-                    raise RuntimeError(f"{metric.upper()} quality gate failed: {value:.4f} > {maximum:.4f}")
-
-            def apply_quality_gates():
-                if args.min_psnr is not None:
-                    add_quality_gate("psnr", ["psnr", "eval_psnr", "mean_psnr", "psnr_mean"], minimum=args.min_psnr)
-                if args.min_ssim is not None:
-                    add_quality_gate("ssim", ["ssim", "eval_ssim", "mean_ssim", "ssim_mean"], minimum=args.min_ssim)
-                if args.max_lpips is not None:
-                    add_quality_gate("lpips", ["lpips", "eval_lpips", "mean_lpips", "lpips_mean"], maximum=args.max_lpips)
 
             if not args.skip_eval:
                 if config is None:
@@ -1281,48 +1570,7 @@ public struct SplatTrainingPackageBuilder: Sendable {
                 run(export_command)
                 exported_ply = newest_ply(export_root, excluded=prior_exports)
 
-            final_output = Path(args.output).resolve() if args.output else None
-            if args.skip_export:
-                if final_output is not None and final_output.exists():
-                    exported_ply = final_output
-                else:
-                    exported_ply = newest_ply_or_none(export_root)
-                if exported_ply is None:
-                    raise FileNotFoundError("--skip-export requires --output to reference an existing PLY or the export directory to contain a prior .ply export.")
-            else:
-                if exported_ply is None:
-                    exported_ply = newest_ply(export_root)
-            if final_output is None:
-                final_output = exported_ply
-            exported_ply_validation = inspect_gaussian_ply(exported_ply)
-            if final_output != exported_ply:
-                final_output.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(exported_ply, final_output)
-            final_output_validation = inspect_gaussian_ply(final_output)
-
-            summary = {
-                "trainer": "nerfstudio",
-                "method": args.method,
-                "dataset": str(dataset),
-                "config": str(config) if config is not None else None,
-                "eval_output": str(eval_output) if eval_output is not None else None,
-                "eval_metrics": eval_metrics,
-                "eval_metrics_sha256": eval_metrics_sha256,
-                "quality_gate": quality_gates[0] if quality_gates else None,
-                "quality_gates": quality_gates,
-                "exported_ply": str(exported_ply),
-                "exported_ply_validation": exported_ply_validation,
-                "export_reused": args.skip_export,
-                "final_output": str(final_output),
-                "final_output_validation": final_output_validation,
-                "final_output_sha256": checksum(final_output),
-                "preflight": preflight,
-                "tools": tool_report,
-                "commands": commands,
-            }
-            summary_path = final_output.with_suffix(".production_training_summary.json")
-            summary_path.write_text(json.dumps(summary, indent=2))
-            print(json.dumps(summary, indent=2))
+            summarize_and_exit("nerfstudio", args.method, config, exported_ply, args.skip_export)
 
         if __name__ == "__main__":
             try:

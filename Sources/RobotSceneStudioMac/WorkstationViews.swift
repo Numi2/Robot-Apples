@@ -136,6 +136,7 @@ public struct WorkstationControlPanel: View {
     @State private var splatTrainingSplatsPerFrame = 24
     @State private var splatTrainingEpochs = 25
     @State private var writesASCIITrainingPLY = false
+    @State private var productionSplatBackend = "brush"
     @State private var productionSplatMethod = "splatfacto"
     @State private var productionSplatIterations = 30_000
     @State private var productionMinTrainFrames = "\(ProductionSplatDatasetRequirements.production.minTrainingFrameCount)"
@@ -170,6 +171,7 @@ public struct WorkstationControlPanel: View {
                     splatTrainingSplatsPerFrame: $splatTrainingSplatsPerFrame,
                     splatTrainingEpochs: $splatTrainingEpochs,
                     writesASCIITrainingPLY: $writesASCIITrainingPLY,
+                    productionSplatBackend: $productionSplatBackend,
                     productionSplatMethod: $productionSplatMethod,
                     productionSplatIterations: $productionSplatIterations,
                     productionMinTrainFrames: $productionMinTrainFrames,
@@ -441,6 +443,7 @@ private struct AppleSiliconControlPanel: View {
     @Binding var splatTrainingSplatsPerFrame: Int
     @Binding var splatTrainingEpochs: Int
     @Binding var writesASCIITrainingPLY: Bool
+    @Binding var productionSplatBackend: String
     @Binding var productionSplatMethod: String
     @Binding var productionSplatIterations: Int
     @Binding var productionMinTrainFrames: String
@@ -525,6 +528,9 @@ private struct AppleSiliconControlPanel: View {
                 }
                 .disabled(model.state.activeCaptureURL == nil)
 
+                TextField("Production backend", text: $productionSplatBackend)
+                    .textFieldStyle(.roundedBorder)
+
                 TextField("Production method", text: $productionSplatMethod)
                     .textFieldStyle(.roundedBorder)
 
@@ -553,6 +559,7 @@ private struct AppleSiliconControlPanel: View {
                 Button {
                     model.runProductionSplatOptimization(
                         maxIterations: productionSplatIterations,
+                        backend: productionSplatBackend.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "brush" : productionSplatBackend,
                         method: productionSplatMethod.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "splatfacto" : productionSplatMethod,
                         minTrainFrames: optionalPositiveInt(productionMinTrainFrames) ?? ProductionSplatDatasetRequirements.production.minTrainingFrameCount,
                         minEvalFrames: optionalNonNegativeInt(productionMinEvalFrames) ?? ProductionSplatDatasetRequirements.production.minValidationFrameCount,

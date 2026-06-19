@@ -111,11 +111,12 @@ The required iPhone capture output is a `.robotcapture` package containing:
   a Gaussian splat PLY from captured RGB views, ARKit/RoomPlan-aligned poses,
   camera intrinsics, strict ARKit LiDAR Float32 depth priors, tracking quality,
   and deterministic train/validation splits.
-- `SplatTrainingPackageBuilder` also writes the production Splatfacto/gsplat
-  path: a self-contained Nerfstudio dataset, `transforms.json`,
+- `SplatTrainingPackageBuilder` also writes the production Brush path: a
+  self-contained transforms dataset, Brush train/eval materialization,
   depth-derived `sparse_pc.ply` initialization when available,
-  `run_production_splat_optimizer.py`, dataset preflight output, PSNR/SSIM/LPIPS
-  eval gates, export provenance, and SHA-256 summaries.
+  `run_production_splat_optimizer.py`, dataset preflight output, PSNR/SSIM
+  eval gates, export provenance, and SHA-256 summaries. Nerfstudio remains
+  selectable as a fallback backend.
 - `GaussianSplatImporter`: `.ply`, `.spz`, and binary `.splat` inspection/linking.
 - `RobotSceneStudioSplatViewer`: shared MetalSplatter integration for iOS,
   macOS, and visionOS. It uses MetalSplatter/SplatIO for PLY, SPZ, and `.splat`

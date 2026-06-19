@@ -795,6 +795,7 @@ public final class WorkstationModel {
 
     public func runProductionSplatOptimization(
         maxIterations: Int = 30_000,
+        backend: String = "brush",
         method: String = "splatfacto",
         minTrainFrames: Int = ProductionSplatDatasetRequirements.production.minTrainingFrameCount,
         minEvalFrames: Int = ProductionSplatDatasetRequirements.production.minValidationFrameCount,
@@ -806,6 +807,7 @@ public final class WorkstationModel {
         Task {
             await runProductionSplatOptimizationAsync(
                 maxIterations: maxIterations,
+                backend: backend,
                 method: method,
                 minTrainFrames: minTrainFrames,
                 minEvalFrames: minEvalFrames,
@@ -819,6 +821,7 @@ public final class WorkstationModel {
 
     public func runProductionSplatOptimizationAsync(
         maxIterations: Int = 30_000,
+        backend: String = "brush",
         method: String = "splatfacto",
         minTrainFrames: Int = ProductionSplatDatasetRequirements.production.minTrainingFrameCount,
         minEvalFrames: Int = ProductionSplatDatasetRequirements.production.minValidationFrameCount,
@@ -847,14 +850,15 @@ public final class WorkstationModel {
                 id: "\(package.id)-production-run",
                 manifest: manifest,
                 backend: AppleNativeTrainingBackend(
-                    name: "Production Splatfacto/gsplat Optimizer",
-                    framework: .nerfstudioGSplat,
+                    name: backend == "nerfstudio" ? "Production Splatfacto/gsplat Optimizer" : "Production Brush Optimizer",
+                    framework: backend == "nerfstudio" ? .nerfstudioGSplat : .brush,
                     deploymentTarget: .coreML
                 ),
                 mode: .productionGSplat
             )
             var runnerArguments = [
                 runnerURL.path,
+                "--backend", backend,
                 "--method", method,
                 "--max-num-iterations", "\(max(maxIterations, 1))",
                 "--output", package.outputURL.path,
@@ -995,6 +999,7 @@ public final class WorkstationModel {
         captureURL: URL,
         splatURL: URL? = nil,
         productionMaxIterations: Int = 30_000,
+        productionBackend: String = "brush",
         productionMethod: String = "splatfacto",
         productionMinTrainFrames: Int = ProductionSplatDatasetRequirements.production.minTrainingFrameCount,
         productionMinEvalFrames: Int = ProductionSplatDatasetRequirements.production.minValidationFrameCount,
@@ -1008,6 +1013,7 @@ public final class WorkstationModel {
                 captureURL: captureURL,
                 splatURL: splatURL,
                 productionMaxIterations: productionMaxIterations,
+                productionBackend: productionBackend,
                 productionMethod: productionMethod,
                 productionMinTrainFrames: productionMinTrainFrames,
                 productionMinEvalFrames: productionMinEvalFrames,
@@ -1023,6 +1029,7 @@ public final class WorkstationModel {
         captureURL: URL,
         splatURL: URL? = nil,
         productionMaxIterations: Int = 30_000,
+        productionBackend: String = "brush",
         productionMethod: String = "splatfacto",
         productionMinTrainFrames: Int = ProductionSplatDatasetRequirements.production.minTrainingFrameCount,
         productionMinEvalFrames: Int = ProductionSplatDatasetRequirements.production.minValidationFrameCount,
@@ -1039,9 +1046,10 @@ public final class WorkstationModel {
             linkSplat(at: splatURL)
             guard state.stage != .failed else { return }
         } else {
-            appendDiagnostic("No linked splat supplied; running production Splatfacto/gsplat optimization before render and export.")
+            appendDiagnostic("No linked splat supplied; running production Brush optimization before render and export.")
             await runProductionSplatOptimizationAsync(
                 maxIterations: productionMaxIterations,
+                backend: productionBackend,
                 method: productionMethod,
                 minTrainFrames: productionMinTrainFrames,
                 minEvalFrames: productionMinEvalFrames,

@@ -956,6 +956,7 @@ struct RobotVisionLabCLI {
     private static func productionSplatOptimizerArguments(package: SplatTrainingPackageManifest, runnerURL: URL) -> [String] {
         var arguments = [
             runnerURL.path,
+            "--backend", stringValue(for: "--production-splat-backend") ?? "brush",
             "--output", package.outputURL.path,
             "--method", stringValue(for: "--production-splat-method") ?? "splatfacto",
             "--max-num-iterations", "\(intValue(for: "--production-splat-iterations", default: 30_000))",
@@ -995,6 +996,15 @@ struct RobotVisionLabCLI {
         if let evalRenderOutput = stringValue(for: "--production-splat-eval-render-output") {
             arguments.append(contentsOf: ["--eval-render-output", evalRenderOutput])
         }
+        if let brushBinary = stringValue(for: "--production-splat-brush-binary") {
+            arguments.append(contentsOf: ["--brush-binary", brushBinary])
+        }
+        if let brushExportName = stringValue(for: "--production-splat-brush-export-name") {
+            arguments.append(contentsOf: ["--brush-export-name", brushExportName])
+        }
+        if let brushMaxResolution = stringValue(for: "--production-splat-brush-max-resolution") {
+            arguments.append(contentsOf: ["--brush-max-resolution", brushMaxResolution])
+        }
         if let minPSNR = stringValue(for: "--production-splat-min-psnr") {
             arguments.append(contentsOf: ["--min-psnr", minPSNR])
         }
@@ -1012,6 +1022,9 @@ struct RobotVisionLabCLI {
         }
         if let minTotalFrames = stringValue(for: "--production-splat-min-total-frames") {
             arguments.append(contentsOf: ["--min-total-frames", minTotalFrames])
+        }
+        for extraArgument in stringValues(for: "--production-splat-extra-brush-arg") {
+            arguments.append("--extra-brush-arg=\(extraArgument)")
         }
         for extraArgument in stringValues(for: "--production-splat-extra-ns-train-arg") {
             arguments.append("--extra-ns-train-arg=\(extraArgument)")
@@ -1130,10 +1143,11 @@ struct RobotVisionLabCLI {
             SplatTrainingManifest.self,
             from: Data(contentsOf: manifestURL)
         )
+        let productionBackend = stringValue(for: "--production-splat-backend") ?? "brush"
         let backend = mode == .productionGSplat
             ? AppleNativeTrainingBackend(
-                name: "Production Splatfacto/gsplat Optimizer",
-                framework: .nerfstudioGSplat,
+                name: productionBackend == "nerfstudio" ? "Production Splatfacto/gsplat Optimizer" : "Production Brush Optimizer",
+                framework: productionBackend == "nerfstudio" ? .nerfstudioGSplat : .brush,
                 deploymentTarget: .coreML
             )
             : AppleNativeTrainingBackend()

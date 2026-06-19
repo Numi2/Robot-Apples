@@ -39,6 +39,7 @@ public enum AppleTrainingFramework: String, Codable, Sendable {
     case mlx
     case createML
     case metalPerformanceShaders
+    case brush
     case nerfstudioGSplat
 }
 

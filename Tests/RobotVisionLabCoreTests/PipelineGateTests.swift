@@ -444,18 +444,20 @@ final class PipelineGateTests: XCTestCase {
             outputDirectory: root.appendingPathComponent("SplatTrainingPackage", isDirectory: true)
         )
 
-        XCTAssertEqual(package.optimizerProfile, .productionGSplatSplatfacto)
+        XCTAssertEqual(package.optimizerProfile, .productionBrush)
         let planURL = try XCTUnwrap(package.optimizerPlanURL)
         let transformsURL = try XCTUnwrap(package.nerfstudioTransformsURL)
         let runnerURL = try XCTUnwrap(package.productionRunnerURL)
+        let brushDatasetURL = try XCTUnwrap(package.brushDatasetURL)
         XCTAssertTrue(FileManager.default.fileExists(atPath: planURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: transformsURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: runnerURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: brushDatasetURL.path))
 
         let plan = try JSONDecoder.robotVisionLabDecoder.decode(SplatOptimizationPlan.self, from: Data(contentsOf: planURL))
-        XCTAssertEqual(plan.profile, .productionGSplatSplatfacto)
-        XCTAssertTrue(plan.trainer.contains("Splatfacto"))
-        XCTAssertTrue(plan.optimizationStages.contains { $0.name.contains("densification") && $0.purpose.contains("pruning") })
+        XCTAssertEqual(plan.profile, .productionBrush)
+        XCTAssertTrue(plan.trainer.contains("Brush"))
+        XCTAssertTrue(plan.optimizationStages.contains { $0.name.contains("refinement") && $0.purpose.contains("pruning") })
         XCTAssertTrue(plan.qualityGates.contains { $0.contains("GaussianSplatImporter") })
 
         let transformsObject = try XCTUnwrap(
@@ -474,9 +476,11 @@ final class PipelineGateTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: copiedImageURL.path))
 
         let runner = try String(contentsOf: runnerURL, encoding: .utf8)
+        XCTAssertTrue(runner.contains("brush-cli"))
+        XCTAssertTrue(runner.contains("prepare_brush_dataset"))
         XCTAssertTrue(runner.contains("ns-train"))
         XCTAssertTrue(runner.contains("ns-eval"))
-	        XCTAssertTrue(runner.contains("ns-export"))
+        XCTAssertTrue(runner.contains("ns-export"))
 	        XCTAssertTrue(runner.contains("gaussian-splat"))
 		    }
 
@@ -875,6 +879,7 @@ final class PipelineGateTests: XCTestCase {
         process.arguments = [
             "python3",
             try XCTUnwrap(package.productionRunnerURL).path,
+            "--backend", "nerfstudio",
             "--output", package.outputURL.path,
             "--max-num-iterations", "3",
             "--steps-per-save", "1",
@@ -966,6 +971,90 @@ final class PipelineGateTests: XCTestCase {
         XCTAssertEqual(optimizedCloud.splats.count, 1)
     }
 
+    func testProductionOptimizerRunnerUsesBrushBackendByDefault() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pythonURL = try python3URLOrSkip()
+
+        let imageURL = root.appendingPathComponent("source/frame.png")
+        try FileManager.default.createDirectory(at: imageURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Self.tinyPNG.write(to: imageURL)
+        let manifest = SplatTrainingManifest(
+            id: "brush-runner-splat",
+            imageFrames: tinyOptimizerFrames(imageURL: imageURL),
+            expectedOutput: SplatTrainingOutput(targetURL: root.appendingPathComponent("optimized/brush-scene.ply"))
+        )
+        let manifestURL = root.appendingPathComponent("splat_training_manifest.json")
+        try JSONEncoder.robotVisionLabEncoder.encode(manifest).write(to: manifestURL)
+        let package = try SplatTrainingPackageBuilder().writePackage(
+            job: SplatTrainingJob(
+                id: "brush-runner-splat-job",
+                manifest: manifest,
+                backend: AppleNativeTrainingBackend(),
+                mode: .productionGSplat
+            ),
+            manifestURL: manifestURL,
+            outputDirectory: root.appendingPathComponent("SplatTrainingPackage", isDirectory: true)
+        )
+        let toolDirectory = root.appendingPathComponent("mock-tools", isDirectory: true)
+        try writeMockBrushTool(to: toolDirectory)
+
+        let process = Process()
+        process.executableURL = pythonURL
+        process.arguments = [
+            "python3",
+            try XCTUnwrap(package.productionRunnerURL).path,
+            "--output", package.outputURL.path,
+            "--max-num-iterations", "3",
+            "--min-psnr", "30",
+            "--min-ssim", "0.90"
+        ]
+        process.environment = [
+            "PATH": "\(toolDirectory.path):\(ProcessInfo.processInfo.environment["PATH"] ?? "")"
+        ]
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        try process.run()
+        process.waitUntilExit()
+        let stdout = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertEqual(process.terminationStatus, 0, "stdout:\n\(stdout)\nstderr:\n\(stderr)")
+
+        let summaryURL = package.outputURL.deletingPathExtension().appendingPathExtension("production_training_summary.json")
+        let summary = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: summaryURL)) as? [String: Any]
+        )
+        XCTAssertEqual(summary["backend"] as? String, "brush")
+        XCTAssertEqual(summary["trainer"] as? String, "brush")
+        XCTAssertEqual(summary["method"] as? String, "brush")
+        XCTAssertNotNil(summary["final_output_sha256"])
+        XCTAssertNotNil(summary["eval_metrics_sha256"])
+        let evalMetrics = try XCTUnwrap(summary["eval_metrics"] as? [String: Any])
+        let evalResults = try XCTUnwrap(evalMetrics["results"] as? [String: Any])
+        XCTAssertEqual(evalResults["psnr"] as? Double, 32.5)
+        XCTAssertEqual(evalResults["ssim"] as? Double, 0.94)
+        let qualityGates = try XCTUnwrap(summary["quality_gates"] as? [[String: Any]])
+        XCTAssertEqual(qualityGates.compactMap { $0["metric"] as? String }, ["psnr", "ssim"])
+        XCTAssertTrue(qualityGates.allSatisfy { $0["passed"] as? Bool == true })
+        let commands = try XCTUnwrap(summary["commands"] as? [[String]])
+        XCTAssertEqual(commands.count, 1)
+        XCTAssertTrue(commands[0][0].contains("brush-cli"))
+        XCTAssertTrue(commands[0].contains("--with-viewer=false"))
+        XCTAssertTrue(commands[0].contains("--total-train-iters"))
+
+        let brushPreflight = try XCTUnwrap(summary["brush_preflight"] as? [String: Any])
+        XCTAssertEqual(brushPreflight["train_frame_count"] as? Int, 2)
+        XCTAssertEqual(brushPreflight["eval_frame_count"] as? Int, 1)
+        let brushDatasetURL = try XCTUnwrap(package.brushDatasetURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: brushDatasetURL.appendingPathComponent("transforms_train.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: brushDatasetURL.appendingPathComponent("transforms_val.json").path))
+
+        let optimizedCloud = try GaussianSplatCloudLoader().load(url: package.outputURL)
+        XCTAssertEqual(optimizedCloud.splats.count, 1)
+    }
+
     func testProductionOptimizerRunnerFailsWhenQualityGateDoesNotPass() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -999,6 +1088,7 @@ final class PipelineGateTests: XCTestCase {
         process.arguments = [
             "python3",
             try XCTUnwrap(package.productionRunnerURL).path,
+            "--backend", "nerfstudio",
             "--output", package.outputURL.path,
             "--max-num-iterations", "3",
             "--steps-per-save", "1",
@@ -1068,6 +1158,7 @@ final class PipelineGateTests: XCTestCase {
         process.arguments = [
             "python3",
             try XCTUnwrap(package.productionRunnerURL).path,
+            "--backend", "nerfstudio",
             "--output", package.outputURL.path,
             "--max-num-iterations", "3",
             "--steps-per-save", "1"
@@ -1139,6 +1230,7 @@ final class PipelineGateTests: XCTestCase {
         process.arguments = [
             "python3",
             try XCTUnwrap(package.productionRunnerURL).path,
+            "--backend", "nerfstudio",
             "--output", package.outputURL.path,
             "--eval-output", staleEvalURL.path,
             "--max-num-iterations", "3",
@@ -1192,6 +1284,7 @@ final class PipelineGateTests: XCTestCase {
         process.arguments = [
             "python3",
             try XCTUnwrap(package.productionRunnerURL).path,
+            "--backend", "nerfstudio",
             "--output", package.outputURL.path,
             "--max-num-iterations", "3",
             "--steps-per-save", "1"
@@ -1358,8 +1451,8 @@ final class PipelineGateTests: XCTestCase {
             try XCTUnwrap(package.productionRunnerURL).path,
             "--preflight-only",
             "--print-commands",
-            "--extra-ns-train-arg=--viewer.quit-on-train-completion",
-            "--extra-ns-train-arg=True"
+            "--extra-brush-arg=--max-resolution",
+            "--extra-brush-arg=1024"
         ]
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -1431,7 +1524,7 @@ final class PipelineGateTests: XCTestCase {
         process.waitUntilExit()
         let stderr = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         XCTAssertNotEqual(process.terminationStatus, 0)
-        XCTAssertTrue(stderr.contains("validation split frames for ns-eval"), stderr)
+        XCTAssertTrue(stderr.contains("validation/eval split frames"), stderr)
     }
 
     func testProductionOptimizerRunnerPreflightRejectsInsufficientTrainingFrames() throws {
@@ -1744,6 +1837,29 @@ final class PipelineGateTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: trainURL.path)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: evalURL.path)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exportURL.path)
+    }
+
+    private func writeMockBrushTool(to directory: URL, exportPLY: String? = nil) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let brushURL = directory.appendingPathComponent("brush-cli")
+        let exportPLY = exportPLY ?? Self.singlePointGaussianPLY
+        try """
+        #!/usr/bin/env python3
+        import pathlib
+        import sys
+
+        args = sys.argv[1:]
+        dataset = pathlib.Path(args[0])
+        assert (dataset / "transforms_train.json").exists(), "missing transforms_train.json"
+        assert (dataset / "transforms_val.json").exists(), "missing transforms_val.json"
+        export_path = pathlib.Path(args[args.index("--export-path") + 1])
+        export_name = args[args.index("--export-name") + 1]
+        export_path.mkdir(parents=True, exist_ok=True)
+        (export_path / export_name).write_text('''\(exportPLY)''')
+        print("Eval iter 3: PSNR 32.5, ssim 0.94")
+
+        """.write(to: brushURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: brushURL.path)
     }
 
     private func littleEndianFloat32Data(_ values: [Float32]) -> Data {
